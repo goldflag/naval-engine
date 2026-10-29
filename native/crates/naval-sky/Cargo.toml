@@ -23,6 +23,9 @@ bytemuck.workspace = true
 naval-render.workspace = true
 
 [dev-dependencies]
+# The theatre's sun and sidereal time (the round Earth's, which the simulation re-exports), which the stars' place is
+# checked against (`tests/place.rs`, `state.rs`'s tests) and the stills stand their stars by (`examples/stills.rs`).
+naval-earth.workspace = true
 native-offscreen.workspace = true
 pollster.workspace = true
 image.workspace = true

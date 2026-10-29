@@ -1,0 +1,808 @@
+use super::*;
+
+/// Two lines as the dataset has them (Reykjavík's, without a height; Honolulu's, with one).
+const LINES: [&str; 2] = [
+    r#"{"type": "Feature", "properties": { "height": -1.0, "confidence": -1.0},"geometry": {"type": "Polygon","coordinates": [[[-21.939243507333398, 64.16035660171019], [-21.9393049747436, 64.16046030976038], [-21.93934269093763, 64.16045606317516], [-21.939329050493836, 64.16043304899603], [-21.939364252274924, 64.16042908551259], [-21.939316424072647, 64.16034838952899], [-21.939243507333398, 64.16035660171019]]]}}"#,
+    r#"{"type": "Feature", "properties": { "height": 3.4525222778320312, "confidence": 0.9613999724388123},"geometry": {"type": "Polygon","coordinates": [[[-157.66602087971563, 21.294040403219256], [-157.66599368071778, 21.29388972155371], [-157.66575631375304, 21.29392691724304], [-157.66576903586494, 21.29399739737832], [-157.66588641513323, 21.293979003915595], [-157.66590089201915, 21.294059205417767], [-157.66602087971563, 21.294040403219256]]]}}"#,
+];
+
+/// A land style for the contexts below.
+fn style(style: naval_conditions::LandStyle) -> SurfaceStyle {
+    SurfaceStyle {
+        style,
+        shore: [0.0; 3],
+        low: [0.0; 3],
+        high: [0.0; 3],
+        equator: [0.0; 2],
+        climate: naval_conditions::Climate::default(),
+    }
+}
+
+/// A gzip member of `text` (raw DEFLATE between a bare header and a trailer the reader skips).
+fn gzip(text: &str) -> Vec<u8> {
+    let mut out = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 255];
+    out.extend(miniz_oxide::deflate::compress_to_vec(text.as_bytes(), 6));
+    out.extend([0u8; 8]);
+    out
+}
+
+#[test]
+fn quadkeys_name_the_indexs_tiles() {
+    // Reykjavík's and Honolulu's tiles as the index names them.
+    assert_eq!(quadkey(64.146, -21.94, 9), "031102000");
+    assert_eq!(quadkey(21.307, -157.858, 9), "022211111");
+    // South and east too (Honiara), and the tile holds the point it was named for.
+    let key = quadkey(-9.43, 159.95, 9);
+    assert_eq!(key, "311102213");
+    let [s, w, n, e] = quadkey_bounds(&key).unwrap();
+    assert!(
+        s < -9.43 && -9.43 < n && w < 159.95 && 159.95 < e,
+        "{s} {w} {n} {e}"
+    );
+    // A level-9 tile is 360/512 degrees wide.
+    assert!((e - w - 360.0 / 512.0).abs() < 1e-9);
+    for (lat, lon) in [
+        (64.146, -21.94),
+        (21.307, -157.858),
+        (-33.9, 151.2),
+        (51.12, 1.3),
+    ] {
+        let [s, w, n, e] = quadkey_bounds(&quadkey(lat, lon, 9)).unwrap();
+        assert!(s <= lat && lat < n && w <= lon && lon < e);
+    }
+    assert!(quadkey_bounds("0x1").is_none());
+}
+
+#[test]
+fn the_index_lists_every_regions_file_for_a_quadkey() {
+    let csv = "Location,QuadKey,Url,Size,UploadDate\n\
+        Europe,031102000,https://example.org/Europe/031102000.csv.gz,7.0KB,2026-08-13\n\
+        Iceland,031102000,https://example.org/Iceland/031102000.csv.gz,4.5MB,2026-08-13\n\
+        UnitedStates,022211111,https://example.org/US/022211111.csv.gz,14.4MB,2026-08-13\n\
+        Japan,133002112,https://example.org/JP/133002112.csv.gz,300.1MB,2026-08-13\n\
+        broken line\n";
+    let index = parse_index(csv);
+    assert_eq!(index.files.len(), 3);
+    let reykjavik = &index.files["031102000"];
+    assert_eq!(reykjavik.len(), 2);
+    assert_eq!(reykjavik[1].location, "Iceland");
+    assert_eq!(reykjavik[1].bytes, (4.5 * 1024.0 * 1024.0) as u64);
+    assert_eq!(reykjavik[0].bytes, 7 * 1024);
+    assert!(index.files["133002112"][0].bytes > WHOLE_FILE_BYTES);
+    assert_eq!(parse_size("697B"), 697);
+}
+
+#[test]
+fn lines_give_their_ring_and_a_height_only_where_measured() {
+    let a = parse_line(LINES[0]).unwrap();
+    assert_eq!(a.ring.len(), 7);
+    assert_eq!(a.ring[0], [-21.939243507333398, 64.16035660171019]);
+    assert_eq!(a.height, None);
+    let b = parse_line(LINES[1]).unwrap();
+    assert_eq!(b.ring.len(), 7);
+    assert!((b.height.unwrap() - 3.4525).abs() < 1e-4);
+    // A multipolygon's first polygon; a polygon with a hole keeps its outer ring.
+    let multi = r#"{"type": "Feature", "properties": {"height": 9.0}, "geometry": {"type": "MultiPolygon", "coordinates": [[[[1.0, 2.0], [1.001, 2.0], [1.001, 2.001], [1.0, 2.0]]], [[[5.0, 5.0], [5.1, 5.0], [5.1, 5.1], [5.0, 5.0]]]]}}"#;
+    let m = parse_line(multi).unwrap();
+    assert_eq!(m.ring.len(), 4);
+    assert_eq!(m.ring[1], [1.001, 2.0]);
+    let holed = r#"{"properties": {"height": -1}, "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]], [[0.2, 0.2], [0.3, 0.2], [0.3, 0.3], [0.2, 0.2]]]}}"#;
+    assert_eq!(parse_line(holed).unwrap().ring.len(), 4);
+    assert!(parse_line("{\"type\": \"Feature\"}").is_none());
+    assert!(parse_line("").is_none());
+}
+
+#[test]
+fn a_gzip_stream_is_read_line_by_line_across_members() {
+    let one = format!("{}\n{}\n", LINES[0], LINES[1]);
+    let mut bytes = gzip(&one);
+    bytes.extend(gzip(LINES[0]));
+    let mut lines = Vec::new();
+    gunzip_lines(&bytes, |l| lines.push(l.to_owned())).unwrap();
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines[1], LINES[1]);
+    assert_eq!(lines[2], LINES[0]);
+    assert!(gunzip_lines(b"not gzip at all", |_| {}).is_err());
+    // A file's footprints into a store, by chunk, about Denmark Strait's origin.
+    let geo = LatLon {
+        lat: 64.6,
+        lon: -28.4,
+    };
+    let mut store = QuadStore::default();
+    store.add_file(&gzip(&one), geo).unwrap();
+    assert_eq!(store.footprints, 2);
+    assert!(store.covered);
+}
+
+/// A real gzip member of `text` (with its CRC-32 and length), as the dataset's files are.
+fn real_gzip(text: &str) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut out = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    out.write_all(text.as_bytes()).unwrap();
+    out.finish().unwrap()
+}
+
+/// A fresh folder under the system's temporary one.
+fn temp_dir(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "naval-buildings-test-{}-{name}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn a_big_file_streams_into_tiles_and_reads_back() {
+    // A square house every 300 m across 6 km of Los Angeles (a level-13 tile is about 4 km there), in two members.
+    let mut lines = Vec::new();
+    for j in 0..20 {
+        for i in 0..20 {
+            let (lat, lon) = (
+                33.80 + f64::from(j) * 0.0027,
+                -118.40 + f64::from(i) * 0.0032,
+            );
+            let d = 0.0001;
+            let height = if (i + j) % 3 == 0 { "7.5" } else { "-1.0" };
+            lines.push(format!(
+                r#"{{"type": "Feature", "properties": {{ "height": {height}, "confidence": -1.0}},"geometry": {{"type": "Polygon","coordinates": [[[{lon}, {lat}], [{}, {lat}], [{}, {}], [{lon}, {}], [{lon}, {lat}]]]}}}}"#,
+                lon + d,
+                lon + d,
+                lat + d,
+                lat + d
+            ));
+        }
+    }
+    let mut gz = real_gzip(&(lines[..150].join("\n") + "\n"));
+    gz.extend(real_gzip(&lines[150..].join("\n")));
+    let root = temp_dir("split");
+    let done = root.join("023012311.tiles");
+    let count = AtomicU64::new(0);
+    let summary = split::split_into(gz.as_slice(), &done, &count).unwrap();
+    assert_eq!(summary.footprints, 400);
+    assert_eq!(summary.bad, 0);
+    assert!(summary.tiles >= 2, "{summary:?}");
+    assert_eq!(count.load(Ordering::Relaxed), gz.len() as u64);
+    assert!(done.is_dir());
+    // Every footprint lands in the tile holding its middle, its ring within a centimetre and its height kept.
+    let mut back = Vec::new();
+    for entry in std::fs::read_dir(&done).unwrap().flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let tile = name.strip_suffix(".bin").unwrap().to_owned();
+        assert_eq!(tile.len(), split::SPLIT_LEVEL as usize);
+        for raw in split::read_tile(&done, &tile).unwrap() {
+            assert_eq!(split::tile_of(&raw.ring), tile);
+            back.push(raw);
+        }
+    }
+    assert_eq!(back.len(), 400);
+    let original = parse_line(&lines[3]).unwrap();
+    let found = back
+        .iter()
+        .find(|r| {
+            (r.ring[0][0] - original.ring[0][0]).abs() < 1e-6
+                && (r.ring[0][1] - original.ring[0][1]).abs() < 1e-6
+        })
+        .unwrap();
+    assert_eq!(found.height, original.height);
+    assert_eq!(found.height, Some(7.5));
+    for (a, b) in found.ring.iter().zip(&original.ring) {
+        assert!((a[0] - b[0]).abs() < 1.5e-7 && (a[1] - b[1]).abs() < 1.5e-7);
+    }
+    let measured = (0..20)
+        .flat_map(|j| (0..20).map(move |i| (i + j) % 3 == 0))
+        .filter(|m| *m)
+        .count();
+    assert_eq!(back.iter().filter(|r| r.height.is_some()).count(), measured);
+    // A tile with no footprints reads as none; a damaged one errors.
+    assert!(split::read_tile(&done, "0000000000000").unwrap().is_empty());
+    std::fs::write(done.join("0000000000001.bin"), b"NBFOOT01\x00\x00").unwrap();
+    assert!(split::read_tile(&done, "0000000000001").is_err());
+    std::fs::write(done.join("0000000000002.bin"), b"something else").unwrap();
+    assert!(split::read_tile(&done, "0000000000002").is_err());
+    // The chunks about a point read the tiles under them: a chunk's tiles hold every footprint whose middle it holds.
+    let geo = LatLon {
+        lat: 33.80,
+        lon: -118.40,
+    };
+    let mut by_chunk: HashMap<[i32; 2], usize> = HashMap::new();
+    for raw in &back {
+        *by_chunk.entry(project(raw, geo).unwrap().0).or_default() += 1;
+    }
+    for (chunk, n) in by_chunk {
+        let found: usize = quadkeys_over(geo, chunk, split::SPLIT_LEVEL)
+            .iter()
+            .flat_map(|tile| split::read_tile(&done, tile).unwrap_or_default())
+            .filter(|raw| project(raw, geo).unwrap().0 == chunk)
+            .count();
+        assert_eq!(found, n, "chunk {chunk:?}");
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_cut_or_damaged_stream_is_never_kept() {
+    let text = (0..200)
+        .map(|i| LINES[i % 2])
+        .collect::<Vec<_>>()
+        .join("\n");
+    let gz = real_gzip(&text);
+    let root = temp_dir("cut");
+    let count = AtomicU64::new(0);
+    // Cut short anywhere: inside the deflate stream, or in the trailer.
+    for cut in [gz.len() / 3, gz.len() - 12, gz.len() - 3] {
+        let done = root.join(format!("cut-{cut}.tiles"));
+        assert!(
+            split::split_into(&gz[..cut], &done, &count).is_err(),
+            "cut at {cut}"
+        );
+        assert!(!done.exists());
+    }
+    // A trailer's CRC-32 wrong.
+    let mut bad = gz.clone();
+    let n = bad.len();
+    bad[n - 8] ^= 0xff;
+    let done = root.join("crc.tiles");
+    assert!(split::split_into(bad.as_slice(), &done, &count).is_err());
+    assert!(!done.exists());
+    // No working folder is left behind.
+    let left: Vec<_> = std::fs::read_dir(&root).unwrap().flatten().collect();
+    assert!(left.is_empty(), "{left:?}");
+    // The whole stream is kept.
+    let done = root.join("whole.tiles");
+    let summary = split::split_into(gz.as_slice(), &done, &count).unwrap();
+    assert_eq!(summary.footprints, 200);
+    assert!(done.is_dir());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_chunks_quadkeys_cover_it() {
+    let geo = LatLon {
+        lat: 33.62,
+        lon: -118.48,
+    };
+    for index in [[0, 0], [17, 25], [-40, 3], [120, -90]] {
+        // The dataset's level: the tiles of its corners and middle, as before.
+        let c = chunk_corner(index);
+        let mut corners: Vec<String> = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0), (0.5, 0.5)]
+            .iter()
+            .map(|(u, v)| {
+                let p = to_lat_lon(geo, [c[0] + u * CHUNK_M, c[1] + v * CHUNK_M]);
+                quadkey(p.lat, p.lon, QUADKEY_LEVEL)
+            })
+            .collect();
+        corners.sort();
+        corners.dedup();
+        let keys = quadkeys_over(geo, index, QUADKEY_LEVEL);
+        assert!(
+            corners.iter().all(|k| keys.contains(k)),
+            "{corners:?} {keys:?}"
+        );
+        // The tiles: every point of the chunk in one of them.
+        let tiles = quadkeys_over(geo, index, split::SPLIT_LEVEL);
+        for u in 0..=10 {
+            for v in 0..=10 {
+                let p = to_lat_lon(
+                    geo,
+                    [c[0] + f64::from(u) * 100.0, c[1] + f64::from(v) * 100.0],
+                );
+                assert!(tiles.contains(&quadkey(p.lat, p.lon, split::SPLIT_LEVEL)));
+            }
+        }
+        assert!(tiles.len() <= 4, "{tiles:?}");
+    }
+    // Across the date line: the tiles either side of it, not the whole way round the world.
+    let fiji = LatLon {
+        lat: -17.0,
+        lon: 179.9999,
+    };
+    for level in [QUADKEY_LEVEL, split::SPLIT_LEVEL] {
+        let keys = quadkeys_over(fiji, [0, 0], level);
+        assert!(keys.len() <= 4, "{keys:?}");
+        let c = chunk_corner([0, 0]);
+        for (u, v) in [(0.0, 0.0), (1.0, 1.0), (0.5, 0.5)] {
+            let p = to_lat_lon(fiji, [c[0] + u * CHUNK_M, c[1] + v * CHUNK_M]);
+            assert!(keys.contains(&quadkey(p.lat, p.lon, level)), "{keys:?}");
+        }
+    }
+}
+
+#[test]
+fn a_gone_tile_folder_is_an_error_and_a_missing_tile_none() {
+    let dir = std::env::temp_dir().join(format!("naval-tiles-gone-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(split::read_tile(&dir, "0230123110000").is_err());
+    std::fs::create_dir_all(&dir).unwrap();
+    assert_eq!(
+        split::read_tile(&dir, "0230123110000").map(|r| r.len()),
+        Ok(0)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_footprint_is_projected_into_its_chunk() {
+    // A 10 m square 2.5 km east and 1.2 km south of the frame's origin (x east, z south).
+    let geo = LatLon {
+        lat: 64.0,
+        lon: -22.0,
+    };
+    let corner = |x: f64, z: f64| {
+        let p = naval_earth::geo::to_lat_lon(geo, [x, z]);
+        [p.lon, p.lat]
+    };
+    let raw = RawFootprint {
+        ring: vec![
+            corner(2500.0, 1200.0),
+            corner(2510.0, 1200.0),
+            corner(2510.0, 1210.0),
+            corner(2500.0, 1210.0),
+            corner(2500.0, 1200.0),
+        ],
+        height: Some(7.0),
+    };
+    let (chunk, f) = project(&raw, geo).unwrap();
+    assert_eq!(chunk, [2, 1]);
+    assert_eq!(f.height, Some(7.0));
+    assert!(
+        (f.ring[0][0] - 500.0).abs() < 0.01 && (f.ring[0][1] - 200.0).abs() < 0.01,
+        "{:?}",
+        f.ring[0]
+    );
+    let ring = naval_terrain::buildings::geometry::simplify(&f.ring, 0.1).unwrap();
+    assert!((naval_terrain::buildings::geometry::area(&ring) - 100.0).abs() < 0.1);
+}
+
+#[test]
+fn the_wanted_chunks_are_nearest_first_whole_near_and_boxes_far() {
+    let s = BuildingSettings::HIGH;
+    let list = wanted([500.0, 500.0, 300.0], &s, &|_| None);
+    assert_eq!(list[0].1.index, [0, 0]);
+    assert!(list.windows(2).all(|w| w[0].0 <= w[1].0));
+    let count = |list: &[(f32, ChunkKey)], lod| list.iter().filter(|(_, k)| k.lod == lod).count();
+    assert!(
+        list.iter()
+            .all(|(d, k)| k.lod == Lod::Far || *d <= s.range_m)
+    );
+    let full = count(&list, Lod::Full);
+    let boxes = count(&list, Lod::Box);
+    let far = count(&list, Lod::Far);
+    // About π · 3.5² km² whole, π · (10² - 3.5²) as boxes, π · (30² - 10²) far.
+    assert!((30..60).contains(&full), "{full}");
+    assert!((250..360).contains(&boxes), "{boxes}");
+    assert!((2300..2700).contains(&far), "{far}");
+    // Without the far level, nothing past the boxes (as before it).
+    let plain = BuildingSettings { far_m: 0.0, ..s };
+    let near = wanted([500.0, 500.0, 300.0], &plain, &|_| None);
+    assert_eq!(near.len(), full + boxes);
+    assert!(near.iter().all(|(d, _)| *d <= s.range_m));
+    // From 12 km up: no whole chunks or boxes, but the far level's ring all the same.
+    let high = wanted([500.0, 500.0, 12_000.0], &s, &|_| None);
+    assert_eq!(count(&high, Lod::Far), high.len());
+    assert!((2700..2950).contains(&high.len()), "{}", high.len());
+    assert!(wanted([500.0, 500.0, 12_000.0], &plain, &|_| None).is_empty());
+}
+
+#[test]
+fn the_far_ranges_override_is_read_and_held_within_the_layers_slots() {
+    assert_eq!(far_range("off"), Some(0.0));
+    assert_eq!(far_range(" False "), Some(0.0));
+    assert_eq!(far_range("16"), Some(16_000.0));
+    assert_eq!(far_range("-3"), Some(0.0));
+    assert_eq!(far_range("nonsense"), None);
+    // Past High's 30 km the chunks wanted would outrun the layer's slots: held at 30.
+    assert_eq!(far_range("40"), Some(MOST_FAR_M));
+    let s = BuildingSettings::HIGH;
+    assert!(s.far_m <= MOST_FAR_M);
+    let chunks = wanted([0.0, 0.0, 500.0], &s, &|_| None).len();
+    assert!(
+        chunks + chunks / 4 < naval_terrain::buildings::layer::CHUNK_CAPACITY,
+        "{chunks}"
+    );
+}
+
+#[test]
+fn a_far_chunk_stands_its_town_from_the_cover() {
+    // A tropical town's cover (built up within 1.2 km of theatre (0, 0)): masses on its chunks, none beyond.
+    let context = tropical_town();
+    let key = |index| ChunkKey {
+        index,
+        lod: Lod::Far,
+    };
+    let (mesh, done) = far_mesh(&context, None, key([0, 0]));
+    assert!(done.tiles && !done.awaiting);
+    assert!(mesh.masses.len() > 50, "{}", mesh.masses.len());
+    assert!(mesh.vertices.is_empty());
+    let (none, _) = far_mesh(&context, None, key([1, 1]));
+    assert!(none.masses.is_empty());
+    // Past the window's maps: none, and made again later.
+    let (out, done) = far_mesh(&context, None, key([5, 0]));
+    assert!(out.masses.is_empty() && !done.tiles);
+    // In a past period with nothing known of its ground: none yet, and made again later.
+    let past = Context {
+        period: Period::Year(1942),
+        ..context
+    };
+    let (unknown, done) = far_mesh(&past, None, key([0, 0]));
+    assert!(unknown.masses.is_empty() && !done.tiles);
+}
+
+/// Maps over a 4 km window: built-up within 1.2 km of theatre (0, 0), grass elsewhere; the window's chart (0, 0) at
+/// theatre (-2000, -2000).
+fn tropical_town() -> Context {
+    let size = 256u32;
+    let extent = 4000.0;
+    let texel = extent / f64::from(size);
+    let mut cover = vec![30u8; (size * size) as usize];
+    for j in 0..size {
+        for i in 0..size {
+            let x = (f64::from(i) + 0.5) * texel - 2000.0;
+            let z = (f64::from(j) + 0.5) * texel - 2000.0;
+            if x.hypot(z) < 1200.0 {
+                cover[(j * size + i) as usize] = 50;
+            }
+        }
+    }
+    let maps = SurfaceMaps {
+        origin: [0.0, 0.0],
+        extent_m: extent,
+        size,
+        albedo: vec![0; (size * size * 4) as usize],
+        cover,
+    };
+    let field = Arc::new(naval_terrain::Heightfield {
+        columns: 101,
+        rows: 101,
+        cell: 40.0,
+        origin_x: 0.0,
+        origin_z: 0.0,
+        step: 0.1,
+        quanta: vec![80; 101 * 101],
+    });
+    Context {
+        geo: LatLon { lat: 0.0, lon: 0.0 },
+        ground: Ground::Battle {
+            field,
+            origin: [-2000.0, -2000.0],
+        },
+        cover: Some(Cover {
+            maps: Arc::new(maps),
+            origin: [-2000.0, -2000.0],
+        }),
+        region: Region::Tropical,
+        style: style(naval_conditions::LandStyle::Tropical),
+        period: Period::Today,
+        relief: None,
+    }
+}
+
+#[test]
+fn built_up_cover_with_no_footprints_is_filled_in() {
+    let context = tropical_town();
+    let key = ChunkKey {
+        index: [0, 0],
+        lod: Lod::Full,
+    };
+    let stores: Vec<Arc<QuadStore>> = Vec::new();
+    let a = chunk_mesh(&context, key, &stores, &[], None);
+    assert!(a.buildings > 100, "{} buildings", a.buildings);
+    let b = chunk_mesh(&context, key, &stores, &[], None);
+    assert_eq!(a.vertices, b.vertices);
+    // Without the cover: nothing (the source has no footprints here).
+    let bare = Context {
+        cover: None,
+        ..context.clone()
+    };
+    assert_eq!(chunk_mesh(&bare, key, &stores, &[], None).buildings, 0);
+    // Footprints of the source in every 100 m cell: the infill leaves the chunk to them.
+    let mut store = QuadStore::default();
+    let mut fps = Vec::new();
+    for j in 0..10 {
+        for i in 0..10 {
+            let (x, z) = (
+                f32::from(i as u8) * 100.0 + 40.0,
+                f32::from(j as u8) * 100.0 + 40.0,
+            );
+            fps.push(Footprint {
+                ring: vec![[x, z], [x + 10.0, z], [x + 10.0, z + 10.0], [x, z + 10.0]],
+                ..Footprint::default()
+            });
+        }
+    }
+    store.chunks.insert([0, 0], fps);
+    let stores = vec![Arc::new(QuadStore {
+        chunks: store.chunks.clone(),
+        footprints: 100,
+        covered: true,
+    })];
+    let held = chunk_mesh(&context, key, &stores, &[], None);
+    assert_eq!(held.buildings, 100);
+}
+
+#[test]
+fn chunks_without_microsofts_footprints_agree_along_their_edges() {
+    // The tropical town about theatre (0, 0), scored by the infill its cover raises: chunk (0, 0) meets (-1, 0) along
+    // x = 0 and (0, -1) along z = 0, all three in the town.
+    let context = Context {
+        period: Period::Year(1942),
+        ..tropical_town()
+    };
+    let here = period::by_cover(&context, [0, 0]);
+    let west = period::by_cover(&context, [-1, 0]);
+    let north = period::by_cover(&context, [0, -1]);
+    let mut built = 0;
+    for k in 0..=20 {
+        let t = k as f32 * 50.0;
+        let pairs = [
+            (west.score_at([1000.0, t]), here.score_at([0.0, t])),
+            (north.score_at([t, 1000.0]), here.score_at([t, 0.0])),
+        ];
+        for (a, b) in pairs {
+            assert!((a - b).abs() < 1e-4, "at {t} m: {a} and {b}");
+            built += usize::from(a > 0.05);
+        }
+    }
+    assert!(built > 20, "{built} of 42 points scored built over");
+    // Out of the town, nothing but the noise.
+    let far = period::by_cover(&context, [5, 5]).score_at([500.0, 500.0]);
+    assert!(far < 0.1, "{far}");
+}
+
+#[test]
+fn a_past_period_thins_a_chunk_by_its_prepared_thinning() {
+    use naval_terrain::buildings::thinning::{self, Thinning};
+    let today = tropical_town();
+    let past = Context {
+        period: Period::Year(1942),
+        ..today.clone()
+    };
+    let key = ChunkKey {
+        index: [0, 0],
+        lod: Lod::Full,
+    };
+    let stores: Vec<Arc<QuadStore>> = Vec::new();
+    // No footprints of Microsoft's about: the chunk's own (the infill's lots) score it.
+    let prepared = |bar: f32| period::Prepared {
+        thinning: Thinning::new(
+            &thinning::chunk_window(key.index, &[None; 9]),
+            vec![bar; 100],
+            12.0,
+        ),
+        own: true,
+        lacking: period::Lacking::default(),
+    };
+    let all = chunk_mesh(&today, key, &stores, &[], None);
+    // Today's ignores a thinning handed in.
+    let same = chunk_mesh(&today, key, &stores, &[], Some(&prepared(10.0)));
+    assert_eq!(same.vertices, all.vertices);
+    let kept = |bar: f32| chunk_mesh(&past, key, &stores, &[], Some(&prepared(bar))).buildings;
+    assert_eq!(kept(10.0), 0);
+    let loose = kept(-1.0);
+    assert!(
+        loose * 10 >= all.buildings * 9,
+        "{loose} of {}",
+        all.buildings
+    );
+    // Fewer as the bar rises; at a bar between, the town's middle by theatre (0, 0) kept and its edge gone.
+    let bars = [0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8];
+    let counts: Vec<u32> = bars.iter().map(|&b| kept(b)).collect();
+    assert!(
+        counts.windows(2).all(|w| w[1] <= w[0]) && counts[0] <= loose,
+        "{counts:?}"
+    );
+    let Some(k) = counts.iter().position(|&c| c > 0 && c * 10 < loose * 8) else {
+        panic!("no bar between: {counts:?} of {loose}");
+    };
+    let some = chunk_mesh(&past, key, &stores, &[], Some(&prepared(bars[k])));
+    let far = some
+        .vertices
+        .iter()
+        .filter(|v| v.position[0].hypot(v.position[2]) > 1100.0)
+        .count();
+    let near = some
+        .vertices
+        .iter()
+        .filter(|v| v.position[0].hypot(v.position[2]) < 600.0)
+        .count();
+    assert!(near > 0 && far == 0, "near {near}, far {far}");
+    // Made again: the same.
+    let again = chunk_mesh(&past, key, &stores, &[], Some(&prepared(bars[k])));
+    assert_eq!(again.vertices, some.vertices);
+    // Today's prepares nothing.
+    let (none, fetched) = period::prepare(&today, &[key], &[true]);
+    assert!(none[0].is_none() && fetched == 0);
+}
+
+/// A tile of OpenStreetMap's about Monterey (made here, not fetched): industrial land with a footprint on it, a church's
+/// point on another, a lighthouse known by its name where no footprint stands, an outline Microsoft's data misses
+/// (measured, coloured), a pier. The chunk's tags hold them in its own metres, held to the tile; the chunk's buildings
+/// are typed from them.
+#[test]
+fn the_maps_tags_type_the_chunks_buildings() {
+    use naval_osm::{Building, Features, Landuse, Poi, Polygon, Transportation};
+    let geo = LatLon {
+        lat: 36.6,
+        lon: -121.9,
+    };
+    let id = TileId::of(36.6, -121.9, 14);
+    let index = chunk_of(osm::project(geo, id, [0.5, 0.5]));
+    let corner = chunk_corner(index);
+    let middle = [corner[0] + 500.0, corner[1] + 500.0];
+    // Theatre metres about the chunk's middle to the tile's fractions.
+    let n = f64::from(TileId::side(14));
+    let frac = |dx: f64, dz: f64| {
+        let ll = to_lat_lon(geo, [middle[0] + dx, middle[1] + dz]);
+        let f = naval_osm::tiles::fraction(ll.lat, ll.lon);
+        [f[0] * n - f64::from(id.x), f[1] * n - f64::from(id.y)]
+    };
+    let square = |dx: f64, dz: f64, w: f64, d: f64| {
+        vec![
+            frac(dx, dz),
+            frac(dx + w, dz),
+            frac(dx + w, dz + d),
+            frac(dx, dz + d),
+        ]
+    };
+    let poi = |class: &str, subclass: &str, name: Option<&str>, dx: f64, dz: f64| Poi {
+        class: class.into(),
+        subclass: Some(subclass.into()),
+        name: name.map(str::to_owned),
+        rank: None,
+        layer: 0,
+        level: 0,
+        geometry: Geometry::Points(vec![frac(dx, dz)]),
+    };
+    let features = Features {
+        landuse: vec![Landuse {
+            class: "industrial".into(),
+            geometry: Geometry::Polygons(vec![Polygon {
+                exterior: square(-400.0, -400.0, 200.0, 200.0),
+                holes: vec![],
+            }]),
+        }],
+        poi: vec![
+            poi(
+                "place_of_worship",
+                "christian",
+                Some("St Test"),
+                115.0,
+                107.0,
+            ),
+            poi(
+                "attraction",
+                "attraction",
+                Some("Test Point Lighthouse"),
+                300.0,
+                -300.0,
+            ),
+            poi("bank", "bank", Some("Lighthouse Bank"), -200.0, 300.0),
+        ],
+        building: vec![Building {
+            id: Some(1),
+            render_height: Some(40.0),
+            render_min_height: Some(0.0),
+            colour: Some("red".into()),
+            hide_3d: false,
+            geometry: Geometry::Polygons(vec![Polygon {
+                exterior: square(-100.0, 200.0, 20.0, 20.0),
+                holes: vec![],
+            }]),
+        }],
+        transportation: vec![Transportation {
+            class: "pier".into(),
+            subclass: None,
+            brunnel: naval_osm::Brunnel::None,
+            surface: None,
+            layer: 0,
+            ramp: false,
+            oneway: 0,
+            expressway: false,
+            service: None,
+            network: None,
+            geometry: Geometry::Lines(vec![vec![frac(-450.0, 400.0), frac(-350.0, 400.0)]]),
+        }],
+        ..Features::default()
+    };
+    let tile = Arc::new(OsmTile::new(geo, id, &features));
+    let tags = tags_for(geo, index, &[tile]);
+    assert_eq!(tags.zones.len(), 1);
+    assert_eq!(tags.zones[0].usage, Usage::Industrial);
+    assert_eq!(tags.pois.len(), 2, "{:?}", tags.pois);
+    assert_eq!(tags.outlines.len(), 1);
+    assert_eq!(tags.outlines[0].height, Some(40.0));
+    assert_eq!(tags.outlines[0].colour, Some([255, 0, 0]));
+    assert_eq!(tags.piers.len(), 1);
+    // The zone in the chunk's metres: about its middle less 400 m.
+    let z = &tags.zones[0];
+    assert!(
+        (z.bounds[0] - 100.0).abs() < 1.0 && (z.bounds[2] - 300.0).abs() < 1.0,
+        "{:?}",
+        z.bounds
+    );
+
+    // Microsoft's footprints: a large one on the industrial land, the church's under its point.
+    let rect = |x: f32, z: f32, w: f32, d: f32| Footprint {
+        ring: vec![[x, z], [x + w, z], [x + w, z + d], [x, z + d]],
+        ..Footprint::default()
+    };
+    let mut footprints = vec![
+        rect(150.0, 150.0, 50.0, 30.0),
+        rect(600.0, 600.0, 30.0, 14.0),
+    ];
+    tags::merge_outlines(&mut footprints, &tags.outlines);
+    assert_eq!(footprints.len(), 3);
+    let mesh = build_chunk(&ChunkInput {
+        key: ChunkKey {
+            index,
+            lod: Lod::Full,
+        },
+        footprints: &footprints,
+        infill: &[],
+        tags: &tags,
+        ground: &|_| 5.0,
+        region: Region::Mediterranean,
+        period: naval_terrain::buildings::Period::Today,
+        thinning: None,
+    });
+    let kinds: HashSet<u8> = mesh.vertices.iter().map(|v| v.style[3] & 15).collect();
+    use naval_terrain::buildings::Kind;
+    assert!(
+        kinds.contains(&(Kind::Industrial as u8)) || kinds.contains(&(Kind::Warehouse as u8)),
+        "{kinds:?}"
+    );
+    assert!(kinds.contains(&(Kind::Church as u8)), "{kinds:?}");
+    assert!(kinds.contains(&(Kind::Lighthouse as u8)), "{kinds:?}");
+    assert!(kinds.contains(&(Kind::Deck as u8)), "{kinds:?}");
+    // OSM's 40 m outline stands at its height, in its colour (the cube's red), a parapet of at most 1.1 m over it.
+    let red = naval_terrain::buildings::cube_entry([255, 0, 0]);
+    let top = mesh
+        .vertices
+        .iter()
+        .filter(|v| v.style[0] == red)
+        .map(|v| v.position[1])
+        .fold(0.0, f32::max);
+    assert!((44.5..46.6).contains(&top), "{top}");
+    // The same chunk with no tiles: the landmarks alone (none here), the footprints typed by their shape.
+    assert!(tags_for(geo, index, &[]).is_empty());
+}
+
+/// The landmarks stand where they are: Point Pinos's lighthouse in its chunk about the California scenario's origin.
+#[test]
+fn landmarks_stand_in_their_chunks() {
+    let geo = LatLon {
+        lat: 36.936204,
+        lon: -122.418494,
+    };
+    let pinos = to_local(
+        geo,
+        LatLon {
+            lat: 36.633389,
+            lon: -121.933737,
+        },
+    );
+    let index = chunk_of(pinos);
+    let tags = tags_for(geo, index, &[]);
+    assert_eq!(tags.landmarks.len(), 1);
+    let at = tags.landmarks[0].at;
+    let corner = chunk_corner(index);
+    assert!((f64::from(at[0]) + corner[0] - pinos[0]).abs() < 0.01);
+    assert!(matches!(
+        tags.landmarks[0].kind,
+        LandmarkKind::Lighthouse { keeper: true, .. }
+    ));
+    // Moss Landing's six stacks share a chunk or two.
+    let moss = chunk_of(to_local(
+        geo,
+        LatLon {
+            lat: 36.8047,
+            lon: -121.7800,
+        },
+    ));
+    let stacks: usize = (-1..=1)
+        .flat_map(|dj| (-1..=1).map(move |di| [moss[0] + di, moss[1] + dj]))
+        .map(|i| tags_for(geo, i, &[]).landmarks.len())
+        .sum();
+    assert_eq!(stacks, 6);
+}

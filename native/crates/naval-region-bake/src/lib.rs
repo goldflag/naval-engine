@@ -4,8 +4,8 @@
 //! coast and GEBCO's grid for the sea floor.
 //!
 //! Pure: no network, no files, no threads. The caller hands it the sources (decoded Terrarium tiles, GLO-30 headers and
-//! blocks, the snapshot's polygons) and runs its squares on whatever threads it likes; the native client's
-//! `theatre::region_bake` fetches, keeps the store and the source cache on disk and runs them on a pool that leaves two
+//! blocks, the snapshot's polygons) and runs its squares on whatever threads it likes; its host, `naval-land-bake`
+//! (which the game runs), fetches, keeps the store and the source cache on disk and runs them on a pool that leaves two
 //! cores free. The theatres' legacy regions it baked before were retired on 2026-10-17 (D-6).
 
 pub mod despike;

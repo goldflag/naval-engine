@@ -4,6 +4,7 @@
 
 mod atmosphere;
 mod light_balance;
+mod place;
 /// With `autotests = false`, a file in tests/ that is neither declared above nor its own `[[test]]` in Cargo.toml would
 /// never be compiled or run.
 #[test]

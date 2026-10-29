@@ -2,10 +2,11 @@
 
 The sky, atmosphere, clouds, ocean, terrain and combat effects from the naval game Blue Water, as Rust crates on
 [wgpu](https://wgpu.rs): a physically based sky with the sun, moon and stars, volumetric clouds and weather, an FFT
-ocean with foam and wakes, real-elevation land with trees, and gun blasts, splashes, fire and smoke. None of it needs
-the game's simulation; `engine-example` is a window that draws them all.
+ocean with foam and wakes, real-elevation land with trees, and gun blasts, splashes, fire and smoke; the round Earth
+they stand on (latitude and longitude, the sun's and the moon's places) and the bake that turns the world's elevation
+and coastline data into land. None of it needs the game's simulation; `engine-example` is a window that draws them all.
 
-Exported from the game at <!-- exported-commit -->`df91bf68007bf35cd57e2a9ace6bd6fe7f02b3d8`.
+Exported from the game at <!-- exported-commit -->`eaf2835938c9824e862fe0d1cd51f83f5387aa0c`.
 
 ## Where changes go
 
@@ -29,12 +30,16 @@ This repository is an export. The crates live in the game's repository, and chan
 | `naval-region-bake` | The land release bake: the world's 1-degree squares from elevation tiles, finished into a release |
 | `naval-osm` | OpenStreetMap vector tiles: the MVT decoder, typed layers and web-mercator tile math |
 | `naval-overture` | Overture Maps' infrastructure (GeoParquet): power lines, towers and masts over a box |
+| `naval-land-bake` | The bake's host and the `naval-land-bake` command: makes a land release and bakes its squares into a store, fetching the elevation tiles over the network ([its README](native/crates/naval-land-bake/README.md)) |
+| `naval-landscape` | The real world's look on the land, fetched from open sources, cached on disk and made on worker threads: Sentinel-2 colour and land cover (NAIP in the United States), OpenStreetMap's roads, railways and waters, finer relief, tree canopy, the horizon's land, and the buildings, ports, bridges, airfields, bases and power lines on it |
+| `naval-globe` | The round Earth seen from space: an orthographic globe with the world chart's land, coasts, reefs, depth bands and graticule, drawn on the GPU |
 | `engine-example` | A window with a fly camera over the sky, clouds, sea, a coast and a few effects: the template a host copies |
 | `native-offscreen` | A headless device and PNG read-back, for stills and tests |
 | `native-unify` | No code: one feature set for the shared dependencies, so every build compiles them once |
 | `naval-sky-types` | The sky's plain types (cloud genera, the high sheet); no dependencies |
 | `naval-cloud-field` | The clouds' weather data: the cloud layers, weathers' profiles, the local weather texture, the anchors' blend |
 | `naval-land-format` | Land releases' formats (square keys, the lattice, the manifest, the release file) and a `synthetic` coastal world made in code |
+| `naval-earth` | The round Earth over plain values: latitude and longitude, the sphere's mathematics and chart, the 1° squares, the Earth's lattices, the sun, the moon and sidereal time |
 
 `native/crates/engine-example/README.md` says what each layer needs from its host, in the order the example feeds them.
 
@@ -50,6 +55,7 @@ The game's directory layout is kept, so the crates' relative paths work unchange
 | `native/docs/` | The crates' docs; their links into the game's other docs are broken here |
 | `assets/maps/`, `assets/bases/` | The maps, weather presets and naval bases, compiled into `naval-conditions` and `naval-terrain` |
 | `assets/land/` | The game's land releases' files, read by `naval-region-bake`'s tests |
+| `public/theatre/world/world-v1.bin` | The world chart (Natural Earth 10 m, public domain) a host hands `naval-globe`; `engine-example`'s globe reads it |
 | `public/terrain/` | Ground photographs and materials a host hands `naval-terrain` (the crate reads no file) |
 | `src/ui/tokens.css` | The game interface's colour tokens, read by `naval-render`'s palette test |
 | `tools/export-from-game.sh` | The export |
@@ -70,7 +76,26 @@ wheel for the speed. T and G move the clock an hour on and back, B steps the wea
 fog, storm), N and M make the sea calmer and rougher, and F spawns a gun's blast, a fall of splashes, an HE burst, a
 shell on the coast and a smoke screen. Escape quits; `--exit-after <seconds>` closes it by itself. `--still <out.png>`
 renders the window's first view (700 m up, 2.5 km off the coast) in fixed conditions, writes it and exits; `--size
-<w>x<h>` sets either's size. The coast is cut from the `synthetic` land release, so nothing is downloaded.
+<w>x<h>` sets either's size. The coast is cut from the `synthetic` land release, so nothing is downloaded. O switches
+the window to the globe and back (a drag turns it, the wheel zooms about the pointer); `--globe` starts there, and with
+`--still` renders the whole Earth over the North Atlantic.
+
+## Baking real land
+
+`naval-land-bake` turns the world's elevation (the public Terrarium and Copernicus GLO-30 buckets, read over HTTPS) and
+OpenStreetMap's coastline into a land release's squares, which `naval_terrain::release` cuts a coast from
+([its README](native/crates/naval-land-bake/README.md)). A bake reads the coast snapshot and the source manifest its
+release pins. The game's own are hosted on the game's private repository, so a clone of this one makes its own release
+first, from a fresh coastline (`water-polygons-split-4326.zip` from osmdata.openstreetmap.de, ODbL):
+
+```sh
+mkdir -p .build/land/land-sources/snapshot   # from the repository root
+mv <download>/water-polygons-split-4326.zip .build/land/land-sources/snapshot/
+cd native
+cargo run -p naval-land-bake --profile dev-client -- --data ../.build/land make   # the release, its table and manifest
+cargo run -p naval-land-bake --profile dev-client -- --data ../.build/land \
+  bake --release ../.build/land/land-sources/land-v2/land-v2.release.json N36W123
+```
 
 ## Using the crates in another project
 
@@ -87,6 +112,7 @@ naval-terrain = { git = "https://github.com/goldflag/naval-engine" }
 naval-effects = { git = "https://github.com/goldflag/naval-engine" }
 naval-water-effects = { git = "https://github.com/goldflag/naval-engine" }
 naval-land-format = { git = "https://github.com/goldflag/naval-engine", features = ["synthetic"] }
+naval-earth = { git = "https://github.com/goldflag/naval-engine" }
 # The same majors as the crates' (native/Cargo.toml, [workspace.dependencies]): their types cross the boundary.
 wgpu = "30"
 winit = "0.30.13"
@@ -110,9 +136,8 @@ Pin a `rev` for a reproducible build. For local work, path dependencies on a clo
 
 ## What the export leaves out
 
-Everything else in the game, and the few tests and examples that need its simulation: `naval-sky`'s star-place test
-(`tests/place.rs`, one unit test in `src/state.rs`) and its `stills` example, and `naval-water-effects`' recorded-battle
-playback test and its `record` and `battle_sequence` examples. `tools/export-from-game.sh` lists each removal.
+Everything else in the game, and the few tests and examples that need its simulation: `naval-water-effects`'
+recorded-battle playback test and its `record` and `battle_sequence` examples. `tools/export-from-game.sh` lists each removal.
 `naval-effects`' flipbook test skips without the game's flipbooks (Git LFS, not exported).
 
 ## Licences
@@ -128,3 +153,10 @@ keeps its own licence, with the notices beside it:
   (`naval-terrain/src/earth/koppen.nkg`, Köppen-Geiger, CC BY 4.0) and the rock map (`glim.ngl`, GLiM, CC BY 3.0).
 - `native/crates/naval-render/assets/smaa_*.zlib`: SMAA's area and search textures, as three.js embeds them (MIT).
 - `native/vendor/wgpu-hal`: wgpu-hal (MIT or Apache-2.0, its `LICENSE.*` files).
+- `public/theatre/world/world-v1.bin`: the world chart, from Natural Earth (public domain).
+
+`naval-landscape` and `naval-land-bake` bundle no map data: they fetch it at run time from the services' own hosts
+(EOX's Sentinel-2 cloudless, ESA WorldCover, the USGS NAIP, OpenFreeMap's OpenStreetMap tiles, Microsoft's and
+OpenStreetMap's building footprints, Meta and WRI's canopy heights, Overture's power lines, the AWS Terrain Tiles and
+Copernicus GLO-30). Each module's `ATTRIBUTION` constant is the credit its source asks for, and its doc comment links
+the source's terms; a project that shows the land shows those credits.

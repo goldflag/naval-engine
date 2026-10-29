@@ -9,7 +9,7 @@ hands to the GPU layers. None of that reaches the simulation.
 | --- | --- | --- | --- |
 | Sources | `naval-region-bake/src/release/` (`snapshot`, `pieces`, `sources`, `gebco`, `surveyed`) | Pins a release's inputs: OpenStreetMap's water polygons (the coast), Terrarium or Copernicus GLO-30 heights, GEBCO 2026 for the sea floor from `land-v2` on | [land.md](../../../docs/theatre/land.md), "Land releases" |
 | Bake | `native/crates/naval-region-bake` (`square`, `glo30`, `terrarium`, `despike`, `finish/`) | Pure: no network, files or threads. Bakes one final square from its sources; `finish` reconciles the coast with the heights on the lattice, so a point's value depends on its place alone | `docs/earth.md` |
-| Bake's host | `naval-client` `theatre::land::region_bake` (`release`, `dem`, `hosted`, `cli`) | The network, the disk and the threads around the bake; `naval-client land-release` makes a release and bakes missing squares | [land.md](../../../docs/theatre/land.md), "Where the sources are hosted" |
+| Bake's host | `naval-land-bake` (`release`, `dem`, `hosted`, `cli`); the client's `theatre::land::region_bake` runs it on the user data directory | The network, the disk and the threads around the bake, with nothing of the client or the simulation; `naval-land-bake --data <folder>` and `naval-client land-release` make a release and bake missing squares ([README](../../crates/naval-land-bake/README.md)) | [land.md](../../../docs/theatre/land.md), "Where the sources are hosted" |
 | Format | `crates/naval-land-format` | The square key (`N36W123`), the lattice (1/1,600°), NSQ1 blocks of 0.25°, the release file, the square table, the manifest, the synthetic release | [crates/README.md](../../../crates/README.md) |
 | Store | `native/crates/naval-land` | Squares on disk by content, pins and leases, the size bound, export and import; `naval-land synthetic <data>/land` installs the synthetic release | |
 | Simulation | `crates/naval-sim/src/land/` (`ReleaseLand`, `Land`) | Grounding, collisions, sight lines and route planning, by place | [land.md](../../../docs/theatre/land.md), "Reading a release" |
@@ -19,36 +19,44 @@ hands to the GPU layers. None of that reaches the simulation.
 | The window's data | `theatre::land`'s other modules (table below) | Fetch, cache and resample the open sources into maps and pages for the layers, off the frame loop's thread | each page |
 | Drawing | `native/crates/naval-terrain`: `TerrainLayer`, `BuildingsLayer`, `InfraLayer` | Draw the land, its trees, buildings, infrastructure and lights; `theatre::land_layer` (`theatre/mod.rs`) builds the land layer for a scene | [layer.md](layer.md) |
 
-## The client's land modules
+## The land's modules
 
-Every module in `native/crates/naval-client/src/theatre/land/` is presentation only.
+Every land module is presentation only. The land's look, its ground and what stands on it, is
+`native/crates/naval-landscape`, which needs nothing of the client or the simulation: its host names the folder its
+caches live under and the threads its workers run on (`naval_landscape::host`; the client's
+`theatre::land::install_host` gives the user data folder and its utility class, `qos`), and hands it a window's heights
+in its own type (`near::WindowHeights`: the client's `land::NearHeights` over the simulation's field). The client
+re-exports its modules at their old paths (`theatre::surface`, `theatre::buildings`, and the rest) and keeps the window,
+the release, the shore and the game's glue in `native/crates/naval-client/src/theatre/land/`: `structures.rs` makes the
+buildings' and infrastructure's layers with a cruise scene (`buildings::SceneLook`: its sky, clouds' shadow and fog)
+and feeds them each frame, and hands the bases' parked aircraft (`bases::ParkedPlane`) to the scene's.
 
-| Module | Source | Hands the layer | Page |
-| --- | --- | --- | --- |
-| `surface`, `near`, `naip` | EOX Sentinel-2 cloudless 2016, ESA WorldCover 2021; USDA NAIP in the United States | `SurfaceMaps`, near tiles | [surface.md](surface.md) |
-| `osm`, `features`, `features_period` | OpenStreetMap vector tiles from OpenFreeMap, read by `naval-osm` | road, rail and water distance-field pages | [surface.md](surface.md), "Map features on the ground" |
-| `relief` | AWS Terrain Tiles, GSI elevation tiles (Japan) | relief pages | [ground.md](ground.md), "Fine relief near the camera" |
-| `horizon` | AWS Terrain Tiles, EOX imagery | `HorizonMaps` | [layer.md](layer.md), "The horizon ring" |
-| `canopy` | Meta and WRI's 1 m canopy height map | canopy pages | [trees.md](trees.md), "Trees where real trees stand" |
-| `buildings`, `buildings_split`, `buildings_period` | Microsoft Global ML Building Footprints, OpenStreetMap's tags | building chunks | [buildings.md](buildings.md), [period.md](period.md) |
-| `period_land` | HYDE 3.3 (`naval_terrain::buildings::history`) | the period's country marks | [period.md](period.md), "The period's ground" |
-| `infra`, `bases` | OpenStreetMap; `assets/bases/bases.v1.json` | infrastructure chunks, bases | [infra.md](infra.md) |
-| `power` | Overture Maps, read by `naval-overture` | power lines and masts | [infra.md](infra.md), "Power lines" |
-| `lamps` | the features' pages | lamps | [night.md](night.md) |
-| `shore` | the window's heights and the wind | the shore map for the waves (`naval_ocean::shore`) | [ocean/coasts.md](../ocean/coasts.md), "Coasts" |
-| `water` | an authored atlas of coastal waters | the sea's colour | |
+| Module | Crate | Source | Hands the layer | Page |
+| --- | --- | --- | --- | --- |
+| `surface`, `near`, `naip` | naval-landscape | EOX Sentinel-2 cloudless 2016, ESA WorldCover 2021; USDA NAIP in the United States | `SurfaceMaps`, near tiles | [surface.md](surface.md) |
+| `osm`, `features`, `features_period` | naval-landscape | OpenStreetMap vector tiles from OpenFreeMap, read by `naval-osm` | road, rail and water distance-field pages | [surface.md](surface.md), "Map features on the ground" |
+| `relief` | naval-landscape | AWS Terrain Tiles, GSI elevation tiles (Japan) | relief pages | [ground.md](ground.md), "Fine relief near the camera" |
+| `horizon` | naval-landscape | AWS Terrain Tiles, EOX imagery | `HorizonMaps` | [layer.md](layer.md), "The horizon ring" |
+| `canopy` | naval-landscape | Meta and WRI's 1 m canopy height map | canopy pages | [trees.md](trees.md), "Trees where real trees stand" |
+| `period_land` | naval-landscape | HYDE 3.3 (`naval_terrain::buildings::history`) | the period's country marks | [period.md](period.md), "The period's ground" |
+| `lamps` | naval-landscape; the scenario's rule and the scene on screen the client's | the features' pages | lamps | [night.md](night.md) |
+| `water` | naval-landscape | an authored atlas of coastal waters | the sea's colour | |
+| `buildings`, `buildings_split`, `buildings_period` | naval-landscape; the cruise scene's layer and feed the client's (`land::structures`) | Microsoft Global ML Building Footprints, OpenStreetMap's tags | building chunks | [buildings.md](buildings.md), [period.md](period.md) |
+| `infra`, `bases` | naval-landscape; the scene's layer, feed and parked aircraft the client's (`land::structures`) | OpenStreetMap; `assets/bases/bases.v1.json` | infrastructure chunks, bases, their clearings and parked aircraft | [infra.md](infra.md) |
+| `power` | naval-landscape | Overture Maps, read by `naval-overture` | power lines and masts | [infra.md](infra.md), "Power lines" |
+| `shore` | naval-client | the window's heights and the wind | the shore map for the waves (`naval_ocean::shore`) | [ocean/coasts.md](../ocean/coasts.md), "Coasts" |
 
 ## The imports
 
 - **OpenStreetMap** (`native/crates/naval-osm`). Portable: the Mapbox Vector Tile decoder (`mvt`), the OpenMapTiles
   layers the game reads, typed (`omt`: roads and railways, waterways, water areas, land use and cover, buildings,
-  points of interest, aerodromes), and the web-mercator tile math (`tiles`). The client's `theatre::land::osm` fetches
+  points of interest, aerodromes), and the web-mercator tile math (`tiles`). naval-landscape's `osm` fetches
   the tiles from OpenFreeMap, caches them and projects them into a scenario's frame for the features, the buildings'
   tags, the bridges, the airfields and the lamps.
 - **Overture Maps** (`native/crates/naval-overture`). Its base theme's `infrastructure` type, GeoParquet on the public
   bucket, read over a box without downloading the files: overhead lines, power towers and poles, communication masts
-  (`PowerCell`). The client's `theatre::land::power` makes the requests and keeps the cells under `overture-cache`.
-- **The rest** are read by the client's modules themselves (table above). Their credits are each module's
+  (`PowerCell`). naval-landscape's `power` makes the requests and keeps the cells under `overture-cache`.
+- **The rest** are read by the land's modules themselves (table above). Their credits are each module's
   `ATTRIBUTION`.
 
 ## Where a coastline is drawn

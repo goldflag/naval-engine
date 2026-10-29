@@ -7,7 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 # A portable crate: no network, no files, no threads (`bun run check` checks it for wasm32-unknown-unknown,
-# native/AGENTS.md). The client's `theatre::region_bake` fetches, caches and runs it on its threads.
+# native/AGENTS.md). Its host, `naval-land-bake`, fetches, caches and runs it on its threads.
 # One test program for every file in tests/ (tests/all.rs).
 autotests = false
 [package.metadata.native]

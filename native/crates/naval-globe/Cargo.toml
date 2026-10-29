@@ -1,0 +1,28 @@
+[package]
+name = "naval-globe"
+description = "The round Earth seen from space on wgpu: the theatre chart's globe (an orthographic, north-up view, its picking and its grab) and the world chart on it (Natural Earth's land, coasts, reefs and depth bands as meshes on the sphere, projected per vertex), with no simulation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+native-unify.workspace = true
+# The Earth's radius (the round Earth's, which the simulation re-exports).
+naval-earth.workspace = true
+# The globe's pipelines on the renderer's registry, its shader file, its uploads and the chart's palette.
+naval-render.workspace = true
+wgpu.workspace = true
+anyhow.workspace = true
+# The world chart: its JSON header, the gzip it may arrive in, its fills tessellated cell by cell.
+serde.workspace = true
+serde_json.workspace = true
+flate2.workspace = true
+lyon_path.workspace = true
+lyon_tessellation.workspace = true
+
+[dev-dependencies]
+# The land bake's frame the region frame is checked against, and base64 as the page sends the world chart.
+naval-region-bake.workspace = true
+# The drawing's tests: a headless device and its read-back.
+native-offscreen.workspace = true

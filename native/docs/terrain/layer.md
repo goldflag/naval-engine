@@ -99,7 +99,7 @@ ring.counts();                     // drawn, uploading, patches, GPU bytes
 **The maps** (`HorizonMaps`). Two nested squares about one centre: a near level of 2048² heights at 120 m (246 km a
 side) and a far one four times coarser (480 m, 983 km a side), each with 1024² of colour; `R16Float` heights and
 `Rgba8UnormSrgb` colour with their mips, 33.5 MB on the GPU. The far level takes over over the near level's last 32
-texels. The host (`naval-client` `theatre::horizon`) makes them on one utility-priority thread from the AWS Terrain
+texels. The host (`naval-landscape` `horizon`) makes them on one utility-priority thread from the AWS Terrain
 Tiles (Terrarium; zoom 10 for the near level at 35°, 8 for the far: SRTM, GMTED2010, ETOPO1 and ArcticDEM, and at zoom
 10 the national models the tiles hold, credited in `ATTRIBUTION` and public/terrain/ASSETS.md) and EOX's Sentinel-2
 cloudless 2016 (zooms 9 and 7), through the theatre's projection about the scenario's origin (every 16th texel exactly,

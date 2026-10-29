@@ -387,7 +387,7 @@ land.canopy_page_counts();                                                      
     already looked real, became scattered lower crowns over dark ground (Mount Austen's regrowth reads 5-12 m with 30%
     bare ground). The lower canopy drew dearer: +4.3 ms in the scene's opaque pass at 120 m over it, +1.3 ms from 300 m,
     +0.9 ms over Palos Verdes and Miura.
-- **The source** (`naval-client` `theatre::canopy`). Each zoom-9 web-mercator tile is one BigTIFF named by its quadkey:
+- **The source** (`naval-landscape` `canopy`). Each zoom-9 web-mercator tile is one BigTIFF named by its quadkey:
   65,536² pixels of the zoom-17 pixel (1.19 m at the equator), a byte a pixel, a strip a row, deflated with the
   horizontal predictor. A tile with no land is missing (a 404, cached as absent). A tile's strip tables (1 MB) are read
   once and kept on disk. The disk cache's unit is a 2,048² pixel chunk, the tallest of each 2 × 2 pixels kept (1,024²

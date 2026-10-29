@@ -21,6 +21,7 @@ ROOT_CRATES=(
   crates/naval-sky-types
   crates/naval-cloud-field
   crates/naval-land-format
+  crates/naval-earth
 )
 
 # The native workspace (native/crates/, members by its `crates/*` glob).
@@ -37,6 +38,9 @@ NATIVE_CRATES=(
   native/crates/naval-region-bake
   native/crates/naval-osm
   native/crates/naval-overture
+  native/crates/naval-land-bake
+  native/crates/naval-globe
+  native/crates/naval-landscape
   native/crates/engine-example
   native/crates/native-unify
   native/crates/native-offscreen
@@ -50,6 +54,7 @@ OTHER_PATHS=(
   assets/bases/bases.v1.json             # naval-terrain: the naval bases' places (compiled in)
   assets/land                            # naval-region-bake's tests: the committed land releases' files and tables
   public/terrain                         # naval-terrain's ground photographs (Poly Haven CC0, public/terrain/ASSETS.md)
+  public/theatre/world/world-v1.bin      # naval-globe's world chart, read by engine-example (Natural Earth, public domain)
   src/ui/tokens.css                      # naval-render: the palette test reads the interface's colour tokens
   rust-toolchain.toml
 )
@@ -111,18 +116,11 @@ git -C "$GAME" archive "$SHA" -- "${PATHS[@]}" | tar -x -C "$DEST"
 
 # ---- Trims: dev-dependencies on game crates that are not exported, and the targets that need them --------------------
 #
-# naval-sky: naval-sim (the theatre's sun and sidereal time, which the stars' place is checked against)
-#   - dev-dependency naval-sim
-#   - tests/place.rs (and `mod place;` in tests/all.rs)
-#   - examples/stills.rs
-#   - src/state.rs: the unit test the_southern_cross_stands_over_savo_and_orion_over_a_winter_atlantic and its helper
-#     `sidereal` (the only uses of naval_sim in the crate's tests)
 # naval-water-effects: naval-protocol, naval-sim, naval-sim-host (a recorded battle drives the effects)
 #   - dev-dependencies naval-sim-host, naval-sim, naval-protocol
 #   - examples/recorder/ (records a battle with the simulation), examples/record.rs, examples/battle_sequence.rs
 #   - tests/fixture_playback.rs (and `#[path] mod recorder;`, `mod fixture_playback;` in tests/all.rs)
 N=$DEST/native/crates
-rm -f "$N/naval-sky/tests/place.rs" "$N/naval-sky/examples/stills.rs"
 rm -rf "$N/naval-water-effects/examples/recorder"
 rm -f "$N/naval-water-effects/examples/record.rs" "$N/naval-water-effects/examples/battle_sequence.rs" \
   "$N/naval-water-effects/tests/fixture_playback.rs"
@@ -176,29 +174,6 @@ def remove_lines(path, exact):
             continue
         out.append(l)
     write(path, out)
-
-def remove_fn(path, name):
-    """Remove one Rust fn (with its attributes, doc comment and the blank line before it)."""
-    lines = read(path)
-    hits = [i for i, l in enumerate(lines) if re.match(rf"^\s*(pub(\([a-z]+\))?\s+)?fn {re.escape(name)}\b", l)]
-    if len(hits) != 1:
-        sys.exit(f"export: {path}: fn {name} found {len(hits)} times")
-    i = hits[0]
-    indent = re.match(r"^\s*", lines[i]).group(0)
-    start = i
-    while start > 0 and re.match(r"^\s*(#\[|///)", lines[start - 1]):
-        start -= 1
-    end = next(j for j in range(i, len(lines)) if lines[j].rstrip() == indent + "}")
-    if start > 0 and lines[start - 1].strip() == "":
-        start -= 1
-    del lines[start:end + 1]
-    write(path, lines)
-
-sky = native / "naval-sky"
-remove_dep(sky / "Cargo.toml", "dev-dependencies", "naval-sim")
-remove_lines(sky / "tests" / "all.rs", ["mod place;"])
-remove_fn(sky / "src" / "state.rs", "the_southern_cross_stands_over_savo_and_orion_over_a_winter_atlantic")
-remove_fn(sky / "src" / "state.rs", "sidereal")
 
 wfx = native / "naval-water-effects"
 for dep in ("naval-sim-host", "naval-sim", "naval-protocol"):

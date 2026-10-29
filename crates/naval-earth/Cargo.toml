@@ -1,0 +1,23 @@
+[package]
+name = "naval-earth"
+description = "The round Earth over plain values: latitude and longitude and the theatre's local frame, the sphere's mathematics and its chart, the 1° squares and the Earth's lattices, the sun, the moon and sidereal time"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Portable: the simulation builds it on every target, wasm32 included, and the native renderer can place things on the
+# round Earth from here rather than from the simulation, so it builds without it.
+[package.metadata.native]
+portable = true
+
+[features]
+# Counts what the sphere is asked for (`census`), for naval-sim's `earth-census` (docs/earth.md#testing). Off in play
+# and in every gate: without it no expression differs.
+earth-census = ["dep:serde_json"]
+
+[dependencies]
+# `LatLon` is stored in scenarios and saves, and exports to TypeScript as `TheatreLatLon`.
+serde.workspace = true
+ts-rs = { version = "12.0.1", features = ["no-serde-warnings"] }
+# The census's report (`census::take`), under `earth-census` only.
+serde_json = { workspace = true, optional = true }

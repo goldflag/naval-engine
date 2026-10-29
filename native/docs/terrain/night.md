@@ -5,7 +5,8 @@ industrial and railway land and its piers, red obstruction lights on what stands
 ground lit under them, and beyond the map's pages the towns' glow to the horizon. Night only (the sun 6° up to 2° down,
 as the windows, or the moon the light), the High and Ultra settings' (the features' pages carry the lamps; Medium draws
 as before), presentation only. `naval_terrain::night` (`src/night.rs`), `shaders/night.wgsl` (the land's own light),
-`shaders/lamps.wgsl` (the lamps); the host's side is `naval-client`'s `theatre::lamps`.
+`shaders/lamps.wgsl` (the lamps); the host's side is `naval-landscape`'s `lamps`, and the scenario's rule
+`naval-client`'s `theatre::lamps`.
 
 ```rust
 land.set_night_lights(NightLights { rule: LightsRule::Dimout, palette: LampPalette::Sodium });

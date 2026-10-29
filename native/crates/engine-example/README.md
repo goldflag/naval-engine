@@ -2,23 +2,28 @@
 
 The game's engine crates on their own, with no simulation: a window with a fly camera over the sky (its atmosphere,
 clouds and weather), the sea, a coast cut from a land release, and a few combat effects, each a
-`naval_render::SceneLayer` on one renderer. It is the template another project copies: `src/world.rs` builds and feeds
-every layer, `src/coast.rs` cuts the coast, `src/main.rs` is the window, the still and the frame loop.
+`naval_render::SceneLayer` on one renderer; and the round Earth from space, the theatre chart's globe. It is the
+template another project copies: `src/world.rs` builds and feeds every layer, `src/coast.rs` cuts the coast,
+`src/globe.rs` draws the globe, `src/main.rs` is the window, the still and the frame loop.
 
 ```sh
 # From the repository root (the native workspace's Cargo with packaging's environment).
 bun run cargo -- run -p engine-example --profile dev-client
 bun run cargo -- run -p engine-example --profile dev-client -- --still "$PWD/.build/engine-example/still.png"
+# The globe: the window starting on it, or its still (the whole Earth over the North Atlantic).
+bun run cargo -- run -p engine-example --profile dev-client -- --globe
+bun run cargo -- run -p engine-example --profile dev-client -- --still "$PWD/.build/engine-example/globe.png" --globe
 ```
 
 (`bun run cargo` runs Cargo in `native/`, so a relative path lands under it.)
 
 In the window: WASD to fly, Q and E down and up, a mouse button held to look, Shift eight times as fast, the wheel for
-the speed. T and G move the clock an hour on and back, B steps the weather (clear, partly cloudy, overcast, fog,
-storm), N and M make the sea calmer and rougher (the wind 3 m/s down and up), and F spawns a gun's blast, a fall of
-splashes, an HE burst, a shell on the coast and a smoke screen ahead. Escape quits; `--exit-after <seconds>` closes it
-by itself. `--still <out.png>` renders one frame offscreen from the window's first view (700 m up, 2.5 km off the
-coast) in fixed conditions (15:00, partly cloudy, the effects 1.2 s old), writes it and exits; `--size <w>x<h>` sets
+the speed. T and G move the clock an hour on and back, B steps the weather (clear, partly cloudy, overcast, fog, storm),
+N and M make the sea calmer and rougher (the wind 3 m/s down and up), and F spawns a gun's blast, a fall of splashes, an
+HE burst, a shell on the coast and a smoke screen ahead. O shows the round Earth from space and goes back (a drag turns
+the globe under the pointer, the wheel zooms about it; `--globe` starts there). Escape quits; `--exit-after <seconds>`
+closes it by itself. `--still <out.png>` renders one frame offscreen from the window's first view (700 m up, 2.5 km off
+the coast) in fixed conditions (15:00, partly cloudy, the effects 1.2 s old), writes it and exits; `--size <w>x<h>` sets
 either's size. The coast is the theatre's 96 km window of the synthetic release on its peninsula's south shore.
 
 ## The crates
@@ -33,12 +38,13 @@ either's size. The coast is the theatre's 96 km window of the synthetic release 
 | `naval-terrain` | The land and its trees from a heightfield; `naval_terrain::release` cuts one from a land release | `native/crates/naval-terrain` |
 | `naval-effects` | Gas, fire and smoke (blasts, bursts, strikes, smoke screens), shells, blast waves | `native/crates/naval-effects` |
 | `naval-water-effects` | Splashes, the spray of gun blasts and bows | `native/crates/naval-water-effects` |
+| `naval-globe` | The round Earth seen from space: an orthographic, north-up globe, its picking and its grab, and the world chart on it (Natural Earth's land, coasts, reefs and depth bands) | `native/crates/naval-globe` |
 | `naval-land-format` | Land releases' formats, and the `synthetic` release (a coastal world made in code) | `crates/naval-land-format` |
 | `native-offscreen` | A headless device and PNG read-back, for stills (optional) | `native/crates/native-offscreen` |
 
-They pull in `naval-sky-types` and `naval-cloud-field` (root `crates/`) and `native-unify` by themselves, and none of
-them reaches `naval-sim`, `naval-protocol` or the game's adapters (`naval-clouds-sim`, `naval-effects-sim`, which turn
-the simulation's packets into these crates' inputs). Check with
+They pull in `naval-sky-types`, `naval-cloud-field` and `naval-earth` (root `crates/`) and `native-unify` by themselves,
+and none of them reaches `naval-sim`, `naval-protocol` or the game's adapters (`naval-clouds-sim`, `naval-effects-sim`,
+which turn the simulation's packets into these crates' inputs). Check with
 `bun run cargo -- tree -e normal -p engine-example | grep -E "naval-(sim|protocol|clouds-sim|effects-sim) "` (none).
 
 ### In another project
@@ -56,6 +62,7 @@ naval-ocean = { path = "<checkout>/native/crates/naval-ocean" }
 naval-terrain = { path = "<checkout>/native/crates/naval-terrain" }
 naval-effects = { path = "<checkout>/native/crates/naval-effects" }
 naval-water-effects = { path = "<checkout>/native/crates/naval-water-effects" }
+naval-globe = { path = "<checkout>/native/crates/naval-globe" }
 naval-land-format = { path = "<checkout>/crates/naval-land-format", features = ["synthetic"] }
 native-offscreen = { path = "<checkout>/native/crates/native-offscreen" }
 # The same majors as the crates' (`<checkout>/native/Cargo.toml`, [workspace.dependencies]): their types cross.
@@ -83,7 +90,8 @@ wgpu-hal = { path = "<checkout>/native/vendor/wgpu-hal" }
   more features than a project would ask for on its own.
 - The toolchain is the checkout's (`rust-toolchain.toml`, Rust 1.98.1, edition 2024).
 - Every crate is portable (no file reads); the host hands it bytes. Their shaders are compiled in and need no files at
-  run time.
+  run time. `naval-globe` reads no file either, but is native only: its `WorldStore` makes the world chart's meshes on
+  a thread of its own (a wasm32 host would call `world::meshes` itself).
 
 ## What each layer needs from its host
 
@@ -126,7 +134,9 @@ wgpu-hal = { path = "<checkout>/native/vendor/wgpu-hal" }
   that settles under the sea; `ReleaseWindow::sea` is the theatre's 96 km window) names the squares it meets
   (`squares()`); the host reads those squares' final files (from a store such as `naval-land`'s, a download, or
   `naval_land_format::synthetic::square`, which makes the synthetic world's in code) into a `ReleaseLand`, and
-  `heightfield(&land)` cuts the window as the theatre does, on the theatre's chart about the place.
+  `heightfield(&land)` cuts the window as the theatre does, on the theatre's chart about the place. A real place's
+  squares are baked into a store by `naval-land-bake`, without the game ([its README](../naval-land-bake/README.md):
+  the command, and reading the store's squares into a `ReleaseLand`).
 - **The combat effects** (`naval-effects`): `EffectsLayer::new`, its depth from the backdrop
   (`DepthSource::Backdrop`), the sky's environment, the clouds' cover and shadow, the water effects' cover. Each frame
   its light from the sky (`effects.lighting`: sun, illumination, daylight, flash, wind) and
@@ -140,6 +150,15 @@ wgpu-hal = { path = "<checkout>/native/vendor/wgpu-hal" }
   the turrets that fired (`gun_blasts`, from `CombatEffects::turret_blasts`) and `update(&EffectsFrame { camera,
   events: &[WaterEvent], ships, sea, waves, crest, lighting })`; a `WaterEvent` of kind `Splash` throws a shell's
   column (`position` on the sea, the shell's `velocity` and `caliber_m`).
+- **The globe** (`naval-globe`, `src/globe.rs`; drawn instead of the scene, not as a layer): the world chart's bytes
+  (`public/theatre/world/world-v1.bin` in the checkout, about 3.7 MB; or a host's own, `world::encode`) to
+  `WorldStore::from_bytes`, which makes its meshes on a thread (under two seconds; the globe is a disc of sea until they
+  are in); `pass::layout` and `pass::register_pipelines` on `renderer.context()` for the output's format; a `GlobePass`;
+  a `Globe` (its centre `[lat, lon]`, pixels per metre, the output's size) and a `GlobeStyle` (`GlobeStyle::chart()`,
+  the chart's own colours from the palette, or `GlobeStyle::parse` of a page's CSS); each frame `pass.draw_under(device,
+  queue, &pipes, output, &GlobeDraw { globe, rect, clips, style }, meshes, device_scale)`. Its space is opaque, so it
+  covers the output. `Globe::inverse` picks the point under a pixel and `Globe::grab` turns the globe so a point stays
+  under the pointer. It draws no sun: no terminator, the day side and the night side alike.
 
 Left out here, though the crates have them: ships, aircraft and wildlife (other crates), the land beyond the window
 (`HorizonLayer`), buildings, roads and night lights, ground materials, shells in flight (`ShellLayer`), blast waves

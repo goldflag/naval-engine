@@ -329,7 +329,7 @@ photograph's roofs and pools, its freeways and the map's every residential stree
 Buildings, Period) that ground is drawn as the period's country, and the map's roads are the period's. `Period::Today`
 draws exactly as before.
 
-- **Which ground** (`naval-client` `theatre::period_land`): `stood(geo, period, p)` is false where today's built-up
+- **Which ground** (`naval-landscape` `period_land`): `stood(geo, period, p)` is false where today's built-up
   land was country in the period. `version()` rises whenever an answer changes. Answers are held for the scenario on
   screen and the one before it, each with its own year. A late batch from a scenario left behind therefore changes only
   that scenario's answers, and a scenario returned to finds its answers still there. `Period::Today` holds no answers,
@@ -510,7 +510,7 @@ railways stand on it as they were laid.
 In `Period::Year` the features' pages, the
 street lights, the airfields and the bridges draw the period's roads. `Period::Today` draws exactly as before:
 `todays_pages_are_as_they_were` pins a fixture page's bytes and lamps at both levels, with a ground that answers false
-too. The road rules are in `naval-client` `theatre::features::period`; the lists of aerodromes and bridges are in
+too. The road rules are in `naval-landscape` `features::period`; the lists of aerodromes and bridges are in
 `naval_terrain::infra::period`, which the host's `theatre::infra` applies to each chunk's airfield and bridges.
 
 - **Motorways** stand only along a listed section (`MOTORWAYS`, by place and the year each section opened; a section

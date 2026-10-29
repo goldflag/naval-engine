@@ -484,7 +484,7 @@ land.show_relief(false);                                 // hidden, for comparis
 land.clear_relief(&mut ctx);
 ```
 
-**The sources** (naval-client `theatre::relief`, `REGIONS` and `ATTRIBUTION`; their licences in
+**The sources** (naval-landscape `relief`, `REGIONS` and `ATTRIBUTION`; their licences in
 `public/terrain/ASSETS.md`, "Fine relief"), each only where it is finer than the window:
 
 | Where | Source | Spacing |
@@ -543,7 +543,7 @@ its neighbours' feather about it (their share of the relief changes too).
   (`TerrainLayer::relief_heights`, a snapshot of the pages drawn each frame, `ReliefHeights` reading level 0 on the
   CPU as `relief_height` does), never lowered below the window's.
 
-**Streaming** (naval-client `theatre::relief`, native/docs/theatre.md's pattern for near tiles): a worker below the frame
+**Streaming** (naval-landscape `relief`, native/docs/theatre.md's pattern for near tiles): a worker below the frame
 loop makes the pages asked for, nearest first, four of a row together (they share their tiles), reading each source's
 PNGs through the surface's fetchers. Tiles are kept on disk as fetched, a marker where the source has none, under the
 surface cache's `relief-dem-v1` (`NAVAL_SURFACE_DIR` moves it), held under 512 MB (`CACHE_BYTES`: past it the least

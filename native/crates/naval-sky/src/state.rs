@@ -242,7 +242,7 @@ pub struct Place {
     /// Degrees north.
     pub latitude: f64,
     /// Local sidereal time, degrees: the right ascension on the meridian
-    /// (`naval_sim::theatre::sun::sidereal_deg`).
+    /// (`naval_earth::sun::sidereal_deg`, the theatre's).
     pub sidereal: f64,
     /// Where true north lies on the scene's grid there, degrees clockwise from −Z: 0 where the scene's grid is true, as
     /// it is not far from the place a theatre scene's chart is laid about (the meridians converge).
@@ -611,6 +611,10 @@ mod tests {
         (world.y.asin().to_degrees(), world)
     }
 
+    fn sidereal(start: &str, utc_offset_hours: f64, lon: f64) -> f64 {
+        naval_earth::sun::sidereal_deg(start, utc_offset_hours, 0.0, lon).unwrap()
+    }
+
     /// A scene whose grid is turned off true north at the place (a theatre scene away from the place its chart is laid
     /// about, where the meridians converge): every star turns with true north about the vertical, its elevation held,
     /// and the pole stands over true north.
@@ -649,6 +653,32 @@ mod tests {
             assert!((elevation - 60.0).abs() < 0.8, "{elevation}");
             assert!(world.z < 0.0 && world.x.abs() < 0.02, "{world:?}");
         }
+    }
+
+    #[test]
+    fn the_southern_cross_stands_over_savo_and_orion_over_a_winter_atlantic() {
+        // Savo Island, the evening of 8 August 1942: Acrux is 20° up in the south-west, and the pole star is under
+        // the northern horizon.
+        let savo = Place {
+            latitude: -9.1,
+            sidereal: sidereal("1942-08-08T20:00", 11.0, 159.8),
+            north_deg: 0.0,
+        };
+        let (elevation, world) = star_over(savo, 186.65, -63.10);
+        assert!((elevation - 19.7).abs() < 1.5, "{elevation}");
+        assert!(world.z > 0.0 && world.x < 0.0, "{world:?}");
+        assert!(star_over(savo, 37.95, 89.264).0 < 0.0);
+        // 50°N on the meridian of Greenwich at midnight in mid January: Betelgeuse is high in the south, an hour and
+        // a half past the meridian, and Acrux never rises.
+        let atlantic = Place {
+            latitude: 50.0,
+            sidereal: sidereal("1942-01-15T00:00", 0.0, 0.0),
+            north_deg: 0.0,
+        };
+        let (elevation, world) = star_over(atlantic, 88.79, 7.41);
+        assert!((elevation - 42.7).abs() < 1.5, "{elevation}");
+        assert!(world.z > 0.0 && world.x < 0.0, "{world:?}");
+        assert!(star_over(atlantic, 186.65, -63.10).0 < 0.0);
     }
 
     #[test]

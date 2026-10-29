@@ -3,6 +3,7 @@ members = [
     "crates/naval-sky-types",
     "crates/naval-cloud-field",
     "crates/naval-land-format",
+    "crates/naval-earth",
 ]
 # The native client is its own workspace; its patched dependencies (`native/vendor`) are no one's members.
 exclude = ["native"]
@@ -21,6 +22,7 @@ sha2 = "0.10"
 naval-land-format = { path = "crates/naval-land-format" }
 naval-sky-types = { path = "crates/naval-sky-types" }
 naval-cloud-field = { path = "crates/naval-cloud-field" }
+naval-earth = { path = "crates/naval-earth" }
 
 [profile.release]
 lto = "thin"

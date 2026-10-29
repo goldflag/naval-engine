@@ -1,0 +1,28 @@
+[package]
+name = "naval-land-bake"
+description = "The land release bake's host: making a release from its pinned sources and baking its squares into the store, over the network, the disk and threads around naval-region-bake; the `naval-land-bake` command (README.md)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+# One test program for every file in tests/ (tests/all.rs).
+autotests = false
+
+[dependencies]
+native-unify.workspace = true
+# The bake itself (pure: no network, files or threads), which this crate fetches for, caches and runs on its threads.
+naval-region-bake.workspace = true
+# Land releases' store: the bake's squares are kept there (`release::bake_square`).
+naval-land.workspace = true
+sha2.workspace = true
+# The DEM's objects, the buckets' listings and the hosted sources over HTTPS.
+ureq.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# The command (`cli`, src/main.rs).
+anyhow.workspace = true
+clap.workspace = true
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

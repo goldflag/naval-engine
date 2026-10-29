@@ -1,0 +1,36 @@
+[package]
+name = "naval-landscape"
+description = "The real world's look on a theatre's land: satellite colour and land cover (Sentinel-2, WorldCover, NAIP), OpenStreetMap's roads, rails and waters, fine relief, canopy heights, the horizon ring, the period's ground, the lamps, the coastal waters' colour, and the buildings, ports, bridges, airfields, bases and power lines on it, fetched, cached and made into the land layers' pages and meshes on worker threads; nothing of the client or the simulation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+native-unify.workspace = true
+# The theatre's frame (`geo`: LatLon, to_local, to_lat_lon), the simulation's own.
+naval-earth.workspace = true
+# The land layer the pages and maps are handed to (`TerrainLayer`), and the maps' and pages' formats.
+naval-terrain = { path = "../naval-terrain" }
+naval-render.workspace = true
+naval-conditions.workspace = true
+# The coastal waters' colour (`water`: `optics::WaterField`).
+naval-ocean.workspace = true
+# The Terrarium elevation tiles' URL and decoding (`relief`, `horizon`).
+naval-region-bake.workspace = true
+# OpenStreetMap's features: OpenFreeMap's vector tiles decoded (`osm`).
+naval-osm.workspace = true
+# Overture Maps' power lines and masts, read from its GeoParquet by range (`power`).
+naval-overture.workspace = true
+# The tiles fetched over HTTPS, WorldCover's DEFLATE tiles inflated, the imagery's JPEGs and the elevation PNGs decoded.
+ureq.workspace = true
+miniz_oxide.workspace = true
+image = { workspace = true, features = ["jpeg"] }
+# The building footprints' big files inflated as they stream in (`buildings::split`), their gzip trailers checked.
+flate2.workspace = true
+# The layers' scene bind groups (`buildings::SceneLook`).
+wgpu.workspace = true
+glam.workspace = true
+# The workers' states for the host's status (`buildings::status_json`, `infra::status_json`).
+serde.workspace = true
+serde_json.workspace = true

@@ -52,9 +52,12 @@ flate2 = "1.1"
 # Terrarium elevation tiles (naval-region-bake): 8-bit RGB PNGs, decoded losslessly without colour management.
 png = "0.18"
 naval-region-bake = { path = "crates/naval-region-bake" }
-# Land releases' formats (the root workspace's, as the simulation decodes them) and their store on this machine.
+# Land releases' formats (the root workspace's, as the simulation decodes them), their store on this machine and the
+# bake's host that fills it.
 naval-land-format = { path = "../crates/naval-land-format" }
 naval-land = { path = "crates/naval-land" }
+naval-land-bake = { path = "crates/naval-land-bake" }
+naval-landscape = { path = "crates/naval-landscape" }
 # OpenStreetMap vector tiles (the region bake's coastline and lakes, the theatre's map features).
 naval-osm = { path = "crates/naval-osm" }
 naval-sky = { path = "crates/naval-sky" }
@@ -63,6 +66,11 @@ naval-sky-types = { path = "../crates/naval-sky-types" }
 # The cloud layers, weathers' profiles, weather texture and anchors' blend the simulation and the clouds share (the root
 # workspace's), so the clouds need no simulation.
 naval-cloud-field = { path = "../crates/naval-cloud-field" }
+# The round Earth over plain values (latitude and longitude, the sphere, the 1° squares, the Earth's lattices, the sun
+# and the moon) the simulation and the renderer share (the root workspace's), so the renderer needs no simulation.
+naval-earth = { path = "../crates/naval-earth" }
+# The round Earth seen from space: the theatre chart's globe and the world chart on it, drawn without the simulation.
+naval-globe = { path = "crates/naval-globe" }
 # The scene's conditions: the map, time, weather, sea and fog, resolved for the sky, the sea and the land.
 naval-conditions = { path = "crates/naval-conditions" }
 # meshoptimizer (C++) for ship detail levels, as the web's `meshoptimizer` package; native only.
