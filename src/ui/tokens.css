@@ -1,0 +1,77 @@
+/* The game's one palette (DESIGN.md; docs/theatre/deck.md, "The console look"). Slate consoles with steel title bars
+   and bevelled controls, and colour only for side and state: blue is ours, red is theirs, amber is unconfirmed or a
+   warning, green is ready, orange is fire. What is chosen, switched on or pressed in is lit pale. Signal orange is only
+   the primary order and the time now. Component files take their colours from here. */
+:root {
+  /* The ground and its rules */
+  --ui-bar: #111315; /* the dark ground under everything: the deck's, a failed screen's, the frame's clear colour */
+  --ui-line: #ffffff21; /* hairlines */
+  --ui-line-soft: #ffffff12;
+  --ui-line-strong: #ffffff3a; /* a rule that must hold over a picture */
+  --ui-shade: #05080a; /* the dark under shadows, scrims and halos, mixed with transparent as needed */
+  --ui-shadow: 0 8px 24px 2px #00000080; /* a menu or card over the chart */
+
+  /* Text */
+  --ui-text: #e4e6e7;
+  --ui-muted: #a3a8ac;
+  --ui-dim: #868c91;
+  --ui-ink: #111315; /* text on a light ground */
+
+  /* Side and state */
+  --ui-own: #62aef0;
+  --ui-foe: #f2695c;
+  --ui-unknown: #e2b33c; /* unconfirmed, and warnings */
+  --ui-ready: #7fc98a;
+  --ui-fire: #ff8a4c;
+  --ui-select: #ffffff;
+
+  /* The chart */
+  --ui-sea: #232d35;
+  --ui-sea-shoal: #3e5a69; /* the shallows and reef flats, at the shore */
+  --ui-sea-shelf: #2c4150; /* about 50 m deep: the shelf */
+  --ui-sea-1000: #1f2a34; /* at least 1,000 m deep */
+  --ui-sea-3000: #19232e;
+  --ui-sea-4000: #141d29;
+  --ui-land: #474b45;
+  --ui-land-high: #6b7066; /* the land lightening toward its heights */
+  --ui-coast: #73786f;
+  --ui-graticule: #ffffff12;
+
+  /* The wordmark's dazzle paint (MainMenu.css): the steel below its cut and the bar's panels. Brand only: no
+     instrument, mark or state takes these. */
+  --ui-brand-steel: #a3b3c0;
+  --ui-brand-steel-deep: #6d8597;
+  --ui-brand-steel-dark: #2c3944;
+
+  /* Instruments drawn straight over the live sea: no fills, so their text carries a shadow. */
+  --ui-sea-text: #f1f2f3;
+  --ui-sea-muted: #c5c9cc;
+  --ui-sea-line: #ffffff40;
+  --ui-sea-shadow: 0 1px 2px #05080ad9, 0 2px 6px #05080ab3;
+
+  /* The Sea Power look, the game's one (src/ui/components/console.css, src/ui/components/controls.css): slate
+     consoles, steel title bars, bevelled controls, inset wells, the selected row and whatever is chosen or switched on
+     lit pale (`--ui-on`), and one signal orange for the primary order and the time now. Side and state keep their own
+     hues above: amber says something is wrong, never only that something is chosen or busy. */
+  --ui-console: #202d3a; /* a console's face, top */
+  --ui-console-deep: #151e27; /* its foot */
+  --ui-console-well: #0c1218; /* an inset well for readings and values */
+  --ui-console-text: #e1e7ec;
+  --ui-console-muted: #8fa0ae;
+  --ui-steel: #6b8090; /* a title bar, top */
+  --ui-steel-mid: #55697a;
+  --ui-steel-deep: #4b5e6e;
+  --ui-bevel: #3c4d5c; /* a bevelled control's face */
+  --ui-bevel-hover: #4a5d6e;
+  --ui-bevel-on: #22303c; /* pressed in: switched on */
+  --ui-bevel-hi: #ffffff47; /* the lit top-left edge */
+  --ui-bevel-lo: #00000099; /* the shaded bottom-right edge */
+  --ui-signal: #e8862e; /* the primary order and the time now, nothing else */
+  --ui-signal-ink: #1a0f04; /* text on signal */
+  --ui-row-select: #c9d5de; /* the selected row, top */
+  --ui-row-select-deep: #aebdc9;
+  --ui-row-select-ink: #0e161d; /* text on the selected row */
+  /* Chosen, switched on, pressed in, a hovered menu row: the selected row's pale, pressed into the console. */
+  --ui-on: linear-gradient(180deg, var(--ui-row-select), var(--ui-row-select-deep));
+  --ui-on-edge: inset 1px 1px 0 #0000005c, inset -1px -1px 0 #ffffff8c;
+}

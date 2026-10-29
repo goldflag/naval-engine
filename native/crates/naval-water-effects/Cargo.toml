@@ -1,0 +1,37 @@
+[package]
+name = "naval-water-effects"
+description = "Effects on and above the water driven by simulation state: shell splashes, bow spray and their particles, and the fixture playback that drives them with the ocean's wakes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# A portable crate: `bun run check` checks it for wasm32-unknown-unknown (native/AGENTS.md).
+# One test program for every file in tests/ (tests/all.rs).
+autotests = false
+[package.metadata.native]
+portable = true
+
+[dependencies]
+native-unify.workspace = true
+wgpu = { workspace = true, features = ["naga-ir"] }
+glam.workspace = true
+bytemuck.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+naval-render.workspace = true
+naval-ocean.workspace = true
+naval-sky.workspace = true
+# The effects kit both effect crates share: the particle pool, the camera the CPU culls with, the sprite maps and the
+# random stream (`native/docs/combat-effects/renderer.md`, "The effects kit").
+naval-effects.workspace = true
+
+[dev-dependencies]
+native-offscreen.workspace = true
+pollster.workspace = true
+image.workspace = true
+anyhow.workspace = true
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

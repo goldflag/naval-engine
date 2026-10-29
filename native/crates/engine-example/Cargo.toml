@@ -1,0 +1,28 @@
+[package]
+name = "engine-example"
+description = "The engine crates on their own: a window with a fly camera over the sky, clouds, sea, a baked coast and a few effects, with no simulation; the template another project copies (README.md)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+native-unify.workspace = true
+# The eight engine crates, and nothing of the game's simulation (no naval-sim, naval-protocol or *-sim adapter).
+naval-render.workspace = true
+naval-sky.workspace = true
+naval-clouds = { path = "../naval-clouds" }
+naval-conditions.workspace = true
+naval-ocean.workspace = true
+naval-terrain = { path = "../naval-terrain" }
+naval-effects.workspace = true
+naval-water-effects = { path = "../naval-water-effects" }
+# The coast: the synthetic land release, cut into the land's heightfield by `naval_terrain::release`.
+naval-land-format = { workspace = true, features = ["synthetic"] }
+# The still's headless device and PNG read-back.
+native-offscreen.workspace = true
+wgpu.workspace = true
+winit.workspace = true
+glam.workspace = true
+pollster.workspace = true
+anyhow.workspace = true

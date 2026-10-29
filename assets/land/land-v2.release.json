@@ -1,0 +1,31 @@
+{
+  "format": 1,
+  "name": "land-v2",
+  "lattice": {
+    "perDegree": 1600,
+    "blocks": 4,
+    "quantumM": 0.25,
+    "encoding": "i16-blocks-planar-zlib"
+  },
+  "bake": {
+    "algorithm": "naval-region-bake",
+    "version": 2,
+    "keepM": 0,
+    "candidateM": 65000,
+    "poleLimitDeg": 89.5
+  },
+  "snapshot": {
+    "source": "water-polygons-split-4326.zip",
+    "date": "2026-10-14",
+    "sha256": "81efe5f58f9f0a89c1233900b920bd2a849091ede37000b2a545e34590147451",
+    "bytes": 906312607
+  },
+  "sources": {
+    "sha256": "eb9fa69febf04a893b1cf27a59a59755deae1a183fc8fbf4d0dbdd3df96a4bd8",
+    "bytes": 32400940
+  },
+  "squareTable": {
+    "sha256": "c39b6e37b794fcf10ab7195e08a8cfe8a1f2e6880c8aa4dc159f9dc601f2b89f",
+    "bytes": 10928
+  }
+}

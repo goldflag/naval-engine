@@ -1,0 +1,15 @@
+[package]
+name = "naval-overture"
+description = "Overture Maps' base theme, infrastructure type (GeoParquet on its public bucket): the power lines, towers and communication masts over a box, read by the row groups' bbox statistics and ranged reads"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# No network of its own: the host hands in a `Fetch` (naval-client's `theatre::power` over ureq) and a cache folder.
+# Not portable (zstd is C).
+
+[dependencies]
+native-unify.workspace = true
+parquet.workspace = true
+bytes.workspace = true

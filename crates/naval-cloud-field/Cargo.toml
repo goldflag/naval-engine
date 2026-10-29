@@ -1,0 +1,19 @@
+[package]
+name = "naval-cloud-field"
+description = "The clouds' weather the simulation and the native clouds share: takram's four cloud layers, the weathers' layer profiles, the local weather texture and the blend of the cloud anchors' textures"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Portable: the simulation builds it on every target, wasm32 included, and the native clouds take their layers, tables and
+# texture from here rather than from the simulation, so the clouds build without it.
+[package.metadata.native]
+portable = true
+
+[dependencies]
+# The layers are stored in the simulation's cloud field (`CloudField::layers`) and its saves.
+serde.workspace = true
+# The local weather texture, decoded once (`weather_bytes`).
+png = "0.18"
+# The cloud genera and the high sheet the weathers draw (`CloudGenus`, `HighClouds`).
+naval-sky-types.workspace = true

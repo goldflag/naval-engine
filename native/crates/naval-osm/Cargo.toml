@@ -1,0 +1,17 @@
+[package]
+name = "naval-osm"
+description = "OpenStreetMap vector tiles (the OpenMapTiles schema, as OpenFreeMap serves them): the MVT decoder, the typed layers and the web-mercator tile math"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# A portable crate: `bun run check` checks it for wasm32-unknown-unknown (native/AGENTS.md). No file and no network:
+# the host fetches the tiles (naval-client's `theatre::osm`) and hands their bytes in.
+[package.metadata.native]
+portable = true
+
+[dependencies]
+native-unify.workspace = true
+# A tile served gzipped is inflated here.
+miniz_oxide.workspace = true

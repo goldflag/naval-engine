@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "maps": [
+    {
+      "id": "north-atlantic", "name": "North Atlantic", "region": "Atlantic Ocean", "bearing": 0, "description": "Muted steel-blue open water beneath broken cloud. Long, clear firing lanes.",
+      "water": { "waterColor": "#2d373c", "transmissionColor": "#49575e", "absorptionColor": "#945b57", "amplitudeScale": 1, "windScale": 1, "wavelengthScale": 1, "windDirection": 35, "foam": 0.45 },
+      "sky": { "elevation": 48, "azimuth": 235, "intensity": 6.6, "coverage": 0.40, "altitude": 1700, "thickness": 2400, "turbidity": 2.2, "rayleigh": 0.38, "mie": 0.5, "mieG": 0.72, "multiple": 1, "ambient": 0.65 },
+      "fog": { "color": "#8b8f92", "start": 2800, "end": 25000, "skyBlend": 9900 },
+      "land": { "style": "rock", "shore": "#a39b86", "low": "#657151", "high": "#7d8281", "terrain": null }
+    }
+  ]
+}

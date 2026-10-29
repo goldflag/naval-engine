@@ -1,0 +1,25 @@
+[package]
+name = "naval-conditions"
+description = "The scene's conditions: the map, the time of day, the weather, the sea and the fog a battle, a theatre scene or the port is drawn in, resolved into what the sky, the sea, the land and the meshes read"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# A portable crate: `bun run check` checks it for wasm32-unknown-unknown (native/AGENTS.md).
+[package.metadata.native]
+portable = true
+
+[dependencies]
+native-unify.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# The twilight's light under the water's own (`water_light_scale`).
+naval-render.workspace = true
+# What the conditions resolve into: the sky's scene and the sea's parameters, fog and calibration.
+naval-sky.workspace = true
+naval-ocean.workspace = true
+
+[dev-dependencies]
+# The storm's rain checked against its visibility (`naval_clouds::weather`).
+naval-clouds = { path = "../naval-clouds" }

@@ -1,0 +1,145 @@
+# The native client's own workspace. It stays separate from the root workspace
+# (and its Cargo.lock) while other lanes are changing crates/ and src/; see
+# native/AGENTS.md. Every crate under crates/ is a member.
+[workspace]
+members = ["crates/*"]
+# Patched dependencies (native/vendor/README.md): built as dependencies, never as members.
+exclude = ["vendor"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[workspace.dependencies]
+native-offscreen = { path = "crates/native-offscreen" }
+# The union of the native builds' features for the dependencies they share, which every native crate depends on
+# (scripts/build/native-features.ts).
+native-unify = { path = "crates/native-unify" }
+# naga_oil 0.23 is built on naga 30, the same naga wgpu 30 uses.
+wgpu = "30"
+wgpu-hal = "30"
+naga_oil = "0.23"
+# naga itself, for naval-terrain's test that writes the land's shaders out for every backend.
+naga = "30"
+winit = "0.30.13"
+# Gamepads beside winit (winit has no gamepad API): naval-input's pads.
+gilrs = "0.11.2"
+glam = { version = "0.33", features = ["bytemuck"] }
+bytemuck = { version = "1", features = ["derive"] }
+lyon_path = "1.0"
+lyon_tessellation = "1.0"
+svgtypes = "0.16"
+pollster = "1"
+image = { version = "0.25", default-features = false, features = ["png"] }
+gltf = "1.4"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+half = "2"
+clap = { version = "4", features = ["derive"] }
+naval-render = { path = "crates/naval-render" }
+naval-ocean = { path = "crates/naval-ocean" }
+# Audio playback (naval-audio). No decoders: the game's clips are PCM WAV, parsed
+# by naval-audio itself; `cpal` is the device backend (Web Audio on wasm32).
+kira = { version = "0.12.5", default-features = false, features = ["cpal"] }
+# The streamed beds' frame ring (naval-audio), the single-producer ring kira itself uses.
+rtrb = "0.4"
+# Gzip for recorded fixtures (naval-audio's battle fixture); pure Rust backend.
+flate2 = "1.1"
+# Terrarium elevation tiles (naval-region-bake): 8-bit RGB PNGs, decoded losslessly without colour management.
+png = "0.18"
+naval-region-bake = { path = "crates/naval-region-bake" }
+# Land releases' formats (the root workspace's, as the simulation decodes them) and their store on this machine.
+naval-land-format = { path = "../crates/naval-land-format" }
+naval-land = { path = "crates/naval-land" }
+# OpenStreetMap vector tiles (the region bake's coastline and lakes, the theatre's map features).
+naval-osm = { path = "crates/naval-osm" }
+naval-sky = { path = "crates/naval-sky" }
+# The cloud genera the simulation and the sky share (the root workspace's), so the sky needs no simulation.
+naval-sky-types = { path = "../crates/naval-sky-types" }
+# The cloud layers, weathers' profiles, weather texture and anchors' blend the simulation and the clouds share (the root
+# workspace's), so the clouds need no simulation.
+naval-cloud-field = { path = "../crates/naval-cloud-field" }
+# The scene's conditions: the map, time, weather, sea and fog, resolved for the sky, the sea and the land.
+naval-conditions = { path = "crates/naval-conditions" }
+# meshoptimizer (C++) for ship detail levels, as the web's `meshoptimizer` package; native only.
+meshopt = "0.6"
+# Ship labels: glyph rasterisation, and inflating the game's WOFF face.
+fontdue = "0.9"
+miniz_oxide = "0.8"
+# HTTP for the theatre's real-world surface (naval-client's `theatre::surface`): rustls with webpki roots, so Windows
+# and macOS build with no OpenSSL.
+ureq = { version = "3.4", default-features = false, features = ["rustls"] }
+# Overture Maps' GeoParquet (naval-overture: the power lines and towers): the low-level reader only, zstd its only
+# codec (no Arrow). About 20 s of compiling once and 1 MB of binary (native/docs/terrain/infra.md, "Power lines").
+parquet = { version = "60.0.0", default-features = false, features = ["zstd"] }
+naval-overture = { path = "crates/naval-overture" }
+bytes = "1"
+# The UI host (naval-ui's `cef` feature): tauri-apps/cef-rs bindings, CEF 154.
+# The binaries are fetched by cef-dll-sys's build script into $CEF_PATH, never
+# the repo; see native/docs/ui.md.
+cef = { version = "154.3", default-features = false }
+objc2 = "0.6"
+# Steamworks: Noxime/steamworks-rs over Steamworks SDK 1.6x, whose
+# redistributable libsteam_api / steam_api64 ships inside the crate. Only
+# naval-steam's `steam` feature links it (naval-client's `steam` turns it on);
+# see native/docs/packaging.md.
+steamworks = "0.13"
+# The aircraft lane (naval-aircraft) builds on the ships' model loading and paint and the effects' particle pools.
+naval-effects = { path = "crates/naval-effects" }
+# The packed-asset format (naval-assets): postcard for the binary encoding, zstd
+# (with its frame checksum) for the payloads, sha2 for content-hashed names, BC7
+# textures encoded by Intel's ISPC kernels (builder only; prebuilt for macOS arm64
+# and Windows x64) and decoded in pure Rust where a device lacks BC.
+postcard = { version = "1.1", default-features = false, features = ["use-std"] }
+zstd = "0.13"
+sha2 = "0.10"
+intel_tex_2 = "0.5"
+bcdec_rs = "0.2"
+# naval-assets' packed-shape guard traces the payloads' serde data model (tests only).
+serde-reflection = { version = "0.6", default-features = false }
+# Ending CEF's processes with the app (naval-ui's reaper): kill(2) on macOS and
+# Linux, a kill-on-close job object on Windows. Both already in the lock via winit.
+libc = "0.2"
+windows-sys = "0.61"
+mimalloc = { version = "0.1", default-features = false }
+# The screenshot key copies the window's frame to the system clipboard (naval-client's `screenshot`): images on
+# macOS, Windows and Linux (X11 and Wayland). Its default `image-data` feature is the image support.
+arboard = "3.6"
+
+# Local play updates keep release optimization and reuse compilation between edits.
+# Pin the usual release codegen count: incremental builds otherwise default to 256,
+# changing the optimization tradeoff. Registry dependencies remain non-incremental
+# and eligible for sccache; CARGO_INCREMENTAL=0 opts out for a clean measurement.
+[profile.release]
+incremental = true
+codegen-units = 16
+
+# Dependencies build optimized even in dev: wgpu, naga and image decoding are
+# too slow at opt-level 0 for interactive frames or image tests.
+[profile.dev.package."*"]
+opt-level = 2
+
+# Captures, interface checks and native tests (`rust:test --native`): fast incremental local code with usable GPU
+# dependencies (the dev package overrides above still apply), no release link, and debug assertions. One profile, so
+# a crate's tests and the capture client share every dependency's build; native-unify gives them one feature set.
+# A separate output directory prevents a capture client replacing a release one.
+[profile.dev-client]
+inherits = "dev"
+opt-level = 1
+debug = 1
+lto = "off"
+codegen-units = 16
+incremental = true
+
+[profile.ci-test]
+inherits = "dev-client"
+opt-level = 3
+incremental = false
+
+# wgpu-hal 30.0.1 with a larger DX12 compiled-shader cache (native/vendor/README.md).
+[patch.crates-io]
+wgpu-hal = { path = "vendor/wgpu-hal" }

@@ -1,0 +1,53 @@
+[workspace]
+members = [
+    "crates/naval-sky-types",
+    "crates/naval-cloud-field",
+    "crates/naval-land-format",
+]
+# The native client is its own workspace; its patched dependencies (`native/vendor`) are no one's members.
+exclude = ["native"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+thiserror = "2"
+sha2 = "0.10"
+naval-land-format = { path = "crates/naval-land-format" }
+naval-sky-types = { path = "crates/naval-sky-types" }
+naval-cloud-field = { path = "crates/naval-cloud-field" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+# Keep editor compilation fast at runtime; incremental compilation and skipping
+# LTO still shorten local rebuilds compared with the release profile.
+[profile.wasm-dev]
+inherits = "release"
+opt-level = 3
+lto = "off"
+codegen-units = 16
+incremental = true
+
+# Release optimisation without the thin-LTO single-unit link, for long runs that want full speed
+# (`rust:test --profile ci-test`). The gate used it until 2026-10-17: it compiled for 31 minutes where its tests ran 16.
+[profile.ci-test]
+inherits = "release"
+lto = "off"
+codegen-units = 16
+
+# The edit-test loop (`bun run rust:test`) and the gate (`bun run sim:check`), so the gate reuses the loop's build.
+# Release semantics, so numerical scenarios stay within their budgets, without the thin-LTO single-unit link that
+# makes every cycle minutes long.
+[profile.test-fast]
+inherits = "release"
+opt-level = 1
+lto = "off"
+codegen-units = 16
+incremental = true

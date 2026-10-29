@@ -1,0 +1,20 @@
+[package]
+name = "naval-land"
+description = "Land releases on this machine: final squares kept by content, each release's append-only manifest, pins, readers' leases, a size bound by least recent use, and the export of a closure's squares"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+# One test program for every file in tests/ (tests/all.rs).
+autotests = false
+
+[dependencies]
+native-unify.workspace = true
+# The formats (the root workspace's, which the simulation decodes with), and the synthetic release the CLI installs.
+naval-land-format = { workspace = true, features = ["synthetic"] }
+serde.workspace = true
+serde_json.workspace = true
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

@@ -1,0 +1,130 @@
+{
+  "land": {
+    "attributes": 2097736977,
+    "bounds": {"levels":8,"top":[-50.0,411.5]},
+    "cell": 40.0,
+    "coarse": [301,301],
+    "columns": 601,
+    "gradients": 3244237098,
+    "heightsAt": [-50.0,-50.0,-50.0,11.75],
+    "mainCoast": {"angle":0.045999232374580305,"direction":[0.9945218953682734,0.10452846326765333],"hit":3350.0},
+    "originX": -8000.0,
+    "originZ": -12000.0,
+    "quanta": 463273822,
+    "rows": 601,
+    "selections": [
+      {"count":1319,"hash":4242810728,"nearLand":256,"range0":7452.566500684365,"treeReach":4368.157242066849},
+      {"count":0,"hash":2166136261,"nearLand":0,"range0":7452.566500684365,"treeReach":-1.0},
+      {"count":3201,"hash":1566291988,"nearLand":256,"range0":43055.903908479915,"treeReach":10392.068450222387}
+    ],
+    "steepestCoast": {"dx":-0.9950981974198873,"dz":0.09889174632744221,"height":138.25,"x":3120.0,"z":-4080.0},
+    "step": 0.25,
+    "sun": 1428451219
+  },
+  "maps": {
+    "north-atlantic": {
+      "environments": {
+        "custom": {
+          "cloudAmbient": 1.1,
+          "cloudShadow": 0.2,
+          "cloudWind": 18.666666666666668,
+          "fog": {"color":"#8b8f92","end":12000.0,"skyBlend":6171.428571428572,"start":2228.5714285714284},
+          "horizonCoverage": 0.033,
+          "sky": {
+            "altitude": 2300.0,
+            "ambient": 0.65,
+            "azimuth": 112.5,
+            "coverage": 0.55,
+            "elevation": 26.787840265556284,
+            "intensity": 6.6,
+            "mie": 0.556,
+            "mieG": 0.72,
+            "multiple": 1.0,
+            "rayleigh": 0.38,
+            "thickness": 1200.0,
+            "turbidity": 2.2
+          },
+          "waterLightScale": 1.0,
+          "waves": {
+            "choppiness": 1.475,
+            "peakWavelength": 49.777777666666665,
+            "significantHeightM": 3.5666666666666664,
+            "windSpeed": 14.0
+          }
+        },
+        "duskOvercast": {
+          "cloudAmbient": 0.9900000000000001,
+          "cloudShadow": 0.2,
+          "cloudWind": 15.0,
+          "fog": {"color":"#a18b83","end":13000.0,"skyBlend":8500.0,"start":1800.0},
+          "horizonCoverage": 0.06,
+          "sky": {
+            "altitude": 950.0,
+            "ambient": 0.3850488281250001,
+            "azimuth": 270.0,
+            "coverage": 0.82,
+            "elevation": 3.0,
+            "intensity": 3.63,
+            "mie": 0.5,
+            "mieG": 0.72,
+            "multiple": 1.4,
+            "rayleigh": 0.38,
+            "thickness": 3200.0,
+            "turbidity": 3.8
+          },
+          "waterLightScale": 0.48046875,
+          "waves": {"choppiness":1.3250000000000002,"peakWavelength":42.666667,"significantHeightM":2.7,"windSpeed":12.0}
+        },
+        "map": {
+          "cloudAmbient": 1.1,
+          "cloudShadow": 0.2,
+          "cloudWind": 12.0,
+          "fog": {"color":"#8b8f92","end":25000.0,"skyBlend":9900.0,"start":2800.0},
+          "horizonCoverage": 0.06,
+          "sky": {
+            "altitude": 1700.0,
+            "ambient": 0.65,
+            "azimuth": 235.0,
+            "coverage": 0.4,
+            "elevation": 48.0,
+            "intensity": 6.6,
+            "mie": 0.5,
+            "mieG": 0.72,
+            "multiple": 1.0,
+            "rayleigh": 0.38,
+            "thickness": 2400.0,
+            "turbidity": 2.2
+          },
+          "waterLightScale": 1.0,
+          "waves": {"choppiness":1.1,"peakWavelength":32.0,"significantHeightM":1.8,"windSpeed":9.0}
+        },
+        "nightStorm": {
+          "cloudAmbient": 0.7150000000000001,
+          "cloudShadow": 0.55,
+          "cloudWind": 28.0,
+          "fog": {"color":"#182839","end":8000.0,"skyBlend":5000.0,"start":650.0},
+          "horizonCoverage": 0.06,
+          "sky": {
+            "altitude": 650.0,
+            "ambient": 0.21125000000000002,
+            "azimuth": 320.0,
+            "coverage": 0.94,
+            "elevation": -28.0,
+            "intensity": 1.9799999999999998,
+            "mie": 0.65,
+            "mieG": 0.72,
+            "multiple": 0.8,
+            "rayleigh": 0.38,
+            "thickness": 4200.0,
+            "turbidity": 5.0
+          },
+          "waterLightScale": 0.0006292849632553936,
+          "waves": {"choppiness":1.55,"peakWavelength":55.50648866666667,"significantHeightM":4.5,"windSpeed":16.0}
+        }
+      },
+      "spawnDistance": 5000.0
+    }
+  },
+  "noise": 3697677614,
+  "source": "naval-terrain; re-record with UPDATE_FIXTURES=1 cargo test -p naval-terrain --test all -- terrain_replay::"
+}

@@ -1,0 +1,32 @@
+[package]
+name = "naval-land-format"
+description = "Land releases' formats, shared by the simulation, the bake and the native store: square keys, the global final lattice and NSQ1's final layer in blocks, the manifest, the square table, the release file, and the synthetic release"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+# One test program for every file in tests/ (tests/all.rs).
+autotests = false
+
+# Portable: no files, no threads, no clock. The simulation decodes squares with it on every target, wasm32 included
+# (`cargo check --target wasm32-unknown-unknown -p naval-land-format --all-features`).
+[package.metadata.native]
+portable = true
+
+[features]
+# The synthetic release (`synthetic`): a deterministic, source-free coastal world for tests, fixtures and tools.
+synthetic = []
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+# Deflate, called directly rather than through flate2, whose backend a feature anywhere in a build can switch: a
+# block's bytes (and so its square's hash) are then the same in the root workspace, the native one and wasm32.
+miniz_oxide = "0.8"
+
+[dev-dependencies]
+naval-land-format = { path = ".", features = ["synthetic"] }
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

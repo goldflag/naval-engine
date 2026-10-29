@@ -1,0 +1,32 @@
+[package]
+name = "naval-render"
+description = "Renderer core: explicit passes into owned HDR and reversed-depth targets, camera uniforms, a naga_oil shader library, AgX display transform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# A portable crate: `bun run check` checks it for wasm32-unknown-unknown (native/AGENTS.md).
+# One test program for every file in tests/ (tests/all.rs).
+autotests = false
+[package.metadata.native]
+portable = true
+
+[dependencies]
+native-unify.workspace = true
+# naga-ir: the shader library hands wgpu naga_oil's composed module directly.
+wgpu = { workspace = true, features = ["naga-ir"] }
+naga_oil.workspace = true
+glam.workspace = true
+bytemuck.workspace = true
+# Inflates the SMAA lookup textures (pure Rust, portable).
+miniz_oxide.workspace = true
+
+[dev-dependencies]
+native-offscreen.workspace = true
+half.workspace = true
+pollster.workspace = true
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

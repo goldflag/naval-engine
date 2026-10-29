@@ -1,0 +1,15 @@
+[package]
+name = "native-offscreen"
+description = "Headless wgpu device, color target and PNG read-back for tests and offscreen captures, and the recorded test fixtures (`fixture`)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+native-unify.workspace = true
+wgpu.workspace = true
+pollster.workspace = true
+image.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true

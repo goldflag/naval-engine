@@ -1,0 +1,11 @@
+[package]
+name = "naval-sky-types"
+description = "The sky's plain types the simulation and the native sky share: the volumetric layer's cloud genera and the high sheet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Portable and without dependencies: the simulation builds it on every target, wasm32 included, and the native sky takes
+# these types from here rather than from the simulation, so a simulation edit does not rebuild the sky.
+[package.metadata.native]
+portable = true

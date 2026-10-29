@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "seaCalibration": {
+    "version": 1,
+    "heightReference": "https://www.weather.gov/pqr/beaufort",
+    "samples": [
+      {"windSpeed": 0, "significantHeightM": 0, "peakWavelengthM": 6.4, "crestFoam": 0, "windwardFoam": 0},
+      {"windSpeed": 1, "significantHeightM": 0.05, "peakWavelengthM": 6.4, "crestFoam": 0, "windwardFoam": 0},
+      {"windSpeed": 2, "significantHeightM": 0.1, "peakWavelengthM": 7.111111, "crestFoam": 0, "windwardFoam": 0},
+      {"windSpeed": 3, "significantHeightM": 0.15, "peakWavelengthM": 10.666667, "crestFoam": 0, "windwardFoam": 0},
+      {"windSpeed": 4, "significantHeightM": 0.4, "peakWavelengthM": 14.222222, "crestFoam": 1.167082, "windwardFoam": 0.742688},
+      {"windSpeed": 5, "significantHeightM": 0.6, "peakWavelengthM": 17.777778, "crestFoam": 0.858154, "windwardFoam": 1.092196},
+      {"windSpeed": 6, "significantHeightM": 0.9, "peakWavelengthM": 21.333333, "crestFoam": 0.822651, "windwardFoam": 1.196583},
+      {"windSpeed": 7, "significantHeightM": 1.2, "peakWavelengthM": 24.888889, "crestFoam": 0.818926, "windwardFoam": 1.34006},
+      {"windSpeed": 9, "significantHeightM": 1.8, "peakWavelengthM": 32, "crestFoam": 0.814133, "windwardFoam": 1.221199},
+      {"windSpeed": 12, "significantHeightM": 2.7, "peakWavelengthM": 42.666667, "crestFoam": 0.891282, "windwardFoam": 1.01282},
+      {"windSpeed": 15, "significantHeightM": 4, "peakWavelengthM": 53.333333, "crestFoam": 0.956814, "windwardFoam": 0.543645},
+      {"windSpeed": 18, "significantHeightM": 5.5, "peakWavelengthM": 59.8528, "crestFoam": 0.813789, "windwardFoam": 0.177554},
+      {"windSpeed": 21, "significantHeightM": 7, "peakWavelengthM": 60.151467, "crestFoam": 0.528522, "windwardFoam": 0.117941},
+      {"windSpeed": 25, "significantHeightM": 8.8, "peakWavelengthM": 62.222222, "crestFoam": 0.408976, "windwardFoam": 0.098154},
+      {"windSpeed": 30, "significantHeightM": 11.3, "peakWavelengthM": 74.666667, "crestFoam": 0.39145, "windwardFoam": 0.093948}
+    ]
+  },
+  "times": [
+    { "id": "map", "name": "Map default", "description": "Use this map’s original daylight.", "sky": {}, "lightScale": 1 },
+    { "id": "dawn", "name": "Dawn", "description": "Low eastern sun and soft early light.", "sky": { "elevation": 5, "azimuth": 90 }, "lightScale": 0.65, "fogColor": "#a39491" },
+    { "id": "morning", "name": "Morning", "description": "Bright eastern light and long shadows.", "sky": { "elevation": 28, "azimuth": 115 }, "lightScale": 1 },
+    { "id": "noon", "name": "Noon", "description": "High sun and bright daylight.", "sky": { "elevation": 70, "azimuth": 180 }, "lightScale": 1 },
+    { "id": "dusk", "name": "Dusk", "description": "Low western sun and warm fading light.", "sky": { "elevation": 3, "azimuth": 270 }, "lightScale": 0.5, "fogColor": "#a18b83" },
+    { "id": "night", "name": "Night", "description": "Dark skies with moonlit silhouettes.", "sky": { "elevation": -28, "azimuth": 320 }, "lightScale": 0.22, "fogColor": "#182839" }
+  ],
+  "weather": [
+    { "id": "map", "name": "Map default", "description": "Use this map’s original clouds, haze and moderate seas.", "sky": {}, "fog": {}, "sunScale": 1, "ambientScale": 1, "cloudWind": 12, "waves": { "windSpeed": 9 } },
+    { "id": "clear", "name": "Clear", "description": "Open skies, gentle waves and very little haze.", "sky": { "coverage": 0.02, "altitude": 2300, "thickness": 1200, "turbidity": 2.2, "mie": 0.556 }, "fog": { "start": 6500, "end": 35000, "skyBlend": 18000 }, "sunScale": 1, "ambientScale": 1, "cloudWind": 6, "waves": { "windSpeed": 5 } },
+    { "id": "partly-cloudy", "name": "Partly cloudy", "description": "Scattered clouds over moderate seas.", "sky": { "coverage": 0.38, "altitude": 1700, "thickness": 2400, "turbidity": 3.4, "mie": 0.556 }, "fog": { "start": 3500, "end": 25000, "skyBlend": 12000 }, "sunScale": 1, "ambientScale": 1, "cloudWind": 12, "waves": { "windSpeed": 9 } },
+    { "id": "overcast", "name": "Overcast", "description": "A low cloud blanket and rolling seas.", "sky": { "coverage": 0.82, "altitude": 950, "thickness": 3200, "turbidity": 3.8, "mie": 0.5, "multiple": 1.4 }, "fog": { "color": "#939fa5", "start": 1800, "end": 13000, "skyBlend": 8500 }, "sunScale": 0.55, "ambientScale": 0.9, "cloudWind": 15, "waves": { "windSpeed": 12 } },
+    { "id": "fog", "name": "Fog", "description": "Gentle seas with thick haze obscuring distant ships and shores.", "sky": { "coverage": 0.65, "altitude": 650, "thickness": 2100, "turbidity": 6, "mie": 0.8, "multiple": 1.5 }, "fog": { "color": "#9eaeb3", "start": 150, "end": 4500, "skyBlend": 2400 }, "sunScale": 0.5, "ambientScale": 1, "cloudWind": 5, "waves": { "windSpeed": 5 } },
+    { "id": "storm-clouds", "name": "Storm clouds", "description": "Dark, fast-moving clouds over heavy seas.", "sky": { "coverage": 0.94, "altitude": 650, "thickness": 4200, "turbidity": 5, "mie": 0.65, "multiple": 0.8 }, "fog": { "color": "#61727e", "start": 650, "end": 8000, "skyBlend": 5000 }, "sunScale": 0.3, "ambientScale": 0.65, "cloudWind": 28, "waves": { "windSpeed": 16 } }
+  ]
+}

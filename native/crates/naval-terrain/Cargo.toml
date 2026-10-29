@@ -1,0 +1,56 @@
+[package]
+name = "naval-terrain"
+description = "Land on wgpu: the map catalog and conditions, real-elevation terrain with the web's land shading and trees"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# A portable crate: `bun run check` checks it for wasm32-unknown-unknown (native/AGENTS.md).
+# One test program for every file in tests/ (tests/all.rs).
+autotests = false
+[package.metadata.native]
+portable = true
+
+[dependencies]
+native-unify.workspace = true
+wgpu.workspace = true
+glam.workspace = true
+bytemuck.workspace = true
+half.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# The built-up history is a zlib stream (`src/buildings/history.rs`).
+miniz_oxide.workspace = true
+# The detail photographs are JPEG (decoded from bytes the host reads).
+image = { workspace = true, features = ["jpeg"] }
+naval-render.workspace = true
+# The scene's conditions the land is drawn in: the map scene, the land's style and climate, the mesh light.
+naval-conditions.workspace = true
+# The sky's scene description and environment-lighting interface (`naval_sky::environment` WGSL).
+naval-sky.workspace = true
+# The sea's parameters per map (`naval_ocean::calibration`).
+naval-ocean.workspace = true
+# The clouds' shadow the land takes (`naval_clouds::shadow` WGSL), and the stills' clouds.
+naval-clouds = { path = "../naval-clouds" }
+# The land releases' square files a host cuts a window from (`release`): the formats alone, no simulation.
+naval-land-format.workspace = true
+
+# BC7 for the impostor atlas and the surface photographs (`src/bc7.rs`); no encoder on wasm32, which keeps RGBA8.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+intel_tex_2.workspace = true
+# Waits on the BC7 copy's error scopes, off the frame loop.
+pollster.workspace = true
+
+[dev-dependencies]
+native-offscreen.workspace = true
+pollster.workspace = true
+anyhow.workspace = true
+# The synthetic release the window cut is checked on (`tests/release.rs`).
+naval-land-format = { workspace = true, features = ["synthetic"] }
+# The land's shaders written out as Metal, DirectX 12 and Vulkan code (`tests/backends.rs`).
+naga = { workspace = true, features = ["msl-out", "hlsl-out", "spv-out"] }
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

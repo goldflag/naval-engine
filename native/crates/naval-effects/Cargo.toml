@@ -1,0 +1,38 @@
+[package]
+name = "naval-effects"
+description = "Combat gas, fire and smoke spawned from simulation events (the host's, built by naval-effects-sim): the web client's CombatEffects, GasAtlas, BlastEffects, LocalizedFireEffects, ShipFunnelSmoke and SmokeOcclusion on wgpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# A portable crate: `bun run check` checks it for wasm32-unknown-unknown (native/AGENTS.md).
+# One test program for every file in tests/ (tests/all.rs).
+autotests = false
+[package.metadata.native]
+portable = true
+
+[dependencies]
+native-unify.workspace = true
+wgpu.workspace = true
+glam.workspace = true
+bytemuck.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+naval-render.workspace = true
+# The sky's environment: the fog reads the sky behind each fragment from it.
+naval-sky.workspace = true
+# The clouds' shadow module and uniforms: the smoke takes the sun's light through the clouds.
+naval-clouds = { path = "../naval-clouds" }
+# No simulation: the game builds the effects' inputs from it in naval-effects-sim (its events, ship profiles, rules,
+# star shells' candles and sea), which also holds the recorded battle's replay and the tools that need a battle.
+
+[dev-dependencies]
+native-offscreen.workspace = true
+anyhow.workspace = true
+image.workspace = true
+pollster.workspace = true
+
+[[test]]
+name = "all"
+path = "tests/all.rs"
