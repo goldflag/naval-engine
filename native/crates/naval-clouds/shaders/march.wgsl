@@ -16,6 +16,7 @@
 #import naval_sky::atmosphere::{SunSky, SkyLight, sun_sky_scalar_irradiance, sun_sky_irradiance, sky_radiance_to_point}
 #import naval_sky::common::{sky, air, transmittance_table, irradiance_table, linear_clamp}
 #import naval_sky::bruneton::{get_sun_and_sky_scalar_irradiance, get_sun_and_sky_irradiance}
+#import naval_sky::aerial::{glow_field, glow_light}
 
 // ---- The key light ----------------------------------------------------------------------------------------------
 
@@ -492,6 +493,28 @@ fn radiance_from_ground(position: vec3<f32>, surface_normal: vec3<f32>, weather:
     return bounced * exp(-optical_depth);
 }
 
+// The towns' light on a cloud from below at night (native/docs/terrain/night.md, "The towns' light in the sky"): the lit
+// land's light reaching the sample from below (the field's upward flux, `naval_sky::aerial::glow_field`) through the
+// cloud its layers' weather puts under it, as the sea's bounce takes it (`GROUND_FILL`), at the strength that leaves a
+// thick deck's base sending back `TOWN_BASE_ALBEDO` of it (the star shells' base takes the same: a stratiform deck's
+// 0.6-0.8). Nothing while it does not burn.
+const TOWN_BASE_ALBEDO: f32 = 0.7;
+
+fn town_light_from_below(position: vec3<f32>, height: f32, weather: WeatherSample) -> vec3<f32> {
+    let glow = glow_light();
+    if glow.w <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    let up = glow_field(planet_to_world(position).xz, height).z;
+    if up <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    let extinction = saturate4(weather.density * clouds.density_scales * layer_density(weather.height_fraction)) * (clouds.medium.x + clouds.medium.y);
+    let below = weather.height_fraction * (clouds.max_layer_heights - clouds.min_layer_heights);
+    let optical_depth = GROUND_FILL * dot(extinction, below);
+    return glow.rgb * (TOWN_BASE_ALBEDO * (1.0 + GROUND_FILL) * RECIPROCAL_PI * up * exp(-optical_depth));
+}
+
 // The share of the sky's light the cloud about a sample lets reach it (Guerrilla 2022: pow(1 − profile, 0.5), the
 // profile a field rising from 0 at a cloud's outside to 1 in its core). The profile here is the sample's layer's weather
 // before the shape and detail noise carve it (`WeatherSample.density`): 0 at the envelope's edge, top and base, rising
@@ -582,6 +605,7 @@ fn sample_radiance(
     }
 
     radiance += sky_light(irradiance, weather, media, column, surface_normal) * RECIPROCAL_PI4 * clouds.scattering.x;
+    radiance += town_light_from_below(position, height, weather);
 
     // A lightning flash lights the cloud about its channel.
     if sky.lightning_intensity > 0.0 {

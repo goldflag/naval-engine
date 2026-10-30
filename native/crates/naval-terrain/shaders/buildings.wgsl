@@ -119,6 +119,7 @@ const REGION_NILE: u32 = 16u;
 const REGION_HAWAII: u32 = 17u;
 const REGION_MICRONESIA: u32 = 18u;
 const REGION_ATOLL: u32 = 19u;
+const REGION_TAIWAN: u32 = 20u;
 
 // `facades::Material`: the walls' layers.
 const MATERIAL_RENDER: u32 = 0u;
@@ -164,9 +165,10 @@ const WINDOW_PUNCHED: u32 = 25u;
 const WINDOW_AWNING: u32 = 26u;
 const WINDOW_SIGNBOARD: u32 = 27u;
 const WINDOW_LOUVRES: u32 = 28u;
+const WINDOW_CAGE: u32 = 29u;
 const WINDOW_NONE: u32 = 255u;
 // The windows' count: the surface array's second half holds each one's recess (`facades::Facades::window_surface`).
-const WINDOW_COUNT: u32 = 29u;
+const WINDOW_COUNT: u32 = 30u;
 
 // The walls' materials by palette entry (0-31; the colour cube's are render).
 const WALL_MATERIALS = array<u32, 32>(
@@ -608,7 +610,7 @@ fn region_wet(region: u32) -> f32 {
         case REGION_BRITISH, REGION_CELTIC: {
             return 1.0;
         }
-        case REGION_TROPICAL, REGION_MICRONESIA, REGION_ATOLL, REGION_HAWAII: {
+        case REGION_TROPICAL, REGION_MICRONESIA, REGION_ATOLL, REGION_HAWAII, REGION_TAIWAN: {
             return 0.9;
         }
         case REGION_NORTH_SEA: {
@@ -658,6 +660,9 @@ fn region_sun(region: u32) -> f32 {
         }
         case REGION_TROPICAL: {
             return 0.6;
+        }
+        case REGION_TAIWAN: {
+            return 0.45;
         }
         default: {
             return 0.0;
@@ -737,7 +742,8 @@ fn grime_mean(n: vec3<f32>, region: u32, takes: f32, age: f32, sooty: bool) -> G
 // it (`grime_mean`).
 fn wall_grime(along: f32, up: f32, top: f32, sill: f32, under: f32, n: vec3<f32>, region: u32, kind: u32, material: u32,
     age: f32, sooty: bool, seed: f32, footprint: f32) -> Grime {
-    let takes = takes_dirt(material);
+    // Taiwan's facade tiles streaked and darkened by its rains as render is, not rinsed as glazed tile elsewhere.
+    let takes = select(takes_dirt(material), 0.7, region == REGION_TAIWAN && material == MATERIAL_TILE);
     var g = grime_mean(n, region, takes, age, sooty);
     let metal = material == MATERIAL_CORRUGATED;
     let wet = region_wet(region);
@@ -811,7 +817,7 @@ fn rolled_tiles(entry: u32, region: u32) -> bool {
     let clay = entry == 0u || entry == 1u || entry == 16u || entry == 17u || entry == 23u;
     let south = region == REGION_MEDITERRANEAN || region == REGION_MALTA || region == REGION_AEGEAN
         || region == REGION_NORTH_AFRICA || region == REGION_ARID || region == REGION_NILE || region == REGION_WEST
-        || region == REGION_FLORIDA || region == REGION_HAWAII || region == REGION_NORTH_SEA;
+        || region == REGION_FLORIDA || region == REGION_HAWAII || region == REGION_NORTH_SEA || region == REGION_TAIWAN;
     return clay && south;
 }
 
@@ -1118,6 +1124,9 @@ fn net_share(region: u32) -> f32 {
     }
     if region == REGION_EAST_ASIA {
         return 0.0;
+    }
+    if region == REGION_TAIWAN {
+        return 0.05;
     }
     return 0.12;
 }
@@ -1514,6 +1523,9 @@ fn window_half(style: u32) -> f32 {
         case WINDOW_GARAGE, WINDOW_ROLLER, WINDOW_CARRIAGE_DOOR, WINDOW_SHOJI, WINDOW_AMADO: {
             return 0.44;
         }
+        case WINDOW_CAGE: {
+            return 0.38;
+        }
         default: {
             return 0.0;
         }
@@ -1549,7 +1561,8 @@ fn nominal_bay(kind: u32) -> f32 {
 
 // A wall's material: its palette entry's (`WALL_MATERIALS`, `WALL_MATERIALS_EXTRA`; the colour cube's render), render
 // as stucco in a warm country and as siding or boards on an American or Nordic house (and on half of East Asia's),
-// painted sheet on much of Iceland's, concrete panels as render on a house and as tile on most East Asian blocks.
+// painted sheet on much of Iceland's, concrete panels as render on a house and as tile on most East Asian blocks; in
+// Taiwan small tiles on four homes in five (brick's colours too), bare or painted concrete on the rest.
 fn wall_material(entry: u32, region: u32, kind: u32, seed: f32) -> u32 {
     var m = MATERIAL_RENDER;
     if entry >= EXTRA_FIRST {
@@ -1562,6 +1575,11 @@ fn wall_material(entry: u32, region: u32, kind: u32, seed: f32) -> u32 {
         m = MATERIAL_RENDER;
     }
     let pick = hash12(vec2<f32>(seed, 19.0));
+    let home = kind == KIND_HOUSE || kind == KIND_TERRACE || kind == KIND_BLOCK || kind == KIND_TOWER;
+    if region == REGION_TAIWAN && home && (m == MATERIAL_RENDER || m == MATERIAL_PANELS || m == MATERIAL_BRICK
+        || m == MATERIAL_SIDING || m == MATERIAL_ASHLAR) {
+        return select(MATERIAL_RENDER, MATERIAL_TILE, pick < 0.8);
+    }
     if m == MATERIAL_RENDER {
         let warm = region == REGION_MEDITERRANEAN || region == REGION_WEST || region == REGION_ARID
             || region == REGION_TROPICAL || region == REGION_FLORIDA || region == REGION_MALTA
@@ -1596,11 +1614,15 @@ fn wall_material(entry: u32, region: u32, kind: u32, seed: f32) -> u32 {
 // The window in a bay and storey (`WINDOW_NONE`: plain wall) by the region and the building's kind, its hash and the
 // bay's: a house's door, and in America a garage, on the ground floor now and then; a shop front on half the blocks'
 // ground floors and balconies stacked in seven bays in ten; an office's curtain wall or ribbons; a factory's high
-// ribbon; a warehouse's roller doors; a church's tall arches under its belfry.
+// ribbon; a warehouse's roller doors; a church's tall arches under its belfry. Taiwan's homes: `window_style_taiwan`.
 fn window_style(region: u32, kind: u32, detail: bool, floor_index: f32, rows: f32, bay: f32, seed: f32, variant: f32) -> u32 {
     let ground = floor_index < 1.0;
     let top = floor_index >= rows - 1.0;
     let cell = hash13(vec3<f32>(floor(bay), 41.0, seed));
+    let home = kind == KIND_HOUSE || kind == KIND_TERRACE || kind == KIND_BLOCK || kind == KIND_TOWER;
+    if region == REGION_TAIWAN && home {
+        return window_style_taiwan(kind, detail, floor_index, bay, seed, variant, cell);
+    }
     if kind == KIND_HOUSE || kind == KIND_TERRACE {
         if ground && cell < 0.16 {
             return WINDOW_DOOR;
@@ -1680,6 +1702,38 @@ fn window_style(region: u32, kind: u32, detail: bool, floor_index: f32, rows: f3
         return select(WINDOW_ARCHED, WINDOW_BELFRY, rows > 1.0 && top);
     }
     return WINDOW_NONE;
+}
+
+// Taiwan's homes: on a townhouse's ground floor a roller shutter (鐵捲門: its scooters, its shop) on most bays, a door now
+// and then; above, aluminium sliders, most of them behind iron cages (鐵窗: a house's share by its hash, half to all);
+// a walk-up's or tower's shops along its ground floor (three in four), its balconies stacked, cages on a walk-up's
+// windows and a few of a tower's.
+fn window_style_taiwan(kind: u32, detail: bool, floor_index: f32, bay: f32, seed: f32, variant: f32, cell: f32) -> u32 {
+    let ground = floor_index < 1.0;
+    let caged = hash13(vec3<f32>(floor(bay), floor_index + 7.0, seed)) < select(0.15, 0.5 + 0.5 * variant, kind != KIND_TOWER);
+    if kind == KIND_HOUSE || kind == KIND_TERRACE {
+        if ground {
+            if cell < 0.16 {
+                return WINDOW_DOOR;
+            }
+            return select(WINDOW_SLIDER, WINDOW_ROLLER, cell < 0.75);
+        }
+        return select(WINDOW_SLIDER, WINDOW_CAGE, caged);
+    }
+    if ground {
+        if hash12(vec2<f32>(seed, 3.0)) < 0.75 {
+            return WINDOW_SHOPFRONT;
+        }
+        return select(WINDOW_ROLLER, WINDOW_DOOR, cell < 0.2);
+    }
+    let stack = hash12(vec2<f32>(floor(bay) + seed * 0.37, 13.0)) < 0.6;
+    if detail && stack {
+        return select(WINDOW_JAPAN_BALCONY, WINDOW_BALCONY, kind == KIND_BLOCK && variant < 0.5);
+    }
+    if caged {
+        return WINDOW_CAGE;
+    }
+    return select(WINDOW_SLIDER, WINDOW_JAPAN_BLOCK, kind == KIND_TOWER);
 }
 
 // A past period's wall material: no concrete panels, glazed tile or vinyl siding. Panels and tile become render (stucco
@@ -1834,6 +1888,17 @@ fn accent_colour(region: u32, kind: u32, seed: f32, wall: vec3<f32>) -> vec3<f32
     } else if region == REGION_MALTA && pick > 0.7 {
         // A Maltese balcony's red.
         c = vec3<f32>(0.32, 0.05, 0.04);
+    } else if region == REGION_TAIWAN {
+        // Taiwan's iron cages and doors: white, cream, rusted or aluminium grey.
+        if pick < 0.45 {
+            c = vec3<f32>(0.62, 0.62, 0.6);
+        } else if pick < 0.6 {
+            c = vec3<f32>(0.52, 0.48, 0.38);
+        } else if pick < 0.85 {
+            c = vec3<f32>(0.2, 0.08, 0.035);
+        } else {
+            c = vec3<f32>(0.34, 0.35, 0.35);
+        }
     } else if pick < 0.25 {
         c = vec3<f32>(0.07, 0.12, 0.2);
     } else if pick < 0.45 {

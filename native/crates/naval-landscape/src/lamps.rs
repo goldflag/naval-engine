@@ -286,9 +286,11 @@ pub fn set_shown(shown: bool) {
     SHOWN.store(shown, Ordering::Relaxed);
 }
 
-/// The palette of the land about `geo`: Japan's white, else sodium.
+/// The palette of the land about `geo`: Japan's white and Taiwan's (its street lights LED; the buildings' Taiwan, with
+/// Kinmen and Matsu and without Fujian's coast, `region::taiwanese`), else sodium.
 pub fn palette_at(geo: LatLon) -> LampPalette {
-    if (24.0..=46.0).contains(&geo.lat) && (122.5..=146.0).contains(&geo.lon) {
+    let japan = (24.0..=46.0).contains(&geo.lat) && (122.5..=146.0).contains(&geo.lon);
+    if japan || naval_terrain::buildings::region::taiwanese(geo.lat, geo.lon) {
         LampPalette::White
     } else {
         LampPalette::Sodium

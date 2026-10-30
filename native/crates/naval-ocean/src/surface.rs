@@ -505,6 +505,17 @@ impl OceanSurface {
                     },
                     count: None,
                 },
+                // The foam field (`crate::foam_sim`): its two states, an array.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 18,
+                    visibility: fragment,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
@@ -868,6 +879,10 @@ impl OceanSurface {
                     binding: 17,
                     resource: hull_sides.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 18,
+                    resource: wgpu::BindingResource::TextureView(wake.foam_sim),
+                },
             ],
         })
     }
@@ -1135,6 +1150,8 @@ fn filtered_texture(binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindG
 struct CalmWake {
     uniforms: wgpu::Buffer,
     display: wgpu::TextureView,
+    /// The same texel as an array (the foam field's binding).
+    foam_sim: wgpu::TextureView,
 }
 
 impl CalmWake {
@@ -1145,23 +1162,30 @@ impl CalmWake {
             usage: wgpu::BufferUsages::UNIFORM,
             mapped_at_creation: false,
         });
-        let display = device
-            .create_texture(&wgpu::TextureDescriptor {
-                label: Some("calm wake"),
-                size: wgpu::Extent3d {
-                    width: 1,
-                    height: 1,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba16Float,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            })
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        Self { uniforms, display }
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("calm wake"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let display = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let foam_sim = texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        Self {
+            uniforms,
+            display,
+            foam_sim,
+        }
     }
 
     fn bindings(&self) -> WakeBindings<'_> {
@@ -1171,6 +1195,7 @@ impl CalmWake {
             trail_atlas: &self.display,
             torpedo_field: &self.display,
             oil_atlas: &self.display,
+            foam_sim: &self.foam_sim,
         }
     }
 }

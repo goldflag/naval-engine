@@ -12,6 +12,7 @@ use crate::bow_waves::{BowShip, BowWaves};
 use crate::hull_foam::{ContactShip, HULL_FOAM_SLOTS, HullContactFoam, STRIDE};
 use crate::hull_profile::WaterlineProfile;
 use crate::oil::{OIL_FAR_EXTENT, OIL_NEAR_EXTENT, OIL_RESOLUTION, OIL_SLOTS, OIL_TILES};
+use crate::splash_foam::{charge_scale, splash_scale};
 use crate::stamps::{AtlasKind, StampPainter};
 use crate::torpedo_tracks::{TorpedoTracks, TrackTorpedo};
 use crate::trail::{ATLAS_CAPACITY, FleetTrails, TILES, TrailShip, WakeHull};
@@ -30,8 +31,12 @@ const HULL_ROWS: usize = HULL_FOAM_SLOTS * STRIDE;
 /// (`crate::oil::OilRows`, section-major).
 const OIL_HEADER: usize = 3;
 const OIL_ROWS: usize = 5 * OIL_SLOTS;
+/// The splashes' deposits' rows ([`crate::splash_foam::SplashDeposits::rows`]), then the foam field's
+/// (`Wake.foam_state`, `Wake.sim`, `Wake.sim_grid`, [`crate::foam_sim::FoamSim::rows`]), last.
+const FOAM_ROWS: usize = crate::splash_foam::SPLASH_ROWS + 3;
 /// The `Wake` uniform's size in vec4s.
-pub const WAKE_VEC4S: usize = HEADER + TILE_ROWS + BOW_ROWS + HULL_ROWS + OIL_HEADER + OIL_ROWS;
+pub const WAKE_VEC4S: usize =
+    HEADER + TILE_ROWS + BOW_ROWS + HULL_ROWS + OIL_HEADER + OIL_ROWS + FOAM_ROWS;
 /// The wake field spans this many metres around the focus hull, keeping a 250 m hull's whole trail.
 pub const WORLD_SIZE: f64 = 1536.0;
 /// Hulls within this distance (each axis) of the focus get the field's generators, the nearest eight of them.
@@ -43,6 +48,12 @@ pub const RELAY_TURN: f64 = 0.0087;
 /// A hull's own waves break in the field along her sides: within this many beams of the line from her bow and stern
 /// generators to her middle (a Bismarck's, at full speed, all within 1.1 beams; a destroyer's not at all).
 pub const BREAK_REACH: f64 = 1.25;
+
+/// How much of a hull's wake reaches the surface with her origin at `y` (m; below 0 a diving submarine): all of it at
+/// the surface, none from 3 m down. Her waves, trail, bow wave and the foam field's churn read her speed times this.
+pub fn surfaced(y: f64) -> f64 {
+    (1.0 + y / 3.0).clamp(0.0, 1.0)
+}
 
 /// A drawn hull as the wakes read it.
 #[derive(Clone, Copy, Debug)]
@@ -69,7 +80,8 @@ pub struct WakeShip<'a> {
     pub oil_leak_m3s: f64,
 }
 
-/// A splash (or aircraft crash) that rings the trails with foam.
+/// A splash (or aircraft crash, or a torpedo's entry) that leaves a deposit of white water
+/// ([`crate::splash_foam`]), sized by its calibre.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WakeSplash {
     pub sequence: u64,
@@ -108,6 +120,8 @@ pub struct WakeBindings<'a> {
     pub torpedo_field: &'a wgpu::TextureView,
     /// The oil slicks' atlas ([`crate::oil`], `shaders/oil.wgsl`).
     pub oil_atlas: &'a wgpu::TextureView,
+    /// The foam field's two states, an array ([`crate::foam_sim`]; binding 18).
+    pub foam_sim: &'a wgpu::TextureView,
 }
 
 /// A wake field kept stepping about a hull the view has left for one beyond the field ([`ShipWake::update`]): the
@@ -155,6 +169,13 @@ pub struct ShipWake {
     dt: f64,
     /// Moves when the textures the surface binds are remade (a field reset), so it knows to rebind.
     pub version: u64,
+    /// The foam field ([`crate::foam_sim`]): none on a tier without one ([`ShipWake::set_foam_grid`]).
+    pub foam_sim: crate::foam_sim::FoamSim,
+    /// Where its window goes and the sterns that feed it this frame (from [`ShipWake::update`]).
+    sim_centre: Option<[f64; 2]>,
+    sim_sterns: Vec<crate::foam_sim::SimStern>,
+    /// What the surface binds while there is no foam field: a calm array.
+    calm_sim: wgpu::TextureView,
 }
 
 /// The wakes' pipelines on the renderer's registry ([`ShipWake::register_pipelines`]).
@@ -164,6 +185,7 @@ pub struct ShipWakePipelines {
     trail: PipelineId,
     torpedo: PipelineId,
     oil: PipelineId,
+    foam_sim: crate::foam_sim::FoamSimPipelines,
 }
 
 impl ShipWake {
@@ -188,6 +210,7 @@ impl ShipWake {
             trail: self.trail_painter.register_pipeline(ctx)?,
             torpedo: self.torpedo_painter.register_pipeline(ctx)?,
             oil: self.oil_painter.register_pipeline(ctx)?,
+            foam_sim: self.foam_sim.register_pipelines(ctx)?,
         })
     }
 
@@ -210,6 +233,7 @@ impl ShipWake {
         changed |= self.trail_painter.adopt_pipeline(registry, ids.trail);
         changed |= self.torpedo_painter.adopt_pipeline(registry, ids.torpedo);
         changed |= self.oil_painter.adopt_pipeline(registry, ids.oil);
+        changed |= self.foam_sim.adopt_pipelines(registry, &ids.foam_sim);
         changed
     }
 
@@ -300,6 +324,28 @@ impl ShipWake {
             center: [0.0; 2],
             dt: 0.0,
             version: 0,
+            foam_sim: crate::foam_sim::FoamSim::build(device, None, make),
+            sim_centre: None,
+            sim_sterns: Vec::new(),
+            calm_sim: device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some("calm foam sim"),
+                    size: wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba16Float,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+                .create_view(&wgpu::TextureViewDescriptor {
+                    dimension: Some(wgpu::TextureViewDimension::D2Array),
+                    ..Default::default()
+                }),
         }
     }
 
@@ -315,6 +361,7 @@ impl ShipWake {
             trail_atlas: self.trail_painter.view(),
             torpedo_field: self.torpedo_painter.view(),
             oil_atlas: self.oil_painter.view(),
+            foam_sim: self.foam_sim.states().unwrap_or(&self.calm_sim),
         }
     }
 
@@ -333,6 +380,12 @@ impl ShipWake {
         } else {
             [0.0; 2]
         };
+    }
+
+    /// Size the foam field for a tier ([`crate::foam_sim::FoamGrid::for_tier`]; none: the surface draws all the foam).
+    pub fn set_foam_grid(&mut self, grid: Option<crate::foam_sim::FoamGrid>) {
+        self.foam_sim.set_grid(grid);
+        self.version += 1;
     }
 
     /// The CPU half of a frame (`ShipWake.update`).
@@ -392,8 +445,10 @@ impl ShipWake {
             raise_waves(&mut standby.field, &mut standby.generators, centre, &ships);
         }
         let camera = inputs.camera;
-        let splashes: Vec<(f64, f64, f64)> =
-            fresh.iter().map(|s| (s.x, s.z, s.caliber_m)).collect();
+        let splashes: Vec<(f64, f64, f64)> = fresh
+            .iter()
+            .map(|s| (s.x, s.z, splash_scale(s.caliber_m)))
+            .collect();
         let trail_ships: Vec<TrailShip<'_>> = ships
             .iter()
             .map(|s| TrailShip {
@@ -414,6 +469,19 @@ impl ShipWake {
             .collect();
         self.trails
             .update(&trail_ships, dt, &splashes, Some((camera.eye, camera.zoom)));
+        // The foam field: its window astern of the focus hull (or about the water the view looks at, far from her), fed
+        // by every stern under way at the surface.
+        self.sim_centre = None;
+        self.sim_sterns.clear();
+        if let Some(grid) = self.foam_sim.grid() {
+            use crate::foam_sim::{place_window, stern_source, window_centre};
+            let hull = inputs.ships.first().map(|s| {
+                window_centre(s.position, s.heading, s.speed, s.forward_speed, grid.edge())
+            });
+            self.sim_centre = place_window(hull, camera.eye, camera.forward, grid.half());
+            self.sim_sterns
+                .extend(ships.iter().filter_map(stern_source));
+        }
         let torpedo_camera = Some((camera.eye, camera.forward, camera.zoom));
         self.torpedoes
             .update(inputs.torpedoes, dt, self.center, torpedo_camera);
@@ -612,6 +680,24 @@ impl ShipWake {
             self.trail_painter
                 .repaint(device, queue, encoder, &collectors);
         }
+        // The foam field steps once the trails its new cells start from are painted.
+        if let Some(centre) = self.sim_centre {
+            let s = &self.trails.shading;
+            let frame = crate::foam_sim::FoamFrame {
+                dt: self.dt,
+                centre,
+                drift: self.trails.oil_drift,
+                sterns: &self.sim_sterns,
+                splashes: &self.trails.deposits,
+                now: self.trails.time,
+                trail_atlas: self.trail_painter.view(),
+                tiles: &self.trails.rows,
+                shading: [s.foam_start, s.foam_full, s.foam_cover, s.slick_full],
+            };
+            if self.foam_sim.update(device, queue, encoder, timer, &frame) {
+                self.version += 1;
+            }
+        }
         if let Some(collectors) = self.trails.take_oil_repaint() {
             self.oil_painter
                 .repaint(device, queue, encoder, &collectors);
@@ -727,6 +813,14 @@ impl ShipWake {
             data[rows + 3 * OIL_SLOTS + i] = row.far_box;
             data[rows + 4 * OIL_SLOTS + i] = row.box_;
         }
+        // The splashes' deposits' rows, then the foam field's.
+        let deposits = rows + OIL_ROWS;
+        let field = deposits + crate::splash_foam::SPLASH_ROWS;
+        let count = self
+            .trails
+            .deposits
+            .rows(self.trails.time, &mut data[deposits..field]);
+        data[field..field + 3].copy_from_slice(&self.foam_sim.rows(count));
         data
     }
 
@@ -737,6 +831,7 @@ impl ShipWake {
         self.bow_waves.reset();
         self.hull_foam.reset();
         self.event_sequence = 0;
+        self.foam_sim.reset();
         self.standby = None;
         self.anchor = None;
         self.taken = Taken::Kept;
@@ -773,8 +868,17 @@ impl ShipWake {
         }
     }
 
-    /// What `strike` at world `x`, `z` does to the sea ([`strike_impulse`]), laid as [`ShipWake::add_impulse`].
+    /// What `strike` at world `x`, `z` does to the sea: its waves ([`strike_impulse`]), laid as
+    /// [`ShipWake::add_impulse`] on the fields there are, and a charge's white water, a deposit as its splash's
+    /// ([`crate::splash_foam::SplashDeposits::lay_charge`]: the foam field lays it within its window, the surface draws
+    /// it beyond and on Low). A round's and an aircraft's white water are their splashes' ([`WakeSplash`]).
     pub fn strike(&mut self, x: f64, z: f64, strike: &Strike) {
+        if let Strike::Charge { kg, depth } = *strike {
+            let now = self.trails.time;
+            self.trails
+                .deposits
+                .lay_charge(now, x, z, charge_scale(kg, depth));
+        }
         if let Some(impulse) = self
             .least_radius()
             .and_then(|least| strike_impulse(x, z, strike, least))
@@ -832,6 +936,15 @@ impl ShipWake {
         old: &mut Self,
         moved: &dyn Fn([f64; 2]) -> Option<[f64; 2]>,
     ) {
+        // The foam field moves with the scene where the charts barely turn its water; elsewhere this scene's own starts
+        // afresh, every cell cleared (the surface draws the foam itself while they come to hold it).
+        if let Some(shift) = old.foam_sim.centre().and_then(moved)
+            && self
+                .foam_sim
+                .take_from(device, &mut old.foam_sim, shift, self.trail_painter.view())
+        {
+            self.version += 1;
+        }
         let Some(mine) = self.field.as_mut() else {
             return;
         };
@@ -978,8 +1091,7 @@ fn raise_waves(
         let Some(&(_, bow, stern)) = generators.iter().find(|(id, ..)| id == ship.id) else {
             continue;
         };
-        let surface = (1.0 + ship.position[1] / 3.0).clamp(0.0, 1.0);
-        let speed = ship.speed.abs() * surface;
+        let speed = ship.speed.abs() * surfaced(ship.position[1]);
         let ratio = (speed / ship.forward_speed.max(1e-3)).min(1.0);
         field.generators.update(bow, |g| {
             g.active = speed > 0.1;

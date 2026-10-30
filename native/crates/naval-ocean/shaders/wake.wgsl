@@ -12,6 +12,7 @@
 
 #import naval::camera::camera
 #import naval_ocean::mx_noise::mx_noise_float
+#import naval_ocean::noise::{noise_hash, noise_seed, gradient_noise}
 
 const TILES: f32 = 8.0;
 const TILE_COUNT: i32 = 64;
@@ -63,6 +64,17 @@ struct Wake {
     // Oil slots, section-major: the fine square's centre and the atlas tile, the wide square's centre, what each
     // painted, both.
     oil_tiles: array<vec4<f32>, 45>,
+    // The splashes' deposits (naval_ocean::splash_foam, src/splash_foam.rs), youngest first, two rows each: where the
+    // deposit lies now (xy), its age (s) and its round's scale; its seed (0–1), its skew downwind (m) and how far from
+    // xy it reaches.
+    splashes: array<vec4<f32>, 128>,
+    // x the deposits in use; y the foam field's newest state (its layer), z 1 once there is a field
+    // (naval_ocean::foam_sim, src/foam_sim.rs).
+    foam_state: vec4<f32>,
+    // The foam field's window, last: its centre cell's corner (world m, xy) and that cell's texel (zw); a cell's edge
+    // (m) and the cells along an edge.
+    sim: vec4<f32>,
+    sim_grid: vec4<f32>,
 }
 
 @group(1) @binding(5) var<uniform> wake: Wake;
@@ -98,6 +110,8 @@ fn mesh_spacing(xz: vec2<f32>) -> f32 {
 // slot, side (port, starboard) and station from her stem aft, (now, climb, slap, rise). A contact slot's slap row names
 // her slot in it; read by the fragment stage alone (`side_slap`).
 @group(1) @binding(17) var<storage, read> hull_side_state: array<vec4<f32>>;
+// The foam field's two states (src/foam_sim.rs, shaders/foam_sim.wgsl): (thickness, turbulence, residue, validity).
+@group(1) @binding(18) var foam_sim: texture_2d_array<f32>;
 
 // ---- The wake field -------------------------------------------------------------------------------------------------
 
@@ -650,13 +664,6 @@ const WAKE_TEAR: f32 = 0.3;
 // itself once the water is old: the pale turquoise stays close astern.
 const BUBBLES_INSIDE: f32 = 0.3;
 const OLD_BUBBLES: f32 = 0.4;
-// The turbulence below which a splash's foam (no band) is lace rather than dense white water.
-const SPLASH_YOUNG: f32 = 0.7;
-// A splash's patch is mottled over this many eddy lengths, and keeps at least this share of its cover where the mottling
-// is thinnest: broad soft patches, never an outline cut along one level of the eddies.
-const SPLASH_MOTTLE: f32 = 2.8;
-const SPLASH_THINNEST: f32 = 0.3;
-
 // Streaks along a band at `band` half-widths from its centreline: fine across it, drawn out along it (world-anchored, in
 // beams), braided by warps that wander at two scales, evolving at `time`. 0–1, about uniform.
 fn wake_streaks(band: f32, world: vec2<f32>, beam: f32, time: f32) -> f32 {
@@ -842,77 +849,52 @@ fn trail_read(at: vec2<f32>, footprint: f32) -> TrailSample {
             let uv = (at - bounds.xy) / WAKE_EXTENT + 0.5;
             band = track_coordinate(textureSampleLevel(trail_atlas, wake_sampler, (uv + bounds.zw) / TILES, 0.0).b);
             if band < 0.0 {
-                // Coverage the warp brought from a band, read past where the band says where it lies: outside it, not
-                // a splash's dense white water (whose own stamps carry no band where the coverage was read).
-                let source = (world - bounds.xy) / WAKE_EXTENT + 0.5;
-                let there = textureSampleLevel(trail_atlas, wake_sampler, (source + bounds.zw) / TILES, 0.0).b;
-                band = select(-1.0, TRACK_RANGE, track_coordinate(there) >= 0.0);
+                // Coverage the warp brought from a band, read past where the band says where it lies: outside it.
+                band = TRACK_RANGE;
             }
         }
         let time = wake.trail.y;
         // Where the eddies and streaks fall below a pixel, it takes their mean cover instead of shimmering.
         let resolved = 1.0 - smoothstep(0.15, 0.6, footprint * f);
         if turbulence > 0.01 {
-            // World-anchored eddies from ten metres down to a metre and a half, evolving slowly: the young water's churn.
-            let coarse = 1.0 - fine;
-            let eddies = mx_noise_float(vec3<f32>(world * f, time * 0.05)) * (coarse * 0.56)
-                + mx_noise_float(vec3<f32>(world * (f * 2.4) + 17.0, time * 0.09)) * (coarse * 0.44)
-                + mx_noise_float(vec3<f32>(world * (f * 6.0) + 41.0, time * 0.16)) * fine;
-            var pattern = clamp(eddies * 1.3 + 0.5, 0.0, 1.0);
+            // World-anchored eddies from ten metres down to a metre and a half: the young water's churn, carried on the
+            // trail's water (flow maps), not scrolled through time.
+            let flow = flow_phases(world, trail_velocity(at, strongest, turbulence, band, beam), time);
+            let eddies = blend0(trail_eddies(flow.from_a, f, fine), trail_eddies(flow.from_b, f, fine), 1.0 - flow.weight);
             young = smoothstep(YOUNG_START, YOUNG_FULL, turbulence);
-            if band < 0.0 {
-                // A splash's boil is dense white water only at its height; its spreading ring is lace from the first.
-                young = smoothstep(SPLASH_YOUNG, 1.0, turbulence);
+            // The band's edges wander a little along it, as a spreading wake's do.
+            let wander = 1.0 + (mx_noise_float(vec3<f32>(world / (beam * 2.2), time * 0.01)) * 0.7
+                + mx_noise_float(vec3<f32>(world / (beam * 0.6) + 7.0, time * 0.02)) * 0.3) * EDGE_WANDER;
+            let across = band * wander;
+            // Away from the stern the foam lies in streaks along the track, down the middle and along the edges.
+            let streaks = blend01(wake_streaks(band, flow.from_a, beam, 0.0), wake_streaks(band, flow.from_b, beam, 0.0),
+                1.0 - flow.weight);
+            // Its white in patches along it and in masses on the boils, its old foam gathered in clumps.
+            let clumps = blend01(clump_field(flow.from_a), clump_field(flow.from_b), 1.0 - flow.weight);
+            let banded = banded_foam(world, at, across, turbulence, young, beam, streaks,
+                clamp(eddies * 1.3 + 0.5, 0.0, 1.0), mix(0.5, clumps, clumps_resolved(footprint)),
+                vec3<f32>(foam_start, foam_full, foam_cover));
+            let cover = banded.x;
+            let pattern = banded.y;
+            // The bubble cloud fills the band, densest down the middle, patchy and streaked like the foam over it,
+            // fading out across the outer part of the band.
+            let patches = smoothstep(0.2, 0.8, streaks * 0.5 + (eddies * 0.5 + 0.5) * 0.5);
+            let aerated = (1.0 - smoothstep(BUBBLES_INSIDE, 1.1, across)) * mix(1.0, mix(0.35, 1.0, patches), 1.0 - young)
+                * mix(OLD_BUBBLES, 1.0, young);
+            // The young water's boils (`trail_relief`), read where the point lies as the vertex stage raises them,
+            // down to lumps a few pixels across.
+            let boiling = boil_height(turbulence, beam);
+            if boiling.y > 0.0 {
+                let lump = beam * RELIEF_LUMP;
+                let shown = 1.0 - smoothstep(0.15, 0.35, footprint / lump);
+                let finer = 1.0 - smoothstep(0.15, 0.35, footprint / (lump * RELIEF_FINE));
+                let e = lump * 0.12;
+                let here = boil(at, lump, finer);
+                let rise = vec2<f32>(boil(at + vec2<f32>(e, 0.0), lump, finer), boil(at + vec2<f32>(0.0, e), lump, finer))
+                    - here;
+                boils = vec3<f32>(rise * (boiling.x * shown / e), boiling.y);
             }
-            var cover = smoothstep(foam_start, foam_full, turbulence) * foam_cover;
-            var aerated = 1.0;
-            if band >= 0.0 {
-                // The band's edges wander a little along it, as a spreading wake's do.
-                let wander = 1.0 + (mx_noise_float(vec3<f32>(world / (beam * 2.2), time * 0.01)) * 0.7
-                    + mx_noise_float(vec3<f32>(world / (beam * 0.6) + 7.0, time * 0.02)) * 0.3) * EDGE_WANDER;
-                let across = band * wander;
-                // Away from the stern the foam lies in streaks along the track, down the middle and along the edges.
-                let streaks = wake_streaks(band, world, beam, time);
-                let middle = 1.0 - smoothstep(CORE_WIDTH * 0.35, CORE_WIDTH, across);
-                let inside = 1.0 - smoothstep(0.75, 1.0, across);
-                let edge = exp(-pow((across - EDGE_AT) / EDGE_WIDTH, 2.0));
-                let old_cover = smoothstep(0.0, foam_full, turbulence)
-                    * max(max(middle * CORE_COVER, inside * LACE_COVER), edge * EDGE_COVER);
-                // Even the young water is drawn out along the track a little, thins toward the sides and ends at the
-                // band's edge.
-                pattern = mix(streaks, mix(pattern, streaks, YOUNG_STREAKS), young);
-                let young_cover = cover * (1.0 - smoothstep(0.35, 0.9, across) * YOUNG_SIDES) * (1.0 - smoothstep(0.8, 1.1, across));
-                cover = mix(old_cover, max(young_cover, edge * EDGE_COVER), young);
-                // The bubble cloud fills the band, densest down the middle, patchy and streaked like the foam over it,
-                // fading out across the outer part of the band.
-                let patches = smoothstep(0.2, 0.8, streaks * 0.5 + (eddies * 0.5 + 0.5) * 0.5);
-                aerated = (1.0 - smoothstep(BUBBLES_INSIDE, 1.1, across)) * mix(1.0, mix(0.35, 1.0, patches), 1.0 - young)
-                    * mix(OLD_BUBBLES, 1.0, young);
-                // The young water's boils (`trail_relief`), read where the point lies as the vertex stage raises them,
-                // down to lumps a few pixels across.
-                let boiling = boil_height(turbulence, beam);
-                if boiling.y > 0.0 {
-                    let lump = beam * RELIEF_LUMP;
-                    let shown = 1.0 - smoothstep(0.15, 0.35, footprint / lump);
-                    let finer = 1.0 - smoothstep(0.15, 0.35, footprint / (lump * RELIEF_FINE));
-                    let e = lump * 0.12;
-                    let here = boil(at, lump, finer);
-                    let rise = vec2<f32>(boil(at + vec2<f32>(e, 0.0), lump, finer), boil(at + vec2<f32>(0.0, e), lump, finer))
-                        - here;
-                    boils = vec3<f32>(rise * (boiling.x * shown / e), boiling.y);
-                }
-            }
-            if band < 0.0 {
-                // A splash's patch keeps its energy smooth: the surface's own foam texture tears it into lace
-                // (`churned_water`), thinning as the patch spreads and fades, and the broad mottling here keeps it from
-                // reading as a disc.
-                let mottle = mx_noise_float(vec3<f32>(world * (f / SPLASH_MOTTLE) + 53.0, time * 0.03)) * 0.9
-                    + eddies * 0.35;
-                foam = cover * mix(SPLASH_THINNEST, 1.0, clamp(mottle + 0.6, 0.0, 1.0));
-                pattern = clamp(mottle * 0.8 + 0.5, 0.0, 1.0);
-            } else {
-                foam = torn_foam(cover, pattern, max(tear, WAKE_TEAR), resolved);
-            }
+            foam = torn_foam(cover, pattern, max(tear, WAKE_TEAR), resolved);
             bubbles = smoothstep(bubble_start, bubble_full, turbulence + eddies * bubble_tear) * (pattern * 0.4 + 0.6)
                 * bubble_share * aerated;
         }
@@ -929,8 +911,13 @@ fn trail_read(at: vec2<f32>, footprint: f32) -> TrailSample {
             // The old wake's middle: a few thin streaks of foam over a faint bubble cloud, as long as the slick lasts.
             let strength = smoothstep(0.0, 0.6, slick);
             let middle = 1.0 - smoothstep(RESIDUAL_WIDTH * 0.4, RESIDUAL_WIDTH, across);
-            let streaks = wake_streaks(slick_band * 0.5, world, slick_beam, time);
-            let residual = torn_foam(strength * middle * RESIDUAL_COVER, streaks, tear, resolved);
+            // Its streaks ride the drift, gathered in clumps.
+            let drift = flow_phases(world, wake.oil_flow.xy, time);
+            let streaks = blend01(wake_streaks(slick_band * 0.5, drift.from_a, slick_beam, 0.0),
+                wake_streaks(slick_band * 0.5, drift.from_b, slick_beam, 0.0), 1.0 - drift.weight);
+            let residual_pattern = blend01(streaks, blend01(clump_field(drift.from_a), clump_field(drift.from_b),
+                1.0 - drift.weight), TRAIL_CLUMPING);
+            let residual = torn_foam(strength * middle * RESIDUAL_COVER, residual_pattern, tear, resolved);
             foam = max(foam, residual * (1.0 - young));
             let patches = smoothstep(0.25, 0.75, streaks);
             bubbles = max(bubbles, strength * (1.0 - smoothstep(0.2, 0.75, across)) * mix(0.5, 1.0, patches) * residue);
@@ -1306,12 +1293,39 @@ struct WakeSurface {
     variance: f32,
     // How much of the light through the waves the churned water against a hull under way takes back (`hull_foam`).
     froth: f32,
+    // How much of the foam's cover is drawn as its mean rather than the foam texture's lace (`soft` 1 its mean alone): a
+    // splash's deposit and the field's foam read as soft blotches, not cut-out flakes of lace.
+    soft: f32,
+    // How much of that foam is one dense mass, the lace's holes closed (the foam field's thick foam, `SIM_SOLID`): its
+    // flakes show only where it thins.
+    mass: f32,
 }
 
 // Everything the fragment stage reads at grid point `xz` (the displaced point `world`); `footprint` from uniform flow.
 fn wake_surface(xz: vec2<f32>, world: vec3<f32>, footprint: f32) -> WakeSurface {
     let field = wake_field(xz);
-    let trail = trail_read(xz, footprint);
+    var trail = trail_read(xz, footprint);
+    // The foam field's foam takes the trails' and the splashes' place within its window; the surface draws them itself
+    // beyond it, over its edge and where the field's cells have yet to hold what lies there (`sim_sample`). A splash's
+    // deposit and the field's foam are soft.
+    let sim = sim_sample(xz, footprint);
+    var soft = 0.0;
+    var mass = 0.0;
+    if sim.weight < 1.0 {
+        let splash = splash_read(xz, footprint);
+        soft = select(0.0, mix(SPLASH_SOFT_OLD, SPLASH_SOFT, splash.young), splash.foam > trail.foam);
+        trail = with_splashes(trail, splash);
+    }
+    if sim.weight > 0.0 {
+        let drawn = sim_read(xz, footprint, sim.field);
+        trail.foam = mix(trail.foam, drawn.foam, sim.weight);
+        trail.young = mix(trail.young, drawn.young, sim.weight);
+        // The bubble cloud under a trail is its own (the field's foam lies on top of it).
+        trail.bubbles = max(trail.bubbles, drawn.bubbles * sim.weight);
+        trail.slick = max(trail.slick, drawn.slick * sim.weight);
+        soft = mix(soft, mix(SIM_SOFT.y, SIM_SOFT.x, drawn.young), sim.weight);
+        mass = smoothstep(SIM_SOLID.x, SIM_SOLID.y, sim.field.x) * sim.weight;
+    }
     // The young churned water's boils tilt it with the field's waves.
     let base = normalize(vec3<f32>(-field.y - trail.boil.x, 1.0, -field.z - trail.boil.y));
     let bow = bow_waves(xz.x, xz.y, false);
@@ -1326,5 +1340,390 @@ fn wake_surface(xz: vec2<f32>, world: vec3<f32>, footprint: f32) -> WakeSurface 
     let young = select(select(1.0, bow_young, bow_foam > fresh), trail.young, trail.foam > other);
     // Boiling water is not stilled by the slick laid with it, and its chop roughens it.
     return WakeSurface(normal, max(other, trail.foam), max(max(trail.bubbles, bow.bubbles), hull.bubbles),
-        trail.slick * (1.0 - trail.boil.z), young, bow.variance + trail.boil.z * RELIEF_ROUGHNESS, hull.froth);
+        trail.slick * (1.0 - trail.boil.z), young, bow.variance + trail.boil.z * RELIEF_ROUGHNESS, hull.froth, soft,
+        select(0.0, mass, trail.foam > other));
+}
+
+// ---- The foam's look ------------------------------------------------------------------------------------------------
+// A trail's and a splash's foam as the surface draws it (clumps, flow maps, a band's patches and masses, a splash's
+// deposit), and the foam field's (src/foam_sim.rs), which takes their place within its window.
+
+// Two patterns, each about uniform 0–1 (or noise of mean 0, `blend0`), mixed by `t` with the spread of either kept.
+fn blend01(a: f32, b: f32, t: f32) -> f32 {
+    return clamp(blend0(a - 0.5, b - 0.5, t) + 0.5, 0.0, 1.0);
+}
+
+fn blend0(a: f32, b: f32, t: f32) -> f32 {
+    return (a * (1.0 - t) + b * t) / sqrt((1.0 - t) * (1.0 - t) + t * t);
+}
+
+// Thin foam in clumps: a field over the water, about uniform 0–1, high in clumps about CLUMP_SIZE metres
+// across, which its coarse octave swells and shrinks from about 2 m to 10 m, with holes between. `clumped` keeps about
+// the share of the water where it is highest, thickening into each clump over CLUMP_SOFT of the field (soft, torn
+// edges, never cut-out flakes); where the pixel is wider than the clumps it takes that share, their mean.
+const CLUMP_SIZE: f32 = 4.0;
+const CLUMP_SOFT: f32 = 0.5;
+
+fn clump_field(p: vec2<f32>) -> f32 {
+    let coarse = gradient_noise(p / (CLUMP_SIZE * 2.7), 811u);
+    let body = gradient_noise(p / CLUMP_SIZE + 19.3, 812u);
+    let fine = gradient_noise(p / (CLUMP_SIZE * 0.4) + 47.1, 813u);
+    return clamp((coarse * 0.9 + body + fine * 0.3) * 0.87 + 0.5, 0.0, 1.0);
+}
+
+fn clumps_resolved(footprint: f32) -> f32 {
+    return 1.0 - smoothstep(0.3, 0.9, footprint / CLUMP_SIZE);
+}
+
+fn clumped(cover: f32, field: f32, resolved: f32) -> f32 {
+    let share = clamp(cover, 0.0, 1.0);
+    let threshold = 1.0 - share;
+    return mix(share, smoothstep(threshold - CLUMP_SOFT * 0.3, threshold + CLUMP_SOFT, field), resolved)
+        * smoothstep(0.0, 0.01, share);
+}
+
+// Two-phase flow maps (Valve's water, Vlachos 2010): the detail at a point is read where its water lay a moment
+// ago, `velocity` times the time since its phase began, in two phases half a FLOW_PERIOD apart, each faded out as it
+// starts over. A slow noise sets each place's phase, so the restarts never pulse together; the second phase reads its
+// detail FLOW_SHIFT off the first's, so the two never show the same foam.
+const FLOW_PERIOD: f32 = 6.0;
+const FLOW_SHIFT: vec2<f32> = vec2<f32>(37.1, -21.7);
+
+struct FlowPhases {
+    from_a: vec2<f32>,
+    from_b: vec2<f32>,
+    // The first phase's share.
+    weight: f32,
+}
+
+fn flow_phases(at: vec2<f32>, velocity: vec2<f32>, time: f32) -> FlowPhases {
+    let phase = fract(time / FLOW_PERIOD + gradient_noise(at / 45.0, 831u) * 2.0);
+    let second = fract(phase + 0.5);
+    return FlowPhases(at - velocity * (phase * FLOW_PERIOD), at - velocity * (second * FLOW_PERIOD) + FLOW_SHIFT,
+        1.0 - abs(2.0 * phase - 1.0));
+}
+
+// A trail's water as the flow maps carry it (m/s): out from the band's middle as fast as it is churned (FLOW_SPREAD), a
+// following current toward the hull close astern (FLOW_FOLLOW), slow eddies TRAIL_EDDY of her beam across
+// (FLOW_EDDY, curl noise), and the surface's drift. Which way the band's middle and its younger water lie is read off the
+// atlas about `at` in the strongest tile.
+const FLOW_SPREAD: f32 = 0.7;
+const FLOW_FOLLOW: f32 = 1.4;
+const FLOW_EDDY: f32 = 0.35;
+const TRAIL_EDDY: f32 = 0.4;
+
+fn trail_velocity(at: vec2<f32>, tile: i32, turbulence: f32, band: f32, beam: f32) -> vec2<f32> {
+    let bounds = wake.tiles[tile];
+    let step = 1.0 / (f32(textureDimensions(trail_atlas).x) / TILES);
+    let uv = (at - bounds.xy) / WAKE_EXTENT + 0.5;
+    let here = textureSampleLevel(trail_atlas, wake_sampler, (uv + bounds.zw) / TILES, 0.0);
+    let east = textureSampleLevel(trail_atlas, wake_sampler, (uv + vec2<f32>(step, 0.0) + bounds.zw) / TILES, 0.0);
+    let south = textureSampleLevel(trail_atlas, wake_sampler, (uv + vec2<f32>(0.0, step) + bounds.zw) / TILES, 0.0);
+    // The band's encoding rises toward its middle, its churn toward the hull.
+    let middle = vec2<f32>(east.b - here.b, south.b - here.b);
+    let younger = vec2<f32>(east.r - here.r, south.r - here.r);
+    let outward = select(vec2<f32>(0.0), -normalize(middle), dot(middle, middle) > 1e-10);
+    var ahead = vec2<f32>(-outward.y, outward.x);
+    ahead *= select(-1.0, 1.0, dot(ahead, younger) >= 0.0);
+    if dot(outward, outward) < 0.5 {
+        ahead = select(vec2<f32>(0.0), normalize(younger), dot(younger, younger) > 1e-10);
+    }
+    let p = at / (beam * TRAIL_EDDY);
+    let psi = gradient_noise(p, 841u);
+    let curl = vec2<f32>(gradient_noise(p + vec2<f32>(0.0, 0.1), 841u) - psi, psi - gradient_noise(p + vec2<f32>(0.1, 0.0), 841u)) * 10.0;
+    return outward * (FLOW_SPREAD * turbulence * clamp(band, 0.0, 1.3)) + ahead * (FLOW_FOLLOW * turbulence * turbulence)
+        + curl * (FLOW_EDDY * (0.3 + turbulence)) + wake.oil_flow.xy;
+}
+
+// The young water's eddies (`trail_read`'s) at `p`, still: the flow carries them.
+fn trail_eddies(p: vec2<f32>, f: f32, fine: f32) -> f32 {
+    let coarse = 1.0 - fine;
+    return mx_noise_float(vec3<f32>(p * f, 0.0)) * (coarse * 0.56)
+        + mx_noise_float(vec3<f32>(p * (f * 2.4) + 17.0, 0.0)) * (coarse * 0.44)
+        + mx_noise_float(vec3<f32>(p * (f * 6.0) + 41.0, 0.0)) * fine;
+}
+
+// A band's foam. Along it the white comes in patches every TRAIL_PATCH beams or so, the band wider and
+// narrower with them (TRAIL_PATCH_WIDTH of it), thinning to TRAIL_PATCH_LEAST of its cover between them; close astern
+// it lies in masses on the boils (`boil`, RELIEF_LUMP of her beam) over TRAIL_MASS_COVER of the game's cover, darker
+// water between; older, its braided rope and lace gather in clumps (TRAIL_CLUMPING). `knobs`: the trail's foam start,
+// full and cover. Returns the cover and the pattern it covers (`torn_foam`).
+const TRAIL_PATCH: f32 = 1.8;
+const TRAIL_PATCH_LEAST: f32 = 0.62;
+const TRAIL_PATCH_WIDTH: f32 = 0.2;
+const TRAIL_MASS_COVER: f32 = 0.92;
+const TRAIL_MASSES: f32 = 0.7;
+const TRAIL_CLUMPING: f32 = 0.55;
+
+fn banded_foam(world: vec2<f32>, at: vec2<f32>, across: f32, turbulence: f32, young: f32, beam: f32, streaks: f32,
+    eddy_pattern: f32, clumps: f32, knobs: vec3<f32>) -> vec2<f32> {
+    let along = gradient_noise(world / (beam * TRAIL_PATCH) + 71.3, 851u)
+        + gradient_noise(world / (beam * TRAIL_PATCH * 0.45) + 13.9, 852u) * 0.45;
+    let patched = smoothstep(-0.18, 0.16, along);
+    let width = across * mix(1.0 + TRAIL_PATCH_WIDTH, 1.0 - TRAIL_PATCH_WIDTH, patched);
+    let middle = 1.0 - smoothstep(CORE_WIDTH * 0.35, CORE_WIDTH, width);
+    let inside = 1.0 - smoothstep(0.75, 1.0, width);
+    let edge = exp(-pow((width - EDGE_AT) / EDGE_WIDTH, 2.0));
+    let old_cover = smoothstep(0.0, knobs.y, turbulence) * max(max(middle * CORE_COVER, inside * LACE_COVER), edge * EDGE_COVER);
+    let young_cover = smoothstep(knobs.x, knobs.y, turbulence) * knobs.z * TRAIL_MASS_COVER
+        * (1.0 - smoothstep(0.35, 0.9, width) * YOUNG_SIDES) * (1.0 - smoothstep(0.8, 1.1, width));
+    let cover = mix(old_cover, max(young_cover, edge * EDGE_COVER), young) * mix(TRAIL_PATCH_LEAST, 1.0, patched);
+    // The boils' lumps, as the relief raises them: white on their tops.
+    let masses = clamp(boil(at, beam * RELIEF_LUMP, 1.0) * 0.4 + 0.5, 0.0, 1.0);
+    let young_pattern = blend01(blend01(eddy_pattern, streaks, YOUNG_STREAKS), masses, TRAIL_MASSES);
+    let old_pattern = blend01(streaks, clumps, TRAIL_CLUMPING);
+    return vec2<f32>(cover, mix(old_pattern, young_pattern, young));
+}
+
+// A splash's own deposit (src/splash_foam.rs `SplashDeposits`, `wake.splashes`). Its radius at `age` (s) for a round
+// of `scale`, as `splash_foam::splash_radius` has it: the base surge pushes it out, then it creeps as it spreads.
+const SPLASH_RADIUS_START: f32 = 7.0;
+const SPLASH_RADIUS_SURGE: f32 = 25.0;
+const SPLASH_SURGE_SECONDS: f32 = 2.8;
+const SPLASH_RADIUS_CREEP: f32 = 0.22;
+// Lobes about its body, and how far its outline frays (a share of its radius).
+const SPLASH_LOBES: i32 = 5;
+const SPLASH_FRAY: f32 = 0.3;
+// The cover of its white water (as the column's water falls back), and of the clumps and streaks it breaks into.
+const SPLASH_WHITE_COVER: f32 = 0.92;
+const SPLASH_BROKEN_COVER: f32 = 0.4;
+// Bubbles under its young white water (the pale turquoise, gone by 30 s), the faint pale water of its scar, and how far
+// the scar stills the short waves (a trail's slick stills 0.75 of them).
+const SPLASH_TINT: f32 = 0.4;
+// How much larger the white water's clumps (and holes) are than those it breaks into, and how far the finer clumps tear
+// its edge and hole it.
+const SPLASH_MASS: f32 = 2.0;
+const SPLASH_TORN: f32 = 0.4;
+// The share of its foam's cover drawn as a soft mean (`WakeSurface::soft`): of its white water, and of what that breaks
+// into.
+const SPLASH_SOFT: f32 = 0.62;
+const SPLASH_SOFT_OLD: f32 = 0.45;
+const SPLASH_PALE: f32 = 0.06;
+const SPLASH_STILL: f32 = 0.35;
+
+fn splash_radius(age: f32, scale: f32) -> f32 {
+    return scale * (SPLASH_RADIUS_START + SPLASH_RADIUS_SURGE * (1.0 - exp(-age / SPLASH_SURGE_SECONDS))
+        + SPLASH_RADIUS_CREEP * age);
+}
+
+// How much of a splash's deposit lies at `q` (m from where it fell, carried by the drift), 0–1: a body and
+// SPLASH_LOBES lobes about it, each its own size, weight and place from the splash's `seed`, pushed out with `radius`;
+// the column's water blown `skew` downwind as it `fell` (0–1), the downwind lobes the larger.
+fn splash_deposit(q: vec2<f32>, radius: f32, seed: u32, skew: vec2<f32>, fell: f32) -> f32 {
+    let downwind = select(vec2<f32>(0.0), normalize(skew), dot(skew, skew) > 1e-6);
+    let turn = noise_hash(0, 0, seed) * TAU;
+    var sum = 0.0;
+    for (var k = 0; k <= SPLASH_LOBES; k++) {
+        let a = noise_hash(k, 1, seed);
+        let b = noise_hash(k, 2, seed);
+        let c = noise_hash(k, 3, seed);
+        let angle = turn + f32(k) * (TAU / f32(SPLASH_LOBES)) + (a - 0.5) * 1.1;
+        let toward = vec2<f32>(cos(angle), sin(angle));
+        let lee = max(dot(toward, downwind), 0.0);
+        let out = select(mix(0.3, 0.62, b), 0.12 * b, k == 0);
+        let size = select(mix(0.32, 0.55, c), 0.62, k == 0) * (1.0 + 0.3 * lee);
+        let centre = toward * (radius * out) + skew * (fell * mix(0.6, 1.0, lee));
+        let off = (q - centre) / (radius * size);
+        sum += mix(0.55, 1.0, a) * exp(-dot(off, off));
+    }
+    return 1.0 - exp(-1.7 * sum);
+}
+
+// A splash's deposit at `q` from where it fell, `age` seconds after, its outline frayed (SPLASH_FRAY of its radius):
+// what the surface draws and the foam field's cells taken in start from.
+fn splash_laid(q: vec2<f32>, age: f32, scale: f32, seed: u32, skew: vec2<f32>) -> f32 {
+    let radius = splash_radius(age, scale);
+    let at = q / (radius * 0.35);
+    let fray = vec2<f32>(gradient_noise(at, 821u), gradient_noise(at + 31.7, 822u));
+    return splash_deposit(q + fray * (radius * SPLASH_FRAY), radius, seed, skew, smoothstep(1.0, 6.0, age));
+}
+
+// A splash's white water at `age`: it grows as the column's water falls back (1.3–4.5 s), densest until 9 s and gone
+// by 15 s.
+fn splash_white(age: f32) -> f32 {
+    return smoothstep(1.3, 4.5, age) * (1.0 - smoothstep(9.0, 15.0, age));
+}
+
+// The cover of a splash's foam where `deposit` of it lies at `age`: its white water, then what that breaks into
+// (thinning from 12 s, gone by two minutes).
+fn splash_cover(deposit: f32, age: f32) -> f32 {
+    let broken = smoothstep(7.0, 13.0, age) * exp(-max(age - 12.0, 0.0) / 22.0) * (1.0 - smoothstep(85.0, 118.0, age));
+    return max(min(deposit * 1.5, 1.0) * splash_white(age) * SPLASH_WHITE_COVER, deposit * broken * SPLASH_BROKEN_COVER);
+}
+
+// How far a splash's scar stills the short waves where `deposit` of it lies at `age`.
+fn splash_still(deposit: f32, age: f32) -> f32 {
+    return deposit * smoothstep(6.0, 20.0, age) * (1.0 - smoothstep(70.0, 118.0, age)) * SPLASH_STILL;
+}
+
+// One splash's foam at `q` from its deposit's centre, `age` seconds after it fell, its clumps laid on the deposit (they
+// drift with it) and drawn out along the `wind` into streaks as they age, their detail carried out by the surge.
+fn splash_foam(q: vec2<f32>, age: f32, scale: f32, seed_value: f32, skew: vec2<f32>, wind: vec2<f32>, resolved: f32)
+    -> TrailSample {
+    var out = TrailSample(0.0, 0.0, 0.0, 0.0, vec3<f32>(0.0));
+    let seed = noise_seed(u32(seed_value * 16777215.0));
+    let deposit = splash_laid(q, age, scale, seed, skew);
+    if deposit < 0.002 {
+        return out;
+    }
+    let radius = splash_radius(age, scale);
+    let white = splash_white(age);
+    // The white water is one lumpy mass with a few holes, its clumps SPLASH_MASS times the size of what it breaks into.
+    let cover = splash_cover(deposit, age);
+    let local = vec2<f32>(dot(q, wind), dot(q, vec2<f32>(-wind.y, wind.x)));
+    let streaking = vec2<f32>(1.0 / (1.0 + 2.0 * smoothstep(10.0, 45.0, age)), 1.0) / mix(1.0, SPLASH_MASS, white);
+    let shift = vec2<f32>(noise_hash(7, 7, seed), noise_hash(8, 8, seed)) * 500.0;
+    // Its detail carried out by the surge, which spreads the deposit as a whole (the water at q lay at q R(then) /
+    // R(now)), and with it on the drift.
+    let phase = fract(age / FLOW_PERIOD + noise_hash(9, 9, seed));
+    let second = fract(phase + 0.5);
+    let from_a = local * max(splash_radius(max(age - phase * FLOW_PERIOD, 0.0), scale) / radius, 0.55);
+    let from_b = local * max(splash_radius(max(age - second * FLOW_PERIOD, 0.0), scale) / radius, 0.55);
+    var field = blend01(clump_field(from_a * streaking + shift), clump_field(from_b * streaking + shift + FLOW_SHIFT),
+        abs(2.0 * phase - 1.0));
+    // The white water's mass torn at its edge and holed by the finer clumps it will break into.
+    field = blend01(field, clump_field(local * (streaking * SPLASH_MASS) + shift + 211.0), SPLASH_TORN * white);
+    out.foam = clumped(cover, field, resolved) * mix(1.0, 0.4, smoothstep(12.0, 50.0, age));
+    out.young = smoothstep(0.1, 0.7, white);
+    let patchy = smoothstep(0.3, 0.7, clump_field(local / 3.0 + shift + 101.0));
+    let tint = smoothstep(1.0, 3.5, age) * (1.0 - smoothstep(12.0, 30.0, age)) * mix(0.35, 1.0, white) * patchy * SPLASH_TINT;
+    let pale = smoothstep(10.0, 25.0, age) * (1.0 - smoothstep(60.0, 115.0, age)) * SPLASH_PALE;
+    out.bubbles = deposit * max(tint, pale);
+    out.slick = splash_still(deposit, age);
+    return out;
+}
+
+// Every splash's foam at `at`: the densest, with its age; the most bubbles and stilling.
+fn splash_read(at: vec2<f32>, footprint: f32) -> TrailSample {
+    var out = TrailSample(0.0, 0.0, 0.0, 0.0, vec3<f32>(0.0));
+    let count = i32(wake.foam_state.x);
+    let drift = wake.oil_flow.xy;
+    let wind = select(vec2<f32>(1.0, 0.0), normalize(drift), dot(drift, drift) > 1e-10);
+    let resolved = clumps_resolved(footprint);
+    for (var i = 0; i < count; i++) {
+        let row = wake.splashes[2 * i];
+        let more = wake.splashes[2 * i + 1];
+        let q = at - row.xy;
+        if dot(q, q) > more.w * more.w {
+            continue;
+        }
+        let splash = splash_foam(q, row.z, row.w, more.x, more.yz, wind, resolved);
+        if splash.foam > out.foam {
+            out.foam = splash.foam;
+            out.young = splash.young;
+        }
+        out.bubbles = max(out.bubbles, splash.bubbles);
+        out.slick = max(out.slick, splash.slick);
+    }
+    return out;
+}
+
+// A trail's sample with the splashes' over it.
+fn with_splashes(trail: TrailSample, splash: TrailSample) -> TrailSample {
+    var out = trail;
+    if splash.foam > trail.foam {
+        out.foam = splash.foam;
+        out.young = splash.young;
+    }
+    out.bubbles = max(trail.bubbles, splash.bubbles);
+    out.slick = max(trail.slick, splash.slick);
+    return out;
+}
+
+// The foam field (src/foam_sim.rs, shaders/foam_sim.wgsl) at `at`: its (thickness, turbulence, residue), bilinear from
+// the newest state, and how far it holds there: its cells' validity (0 as the window takes a cell in, 1 a few seconds
+// later), fading to 0 from SIM_EDGE to SIM_GONE of the window's half-edge (and 0 with no field), and from SIM_ALIAS.x to
+// SIM_ALIAS.y cells a pixel (`footprint`, m): the field has no mips, so where a pixel spans a few of its cells they would
+// shimmer, and the drawn foam, which takes its mean there, draws it instead.
+const SIM_EDGE: f32 = 0.84;
+const SIM_GONE: f32 = 0.97;
+const SIM_ALIAS: vec2<f32> = vec2<f32>(1.5, 3.0);
+
+struct SimSample {
+    field: vec3<f32>,
+    weight: f32,
+}
+
+fn sim_texel(cell: vec2<i32>, size: i32, layer: i32) -> vec4<f32> {
+    return textureLoad(foam_sim, ((cell % size) + size) % size, layer, 0);
+}
+
+fn sim_sample(at: vec2<f32>, footprint: f32) -> SimSample {
+    var out = SimSample(vec3<f32>(0.0), 0.0);
+    if wake.foam_state.z < 0.5 {
+        return out;
+    }
+    let n = wake.sim_grid.y;
+    // Cells from the centre cell's corner, then texel coordinates (texel centres at whole numbers).
+    let cells = (at - wake.sim.xy) / wake.sim_grid.x;
+    out.weight = (1.0 - smoothstep(SIM_EDGE, SIM_GONE, max(abs(cells.x), abs(cells.y)) / (n * 0.5)))
+        * (1.0 - smoothstep(SIM_ALIAS.x, SIM_ALIAS.y, footprint / wake.sim_grid.x));
+    if out.weight <= 0.0 {
+        return out;
+    }
+    let s = cells + wake.sim.zw - 0.5;
+    let base = floor(s);
+    let f = s - base;
+    let cell = vec2<i32>(base);
+    let size = i32(n);
+    let layer = i32(wake.foam_state.y);
+    let a = sim_texel(cell, size, layer);
+    let b = sim_texel(cell + vec2<i32>(1, 0), size, layer);
+    let c = sim_texel(cell + vec2<i32>(0, 1), size, layer);
+    let d = sim_texel(cell + vec2<i32>(1, 1), size, layer);
+    let field = mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+    out.field = field.rgb;
+    out.weight *= field.a;
+    return out;
+}
+
+// The field's foam as the surface draws it. Its thickness sets the white water's cover (SIM_THIN to SIM_FULL) over the
+// drawn foam's clumps, carried by the drift: thin foam is a few clumps (`sim_clumps`), so the foam's edges break up
+// where its thickness falls off, and dense where it is thick. Its turbulence says how young it is (SIM_YOUNG); the
+// bubbles under it come from both, and the residue left as it dies is a pale, stilled scar.
+const SIM_THIN: f32 = 0.03;
+const SIM_FULL: f32 = 2.0;
+const SIM_YOUNG: vec2<f32> = vec2<f32>(0.12, 0.55);
+const SIM_BUBBLES: f32 = 0.45;
+const SIM_SCAR: f32 = 0.16;
+const SIM_STILL: f32 = 0.4;
+// Thick foam is one mass (its texture's billows), thin foam soft clumps: the thicknesses between.
+const SIM_MASS: vec2<f32> = vec2<f32>(0.9, 2.4);
+// Thick foam is dense white water however long ago its water was churned: it reads young until it thins through these
+// thicknesses, then turns to the lace of old foam.
+const SIM_DENSE: vec2<f32> = vec2<f32>(0.8, 1.8);
+// And through these its lace's holes close (`WakeSurface::mass`): flakes only where it thins.
+const SIM_SOLID: vec2<f32> = vec2<f32>(1.0, 2.4);
+// The share of its cover drawn as a soft mean (`WakeSurface::soft`): young foam's, old foam's.
+const SIM_SOFT: vec2<f32> = vec2<f32>(0.35, 0.15);
+// Thin foam lies in clumps of white water, `share` of the water where the clumps' field is highest, each torn over at
+// most SIM_TORN of that field at its edge (the clumps' own torn edges, never a faint film), or that share as their mean
+// where a pixel is wider than the clumps (`resolved` 0).
+const SIM_TORN: f32 = 0.2;
+
+fn sim_clumps(share: f32, field: f32, resolved: f32) -> f32 {
+    let s = clamp(share, 0.0, 1.0);
+    let threshold = 1.0 - s;
+    let width = max(min(SIM_TORN, min(s, threshold)), 1e-4);
+    return mix(s, smoothstep(threshold - width, threshold + width, field), resolved) * smoothstep(0.0, 0.01, s);
+}
+
+fn sim_read(at: vec2<f32>, footprint: f32, field: vec3<f32>) -> TrailSample {
+    var out = TrailSample(0.0, 0.0, 0.0, 0.0, vec3<f32>(0.0));
+    let thickness = field.x;
+    let turbulence = field.y;
+    let residue = field.z;
+    if thickness + residue < 1e-3 {
+        return out;
+    }
+    let cover = smoothstep(SIM_THIN, SIM_FULL, thickness);
+    let drift = flow_phases(at, wake.oil_flow.xy, wake.trail.y);
+    let detail = blend01(clump_field(drift.from_a), clump_field(drift.from_b), 1.0 - drift.weight);
+    out.foam = mix(sim_clumps(cover, detail, clumps_resolved(footprint)), cover, smoothstep(SIM_MASS.x, SIM_MASS.y, thickness));
+    out.young = max(smoothstep(SIM_YOUNG.x, SIM_YOUNG.y, turbulence), smoothstep(SIM_DENSE.x, SIM_DENSE.y, thickness));
+    let patchy = smoothstep(0.25, 0.75, detail);
+    out.bubbles = min(smoothstep(0.08, 0.8, thickness) * mix(0.25, 1.0, turbulence) * mix(0.6, 1.0, patchy) * SIM_BUBBLES
+        + smoothstep(0.05, 0.5, residue) * patchy * SIM_SCAR, 1.0);
+    out.slick = smoothstep(0.05, 0.6, residue) * SIM_STILL;
+    return out;
 }

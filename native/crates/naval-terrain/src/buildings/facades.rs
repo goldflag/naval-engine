@@ -137,10 +137,13 @@ pub enum Window {
     Signboard,
     /// Wooden louvred shutters under a glazed fanlight (the tropics).
     Louvres,
+    /// An aluminium slider behind an iron cage (鐵窗) standing out from the wall under a small sheet hood, painted in
+    /// the building's accent (white, cream, rust or grey): Taiwan's homes.
+    Cage,
 }
 
 impl Window {
-    pub const ALL: [Window; 29] = [
+    pub const ALL: [Window; 30] = [
         Window::Sash,
         Window::SashShuttered,
         Window::Shuttered,
@@ -170,6 +173,7 @@ impl Window {
         Window::Awning,
         Window::Signboard,
         Window::Louvres,
+        Window::Cage,
     ];
 
     /// Its constant's name in `buildings.wgsl`.
@@ -204,6 +208,7 @@ impl Window {
             Window::Awning => "AWNING",
             Window::Signboard => "SIGNBOARD",
             Window::Louvres => "LOUVRES",
+            Window::Cage => "CAGE",
         }
     }
 }
@@ -1288,6 +1293,39 @@ fn window_px(w: Window, u: f32, v: f32) -> Px {
                 Px {
                     height: 0.04,
                     ..white
+                },
+            );
+        }
+        Window::Cage => {
+            // The slider behind.
+            c.rect(0.17, 0.27, 0.83, 0.67, REVEAL);
+            c.rect(0.18, 0.28, 0.82, 0.66, alu);
+            c.rect(0.195, 0.295, 0.495, 0.645, GLASS);
+            c.rect(0.505, 0.295, 0.805, 0.645, GLASS);
+            // The cage before it: its frame, close upright bars and two rails, its floor standing out over a sill,
+            // and the sheet hood over it.
+            let bar = accent(0.5, 0.12);
+            c.frame(0.14, 0.2, 0.86, 0.73, 0.014, bar);
+            c.bars_up(0.14, 0.2, 0.86, 0.73, 13, 0.007, bar);
+            c.bars_across(0.14, 0.2, 0.86, 0.73, 2, 0.007, bar);
+            c.rect(
+                0.13,
+                0.715,
+                0.87,
+                0.74,
+                Px {
+                    height: 0.14,
+                    ..bar
+                },
+            );
+            c.rect(
+                0.12,
+                0.17,
+                0.88,
+                0.2,
+                Px {
+                    height: 0.16,
+                    ..alu
                 },
             );
         }

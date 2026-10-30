@@ -74,10 +74,12 @@ impl GroundMaterial {
 /// weights never choose: its cliff (`M_CLIFF`) reads the rock its place gives (`terrain.cliff`), and its forest floor
 /// (`M_FOREST`) the needles where its trees are conifers ([`needle_floor`]).
 pub const GROUND_MATERIALS: [GroundMaterial; 19] = [
-    material("grass", "aerial_grass_rock", 12.0, 1.0, 1.0),
-    material("dry-grass", "aerial_ground_rock", 16.0, 1.0, 0.9),
+    // Photographed from above at 2.5 m and 2.0 m: grass and dirt without stones (aerial ones of moss over gravel and of
+    // sand among rocks read as green rocks under the photograph's colour), scrub's the grass between its bushes.
+    material("grass", "grass_ground", 6.0, 0.8, 1.0),
+    material("dry-grass", "withered_grass", 6.0, 0.8, 0.9),
     material("soil", "farm_soil", 6.0, 1.0, 0.9),
-    material("scrub", "coast_sand_rocks_02", 15.0, 1.0, 0.9),
+    material("scrub", "sparse_grass", 6.0, 0.8, 0.9),
     material("dry-scrub", "aerial_rocks_01", 30.0, 1.0, 0.9),
     material("forest", "leaves_forest_ground", 2.0, 0.8, 0.8).squeezed(2.5),
     material("rock", "aerial_rocks_02", 24.0, 1.0, 0.8),

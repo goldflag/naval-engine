@@ -336,6 +336,7 @@ impl Ocean {
             clipmap.cell(0),
         );
         wake.bow_waves.mesh_growth = clipmap.cell(0) / clipmap.half(0);
+        wake.set_foam_grid(crate::foam_sim::FoamGrid::for_tier(self.quality));
         self.wake = Some(wake);
         self.wake_bound = None;
     }
@@ -355,6 +356,7 @@ impl Ocean {
             MakePipelines::Deferred(&placeholders),
         );
         wake.bow_waves.mesh_growth = clipmap.cell(0) / clipmap.half(0);
+        wake.set_foam_grid(crate::foam_sim::FoamGrid::for_tier(self.quality));
         crate::shaders::register(ctx)?;
         let ids = wake.register_pipelines(ctx)?;
         self.wake = Some(wake);

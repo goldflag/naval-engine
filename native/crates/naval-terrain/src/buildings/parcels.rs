@@ -57,6 +57,8 @@ pub fn frontage(region: Region, kind: Kind) -> [f32; 2] {
             Malta | Mediterranean | Aegean | NorthAfrica | Nile | Arid => [5.5, 9.0],
             // Machiya and nagaya.
             EastAsia => [4.5, 7.5],
+            // Taiwan's townhouses (透天厝, 街屋).
+            Taiwan => [4.0, 6.0],
             // Townhouses about a suburb's courts.
             West | Florida | Hawaii => [6.5, 9.5],
             _ => [5.5, 9.0],
@@ -74,6 +76,8 @@ pub fn frontage(region: Region, kind: Kind) -> [f32; 2] {
         Malta => [7.0, 13.0],
         NorthAfrica | Nile | Arid => [8.0, 15.0],
         EastAsia => [8.0, 16.0],
+        // Taiwan's walk-ups (公寓), a stair's two flats to a floor.
+        Taiwan => [10.0, 18.0],
         // Downtown lots of 25-50 ft and their doubles.
         American | Florida | Hawaii => [8.0, 22.0],
         West => [12.0, 30.0],
@@ -360,6 +364,7 @@ pub fn split(
             height: Some(height),
             kind: Some(kind),
             colour: footprint.colour,
+            part: None,
         };
         let Some(mut b) = plan_building(&piece, chunk, density, region, period, setting, ground)
         else {

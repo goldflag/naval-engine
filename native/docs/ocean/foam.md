@@ -1,7 +1,8 @@
 # Foam and weather at sea
 
-Whitecaps, the foam's shading, gale streaks, rain on the water, spindrift and the spray haze. The wakes' white water is
-in [wakes.md](wakes.md) and [bow-waves.md](bow-waves.md). Index: [README.md](README.md).
+Whitecaps, the foam's shading, the foam ship wakes and shell splashes leave (the foam field), gale streaks, rain on the
+water, spindrift and the spray haze. The wakes' trails and waves are in [wakes.md](wakes.md) and
+[bow-waves.md](bow-waves.md). Index: [README.md](README.md).
 
 ## Whitecaps
 
@@ -54,6 +55,128 @@ In a storm (18 m/s, a Bismarck at 7.7 m/s, from 140 m at 4°, paired with master
 of sea pixels 35 levels brighter than their surroundings went 7.2 → 6.7 %; at 13 m/s close up, whitecaps keep a bright
 core inside bluish, see-through lace. The bubble cloud under foam is paler (`BUBBLE_PATH` 2.6 m, was 4.5;
 `BUBBLE_STRENGTH` 0.6). Before and after stills: `.build/native/foam/` (`final-before-*`, `final-after-*`).
+
+## The foam wakes and splashes leave
+
+Foam is a tracer the water stirs, not a pattern painted over the sea: a stern's churned water and a splash's falling
+column lay it, the water carries and spreads it, and it dies thin first and thick last. The foam field
+(`src/foam_sim.rs`, `shaders/foam_sim.wgsl`; after Crest 4's foam simulation and the Atlas talk at GDC 2019, written from
+their descriptions) simulates it about the focus hull; the surface reads it there (`wake.wgsl` `sim_read`) and draws
+the same foam itself beyond the field's window and on Low (`trail_read`, `splash_read`).
+
+**The field.** Each cell holds thickness (about 1 is dense white water), turbulence (the churn that stirs it), residue
+(the scum and bubbles foam leaves as it dies) and validity, in `Rgba16Float`: two states as one array texture (the
+surface's group 1, binding 18) and a scratch layer. Each step stores its cells rounded up or down at random by up to
+half an fp16 unit (`dithered`): a 30 Hz step's decay of thick foam is about one unit, which rounding to the nearest
+would take or keep whole every step. It is addressed toroidally: the field's cell k lies in texel k mod
+the cells along an edge, so a window that moves clears only the cells it takes in, with no copy.
+
+| Tier | Cells | Cell | Window | Memory |
+| --- | --- | --- | --- | --- |
+| Ultra, High | 1,024² | 0.75 m | 768 m | 24 MB |
+| Medium | 512² | 1.5 m | 768 m | 6 MB |
+| Low | none: all the foam drawn | | | |
+
+Medium keeps the window and halves the cells, as the wake field does there (`FoamGrid::for_tier`; `Ocean::enable_wake`
+sizes it, and a tier taken by the next scene makes it afresh).
+
+**The window** lies about the focus hull, astern of her middle by 0.22 of its edge at her full speed, so more of her
+wake lies in it. Where the view looks at water further than 0.6 of the half-edge from there (230 m on High: a camera
+held over a fall of shot), it goes about that water instead (`place_window`).
+
+**A step** (30 Hz, at most three a frame): `advect_pass` carries the field back along the flow (semi-Lagrangian);
+`settle_pass` corrects that (MacCormack, clamped to the four cells it was read between, Selle et al. 2008), spreads it
+(0.01 m²/s, plus 0.6 times the turbulence), decays it and lays the sources. The flow is the surface's drift (3.5 % of
+the wind); the wind's Langmuir cells (lines about 17 m apart that bend and lie unevenly, meeting at up to 0.04 m/s in
+stretches about 45 m long with slack water between; the one part of the flow that gathers foam, into windrows, and only
+thin foam: past a thickness of 0.2 to 0.6 the water that meets sinks with it, so a windrow is a broken line of old lace,
+never a white bar); each landing splash's base surge, which spreads its deposit as a whole; and eddies 6 and 18 m
+across, the curl of a stream function times the turbulence (2 m/s at full churn), which stir the churned water's edges
+into streaks without gathering or thinning it.
+
+**Time scales** (`schedule`). A frame longer than three steps (a time scale above about 3× at 30 fps) runs three longer
+steps that share all of its time; none is dropped. Their flow runs at most 0.2 s, so a fresh splash's surge carries its
+water at most a quarter of its radius in one. Past that (above 18× at 30 fps, 36× at 60) each step stands for more game
+seconds than its flow runs: the foam decays and the splashes land over all of them, so the wakes keep their length to
+the theatre's 256×, while the drift and the eddies run slower than the game. A stern counts as put there only when she
+moved 100 m further than her speed carries her since the last frame that stepped (at 256× and 30 fps a hull at 30 kn
+runs 131 m a frame). Longer steps keep a little more foam than game speed's: 30 s after one splash the field holds 1.15
+times game speed's foam at 4×, 1.52 at 15×, 1.28 at 60× and 1.08 at 120×, and 0.93 to 1.16 of its residue (dropping the
+time held 1.7, 3.7, 4.6 and 4.7 times, and from 0.87 of the residue down to 0.06). The cells are rounded at random, so
+this is the longer steps' own error, each taking the foam's life and the splash's landing once for all of its time
+(before the splashes laid less water and the windrows only thin foam it held 1.10, 1.33, 1.09 and 0.95, and rounding the
+cells to the nearest rather than at random 1.13, 1.42, 1.17 and 0.98).
+
+**Decay.** Thin foam (thickness 0.06) lasts 3.5 s and thick (0.9) 34 s, sooner or later in patches 8 m across.
+Turbulence lasts 5 s. A third of the foam that dies becomes residue, which lasts 75 s. Each decays exponentially over the
+game seconds its step stands for.
+
+**Sources.**
+
+- *Sterns* (8, those in the window): each lays her churned water along the run her stern made since the last step, a
+  Gaussian 0.59 of her beam across swept along the run (`swept`, two erf terms), so her runs join into one band at any
+  time scale and lay 2.2 times her churn (0–1 with her speed) down its middle once she has passed, on lumps the size of
+  her boils. Her speed is taken as far as her wake reaches the surface (`surfaced`, as her trail and waves take it: all
+  of it at the surface, none from 3 m down), so a submarine running submerged lays none (`stern_source`). A stern that
+  was put there (see *Time scales*) lays nothing between.
+- *Splashes* (32, the youngest; more falling at once leave the oldest out, whose foam laid so far stays): each lays its
+  deposit's water (`src/splash_foam.rs`) as the column falls back, from 0.8 s, most of it from 2.5 to 6.5 s and the last
+  by 10 s, in lumps, its outline frayed, over the game seconds each step stands for. A charge going off in the sea lays
+  one too (below). A strike lays no white water of its own on the wake field.
+
+**Validity.** A cell the window takes in (it moves on or jumps, the field is new at a battle's start or a tier change,
+the wakes are reset, or a re-lay turns the charts too far to carry it) starts from what the surface draws there
+(`seeded`): on a trail, the field's own foam of the trail's age (the cover the surface draws, in the lumps a stern
+lays, thinned where the field's foam dies sooner the more the older the trail, its age read off its churn), turbulence
+so it is as young and a little residue where its churned water lay (the slick beyond it the trail draws itself); and
+the splashes' deposits, old ones too. Its validity starts at 0 and rises to 1 over 1.2 to 6.6 s, sooner in some
+patches 24 m across than in others, and the surface fades from its own foam to the field's by it, so no clear shows,
+the field takes over a patch at a time and an old wake carries on into the field.
+
+**Re-centres.** A theatre re-centre moves the field's frame with the scene (`FoamSim::translate`, `take_from`, from
+`ShipWake::take_fields_from`): no cell is cleared and the foam stays on its water, whatever the shift. A re-lay
+(`relay_fields_from`) carries it by the shift at its centre where the charts turn its water by less than the wake
+field's limit, and otherwise lets the new scene's start afresh.
+
+**Drawing** (`sim_read`). Thickness sets the white water's cover (0.03–2.0). Thin foam is clumps of white water (the
+drawn foam's clump field, carried by the drift), each torn over 0.2 of that field at its edge, never a grey film; from
+1.0 to 2.4 it closes into one mass, as dense as a fresh wake's. Turbulence says how young it is (0.12–0.55), and so does
+thickness (0.8–1.8), so thick foam stays dense white water however old; the bubbles under it come from both, and the
+residue is a pale, stilled scar. The field's weight fades over 0.84–0.97 of the window's half-edge, times its validity,
+and where a pixel spans 1.5 to 3 of its cells (it has no mips) to the drawn foam, which takes their mean there.
+
+**The drawn foam** (beyond the window and on Low): a trail's band is white in patches along it and in masses on its
+boils, its old foam in clumps, its eddies' and streaks' detail carried on the trail's water by two-phase flow maps
+(Vlachos 2010) rather than scrolled through time; under a wake's foam the foam texture is hex-tiled (Mikkelsen 2022),
+so its 40 m tile never repeats. A splash's deposit (64 in the `Wake` uniform) is lobed from its hash,
+pushed out by the base surge and skewed downwind; it whitens as the column's water falls back (from 1.3 s, densest to
+9 s, gone by 15 s), then breaks into clumps and streaks and leaves a faint scar of pale, stilled water to two minutes,
+carried by the drift. With more deposits on the water than the uniform holds, each fresh splash has the least seen of
+the others give up its slot (`SplashDeposits::give_up_slot`): how white it draws at its age times the share of the view
+its radius takes from the camera, one that has landed before one still landing. It draws into itself over 0.9 s, and
+the fresh one, which draws nothing for its first second, takes the slot after. Only a burst of more than 64 within a
+second drops a fresh one at once.
+
+**A charge's white water** (`SplashDeposits::lay_charge`, from `ShipWake::strike`): a torpedo hit, a depth charge, a
+burster going off in the water or a magazine going up beside it lays a deposit as a splash does, on every tier, its
+deposit starting as wide as the charge's gas bubble grows (`charge_scale`: Cole's 3.4 (W / (z + 10))^⅓ m over the
+deposit's 7 m): a 533 mm torpedo's warhead 4 m down 1.4 times a 38 cm round's, a 610 mm one's 1.6, a depth charge at 10
+to 15 m 0.9 to 0.85 (its dome's wide white circle), a magazine 2.4. A shell's burster goes off in its own splash: one
+within 30 m of a deposit under 0.5 s old (before any of it is laid or drawn) widens that deposit if it is the wider
+(a bomb's near miss) rather than laying a second, and a shell's burster is narrower than its splash (a 12.7 cm HE
+shell's 0.28 to 0.49, a 46 cm one's 1.10 to 1.13), so shelling lays no more deposits than it did.
+
+**Cost.** Two compute dispatches over the field a step (1,024² on High, 512² on Medium), at most six a frame, timed as
+`ocean foam step` ([cost.md](cost.md)). A cell taken in reads the trails' tiles and the splashes once. Within the window
+a pixel reads four texels and the clump field instead of the drawn foam.
+
+**Knobs.** The constants at the top of `foam_sim.wgsl` (sources, life, flow, `VALID_*`, `SEED_*`) and the `SIM_*` constants in
+`wake.wgsl` (drawing); both reload while the client runs. `NAVAL_FOAM_SIM_DEBUG=1` prints the window and its sources.
+Tests: `foam_sim::tests` (tier sizes, the window's place, a re-centre's carry, the swept runs, the splash slots, the
+schedule under time scales against the old one), `splash_foam::tests` (a slot given up over a second, the least seen
+first), every shader composes and validates; on the GPU, `tests/foam_sim.rs` (the foam stays on its water within half a
+cell across a re-centre and a re-lay by no whole number of cells; 30 s after a splash at 4× to 120× the field holds
+0.8–1.6 times game speed's foam).
 
 ## Weather at sea
 

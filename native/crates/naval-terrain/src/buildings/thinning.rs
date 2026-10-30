@@ -1054,7 +1054,11 @@ pub fn default_share(region: Region, year: u16) -> f32 {
         Region::Celtic | Region::NorthSea => 0.5,
         Region::Malta => 0.6,
         Region::Temperate => 0.45,
-        Region::Nordic | Region::Mediterranean | Region::EastAsia | Region::Aegean => 0.35,
+        Region::Nordic
+        | Region::Mediterranean
+        | Region::EastAsia
+        | Region::Taiwan
+        | Region::Aegean => 0.35,
         Region::American => 0.4,
         Region::West => 0.3,
         Region::Iceland | Region::NorthAfrica | Region::Nile | Region::Hawaii => 0.25,
@@ -1081,7 +1085,8 @@ pub fn height_cap(region: Region, lat: f64, lon: f64) -> f32 {
     match region {
         Region::West => 46.0,
         Region::American | Region::Florida => 45.0,
-        Region::EastAsia => 31.0,
+        // Japan's 100 shaku in Taiwan too, under Japanese rule.
+        Region::EastAsia | Region::Taiwan => 31.0,
         Region::British | Region::Celtic => 30.0,
         Region::Hawaii => 20.0,
         Region::Tropical | Region::Micronesia | Region::Atoll => 12.0,
@@ -1095,6 +1100,7 @@ pub fn period_storeys(region: Region) -> u8 {
     match region {
         Region::Tropical | Region::Micronesia | Region::Atoll => 3,
         Region::EastAsia
+        | Region::Taiwan
         | Region::Hawaii
         | Region::Iceland
         | Region::NorthAfrica
@@ -1518,12 +1524,17 @@ impl Thinning {
         self.score_at(p) + lift >= self.bar_at(p)
     }
 
-    /// Whether `ring` is a building built after the period ([`LATER`]).
+    /// Whether `ring` is a building built after the period ([`LATER`]): it holds a listed point, or its middle lies
+    /// within 35 m of one.
     pub fn later(&self, ring: &[[f32; 2]]) -> bool {
-        let c = geometry::centroid(ring);
-        self.later
-            .iter()
-            .any(|p| geometry::contains(ring, *p) || geometry::distance(c, *p) < 35.0)
+        self.later.iter().any(|p| geometry::contains(ring, *p))
+            || self.later_at(geometry::centroid(ring))
+    }
+
+    /// Whether the building whose middle is `c` was built after the period: a listed point within 35 m of it (one of
+    /// OSM's parts judged by its building's middle as a whole footprint is by its own, [`Thinning::later`]).
+    pub fn later_at(&self, c: [f32; 2]) -> bool {
+        self.later.iter().any(|p| geometry::distance(c, *p) < 35.0)
     }
 
     /// The most `ring`'s building stands (m): the cap, or what one of [`TALL`] on it stood.
@@ -1789,6 +1800,7 @@ pub(crate) mod fixture {
                 height: Some(if k % 7 == 0 { 15.0 } else { 6.0 }),
                 kind: Some(if k % 7 == 0 { Kind::Block } else { Kind::House }),
                 colour: None,
+                part: None,
             })
             .collect();
         (out, lots)
@@ -1919,6 +1931,49 @@ mod tests {
             cap_m,
             ..Thinning::default()
         }
+    }
+
+    #[test]
+    fn a_later_building_drawn_by_its_parts_goes_whole() {
+        // A listed later building as OSM's parts: a tower holding the listed point (400, 400), a nave whose middle is
+        // 70 m off it; the building's middle 60 m off. Its whole footprint would have gone (it held the point).
+        let ground = |_: [f32; 2]| 5.0;
+        let part = |x: f32, w: f32, top: f32| Footprint {
+            ring: vec![[x, 390.0], [x + w, 390.0], [x + w, 410.0], [x, 410.0]],
+            height: Some(top),
+            part: Some(crate::buildings::Part {
+                base: 0.0,
+                middle: [460.0, 400.0],
+            }),
+            ..Footprint::default()
+        };
+        let parts = vec![part(390.0, 20.0, 40.0), part(410.0, 120.0, 18.0)];
+        let keep_all = uniform(0.9, f32::NEG_INFINITY, 100.0);
+        let mesh = |t: &Thinning| {
+            crate::buildings::build_chunk(&crate::buildings::mesh::ChunkInput {
+                key: crate::buildings::ChunkKey {
+                    index: [0, 0],
+                    lod: Lod::Full,
+                },
+                footprints: &parts,
+                infill: &[],
+                tags: &MapTags::default(),
+                ground: &ground,
+                region: Region::Temperate,
+                period: Period::Year(1942),
+                thinning: Some(t),
+            })
+        };
+        assert_eq!(mesh(&keep_all).buildings, 2);
+        let mut later = keep_all.clone();
+        later.later.push([400.0, 400.0]);
+        assert!(!later.later_at([460.0, 400.0]));
+        assert_eq!(mesh(&later).buildings, 0);
+        // Listed within 35 m of the building's middle, though neither part holds it: gone too.
+        let mut near = keep_all;
+        near.later.push([455.0, 432.0]);
+        assert!(!near.later(&parts[1].ring));
+        assert_eq!(mesh(&near).buildings, 0);
     }
 
     #[test]
@@ -2515,6 +2570,7 @@ mod tests {
             height: Some(20.0),
             kind: Some(Kind::Block),
             colour: None,
+            part: None,
         };
         let b = plan_building(
             &lot,

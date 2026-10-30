@@ -4,6 +4,7 @@
 
 mod caustics;
 mod field;
+mod foam_sim;
 mod hull_heights;
 mod hull_sides;
 mod surface;

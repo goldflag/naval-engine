@@ -59,7 +59,7 @@ pub fn eaves_of(b: &Building, region: Region) -> Option<Eaves> {
     let past = b.period.is_past();
     let (lo, spread) = match region {
         EastAsia if past => (0.65, 0.3),
-        EastAsia => (0.45, 0.25),
+        EastAsia | Taiwan => (0.45, 0.25),
         Tropical | Micronesia | Atoll | Hawaii => (0.5, 0.3),
         Florida => (0.45, 0.25),
         West => (0.45, 0.35),
@@ -116,11 +116,11 @@ pub fn eaves_of(b: &Building, region: Region) -> Option<Eaves> {
             NorthSea => choose(&[(0.3, BLACK), (0.3, WHITE), (0.2, GREEN), (0.2, ZINC)], t),
             Temperate => choose(&[(0.5, ZINC), (0.2, COPPER), (0.3, WHITE)], t),
             EastAsia if past => choose(&[(0.5, COPPER), (0.5, BROWN)], t),
-            EastAsia => choose(&[(0.5, LIGHT_ZINC), (0.3, BROWN), (0.2, WHITE)], t),
+            EastAsia | Taiwan => choose(&[(0.5, LIGHT_ZINC), (0.3, BROWN), (0.2, WHITE)], t),
             _ => choose(&[(0.5, WHITE), (0.5, ZINC)], t),
         };
         let soffit = match region {
-            EastAsia | Nordic => choose(&[(0.7, TIMBER), (0.3, BROWN)], h(5)),
+            EastAsia | Taiwan | Nordic => choose(&[(0.7, TIMBER), (0.3, BROWN)], h(5)),
             West if b.kind == Kind::House => choose(&[(0.5, TIMBER), (0.5, WHITE)], h(5)),
             _ => fascia,
         };
@@ -222,6 +222,7 @@ mod tests {
             roof,
             ground: [1.0, 1.0, 1.0],
             height: 5.6,
+            base: 0.0,
             storeys: 2,
             storey_m: 2.8,
             wall: 4,

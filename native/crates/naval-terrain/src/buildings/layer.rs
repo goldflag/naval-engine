@@ -336,8 +336,8 @@ pub struct BuildingsLayer {
     beacons_version: u64,
 }
 
-/// The tallest a building's shadow reaches from it across the ground (m), at the sun's elevation: past the view's sides by
-/// this, a chunk can still shade what the camera sees.
+/// The least height a chunk's shadow is taken to run from (m), at the sun's elevation (its own height where taller): past
+/// the view's sides by that run, a chunk can still shade what the camera sees.
 const SHADOW_RUN_HEIGHT_M: f32 = 150.0;
 /// The farthest that run is taken (m): a low sun throws a tower's shadow without end.
 const SHADOW_RUN_MAX_M: f32 = 1500.0;
@@ -1638,12 +1638,12 @@ impl SceneLayer for BuildingsLayer {
         let planes = frustum_planes(map.projection * map.view);
         // The land maps square the camera's view of the land across the light: much of each square lies beside the
         // view. They take a chunk only where its shadow can fall into the view: inside the view's sides moved out by
-        // the run of a tall building's shadow.
+        // the run of a tall building's shadow: a metre of height's run (the sun's cotangent), taken over the chunk's own
+        // height or a 150 m building's, whichever is taller (a 508 m tower's chunk casts from farther off).
         let run = if map.kind.is_land() {
             let toward = map.view.inverse().z_axis.truncate().normalize_or(Vec3::Y);
             let sine = toward.y.max(1e-3);
-            let run = SHADOW_RUN_HEIGHT_M * (1.0 - sine * sine).max(0.0).sqrt() / sine;
-            Some(f64::from(run.min(SHADOW_RUN_MAX_M)))
+            Some((1.0 - sine * sine).max(0.0).sqrt() / sine)
         } else {
             None
         };
@@ -1659,7 +1659,10 @@ impl SceneLayer for BuildingsLayer {
             if !in_planes(&planes[..4], lo, hi) {
                 continue;
             }
-            if let Some(run) = run
+            if let Some(per_m) = run
+                && let run = f64::from(
+                    ((hi.y - lo.y).max(SHADOW_RUN_HEIGHT_M) * per_m).min(SHADOW_RUN_MAX_M),
+                )
                 && !self
                     .view_sides
                     .iter()

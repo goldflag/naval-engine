@@ -254,6 +254,176 @@ impl NightLights {
     }
 }
 
+/// The built-up land's glow beyond the pages at full night, lit (`night.wgsl`'s `GLOW_LUM`): its mean radiance where
+/// the land is wholly built up. The sky's light over the towns is this light sent up ([`NightLights::glow_radiance`]).
+pub const GLOW_LUM: f32 = 0.04;
+
+/// The towns' glow's colour by the palette (`night.wgsl`'s `glow_color`: sodium with the warm whites, or Japan's whites
+/// with mercury's), linear, unit red.
+pub fn glow_color(palette: LampPalette) -> [f32; 3] {
+    let mix = |a: [f32; 3], b: [f32; 3], t: f32| [0, 1, 2].map(|k| a[k] + (b[k] - a[k]) * t);
+    const SODIUM: [f32; 3] = [1.0, 0.42, 0.06];
+    const WARM: [f32; 3] = [1.0, 0.55, 0.22];
+    const MERCURY: [f32; 3] = [0.72, 0.92, 1.0];
+    match palette {
+        LampPalette::Sodium => mix(SODIUM, WARM, 0.4),
+        LampPalette::White => mix(WARM, MERCURY, 0.3),
+    }
+}
+
+impl NightLights {
+    /// The radiance of wholly built-up land's glow (linear rgb) `night` dark (`night_of`), by the rule's glow and the
+    /// palette: what the land draws beyond its pages, and what it sends up into the sky (`TerrainLayer::ground_glow`).
+    pub fn glow_radiance(&self, night: f32) -> [f32; 3] {
+        let strength = GLOW_LUM * self.rule.scales().glow * night.clamp(0.0, 1.0);
+        glow_color(self.palette).map(|c| c * strength)
+    }
+}
+
+/// The towns' lit map for the sky (`TerrainLayer::ground_glow`) and the window's built-up land of today it is counted
+/// from, a bit a texel of the cover: `cells`² cells over a window's cover of `side`² classes (`surface_maps::cover`),
+/// each its share of built-up land as the land draws it (today's class built up, not the past period's country), read
+/// from every other texel of every other row where a cell spans eight or more. A rewrite of the window's cover
+/// ([`crate::CoverPatch`], a past period's marks laid again) counts the cells it touches again, so a chunk marked the
+/// past's country stops lighting the air.
+#[derive(Clone, Debug, Default)]
+pub struct TownGlow {
+    /// Texels a side of the window's cover; 0 without its maps.
+    side: u32,
+    /// The cover's built-up land of today, a bit a texel, rows of `side`.
+    built: Vec<u64>,
+    /// The map the sky takes; none without the window's maps.
+    map: Option<naval_clouds::glow::GroundGlow>,
+    /// Counts every map made or changed, so the sky never takes a new one for the one it holds.
+    version: u64,
+}
+
+impl TownGlow {
+    /// The map for the window's maps over `extent_m` metres of chart from chart point `origin`, their cover drawn
+    /// from `classes` (`side`² of them), in `cells`² cells. Classes of another count light nothing.
+    pub fn set(&mut self, origin: [f64; 2], extent_m: f64, classes: &[u8], side: u32, cells: u32) {
+        let n = side as usize;
+        let fits = classes.len() == n * n;
+        self.side = if fits { side } else { 0 };
+        self.built = vec![0; (self.side as usize).pow(2).div_ceil(64)];
+        if fits {
+            for (k, &class) in classes.iter().enumerate() {
+                if lit_class(class) {
+                    self.built[k / 64] |= 1 << (k % 64);
+                }
+            }
+        }
+        self.version += 1;
+        let mut map = naval_clouds::glow::GroundGlow {
+            origin,
+            extent_m,
+            size: cells,
+            lit: vec![0.0; (cells as usize).pow(2)],
+            version: self.version,
+        };
+        for cj in 0..cells {
+            for ci in 0..cells {
+                map.lit[(cj * cells + ci) as usize] = self.share(cells, ci, cj);
+            }
+        }
+        self.map = Some(map);
+    }
+
+    /// No map: the window's maps taken away.
+    pub fn clear(&mut self) {
+        self.side = 0;
+        self.built = Vec::new();
+        self.map = None;
+    }
+
+    /// The window's cover rewritten under `patch` (a near tile's leaves the map as it was, as does one that does not
+    /// fit the window): its cells counted again, and the map's version moved on where any changed.
+    pub fn patch(&mut self, patch: &crate::CoverPatch) {
+        if patch.layer != crate::CoverLayer::Window || !patch.fits(self.side) {
+            return;
+        }
+        let Some(cells) = self.map.as_ref().map(|map| map.size) else {
+            return;
+        };
+        let (n, [x, y], [w, h]) = (self.side as usize, patch.at, patch.size);
+        for row in 0..h as usize {
+            for column in 0..w as usize {
+                let k = (y as usize + row) * n + x as usize + column;
+                let bit = 1u64 << (k % 64);
+                if lit_class(patch.classes[row * w as usize + column]) {
+                    self.built[k / 64] |= bit;
+                } else {
+                    self.built[k / 64] &= !bit;
+                }
+            }
+        }
+        // The cells whose texels the rectangle crosses.
+        let side = self.side;
+        let crossed = |at: u32, length: u32| {
+            (0..cells).filter(move |&c| {
+                let (c0, c1) = cell_span(c, side, cells);
+                c0 < (at + length) as usize && (at as usize) < c1
+            })
+        };
+        let mut changed = false;
+        let shares: Vec<_> = crossed(y, h)
+            .flat_map(|cj| crossed(x, w).map(move |ci| (ci, cj)))
+            .map(|(ci, cj)| ((cj * cells + ci) as usize, self.share(cells, ci, cj)))
+            .collect();
+        let map = self.map.as_mut().expect("held");
+        for (k, share) in shares {
+            changed |= map.lit[k] != share;
+            map.lit[k] = share;
+        }
+        if changed {
+            self.version += 1;
+            map.version = self.version;
+        }
+    }
+
+    /// The map the sky takes, none without the window's maps.
+    pub fn map(&self) -> Option<&naval_clouds::glow::GroundGlow> {
+        self.map.as_ref()
+    }
+
+    /// Cell (`ci`, `cj`)'s share of built-up land, of `cells`² over the cover.
+    fn share(&self, cells: u32, ci: u32, cj: u32) -> f32 {
+        let n = self.side as usize;
+        if n == 0 {
+            return 0.0;
+        }
+        let stride = if n / cells as usize >= 8 { 2 } else { 1 };
+        let (i0, i1) = cell_span(ci, self.side, cells);
+        let (j0, j1) = cell_span(cj, self.side, cells);
+        let (mut built, mut all) = (0u32, 0u32);
+        for j in (j0..j1).step_by(stride) {
+            for i in (i0..i1).step_by(stride) {
+                let k = j * n + i;
+                built += ((self.built[k / 64] >> (k % 64)) & 1) as u32;
+                all += 1;
+            }
+        }
+        if all > 0 {
+            built as f32 / all as f32
+        } else {
+            0.0
+        }
+    }
+}
+
+/// Whether a cover class lights the sky: today's built up, not the past period's country.
+fn lit_class(class: u8) -> bool {
+    use crate::ground::surface_maps::cover;
+    !cover::is_past_country(class) && cover::today(class) == cover::BUILT
+}
+
+/// The texels (first, past the last) of cell `c` of `cells` along a cover of `side`: at least one.
+fn cell_span(c: u32, side: u32, cells: u32) -> (usize, usize) {
+    let (c, n, cells) = (c as usize, side as usize, cells as usize);
+    let first = c * n / cells;
+    (first, ((c + 1) * n / cells).max(first + 1).min(n))
+}
+
 /// How dark it is for the lights, 0 by day to 1: full under the moon, else as the sun sinks from 6° up to 2° below the
 /// horizon (the buildings' windows light up alike).
 pub fn night_of(direction_y: f32, moon: bool) -> f32 {
@@ -678,5 +848,132 @@ mod tests {
         assert_eq!(night_of(0.10, false), 0.0);
         assert_eq!(night_of(-0.04, false), 1.0);
         assert_eq!(night_of(0.5, true), 1.0);
+    }
+
+    #[test]
+    fn the_towns_glow_is_the_shaders_and_follows_the_rule() {
+        // The land's shader holds the same luminance and colours.
+        let wgsl = include_str!("../shaders/night.wgsl");
+        assert!(wgsl.contains("const GLOW_LUM: f32 = 0.04;"));
+        assert!(wgsl.contains(
+            "return select(mix(SODIUM, WARM, 0.4), mix(WARM, MERCURY, 0.3), white_palette());"
+        ));
+        let lit = NightLights::default();
+        let sodium = lit.glow_radiance(1.0);
+        assert!(
+            (sodium[0] - GLOW_LUM).abs() < 1e-6 && sodium[2] < sodium[1] && sodium[1] < sodium[0]
+        );
+        let white = NightLights {
+            palette: LampPalette::White,
+            ..lit
+        }
+        .glow_radiance(1.0);
+        // Japan's (and Taiwan's) whites are whiter: more blue over red.
+        assert!(white[2] / white[0] > 3.0 * sodium[2] / sodium[0]);
+        assert_eq!(lit.glow_radiance(0.0), [0.0; 3]);
+        let rule = |rule| NightLights { rule, ..lit }.glow_radiance(1.0)[0];
+        assert!(rule(LightsRule::Dimout) < 0.1 * GLOW_LUM && rule(LightsRule::Dimout) > 0.0);
+        assert_eq!(rule(LightsRule::Blackout), 0.0);
+    }
+
+    /// 64² classes: the west half built up, a quarter of that the past period's country, the rest grass.
+    fn west_built() -> Vec<u8> {
+        use crate::ground::surface_maps::cover;
+        let mut classes = vec![cover::GRASS; 64 * 64];
+        for j in 0..64 {
+            for i in 0..32 {
+                classes[j * 64 + i] = if j < 16 {
+                    cover::BUILT | cover::PAST_COUNTRY
+                } else {
+                    cover::BUILT
+                };
+            }
+        }
+        classes
+    }
+
+    #[test]
+    fn the_lit_map_counts_built_up_land_of_today() {
+        let mut glow = TownGlow::default();
+        assert!(glow.map().is_none());
+        glow.set([0.0, 0.0], 6400.0, &west_built(), 64, 4);
+        let map = glow.map().expect("set");
+        assert_eq!(map.lit.len(), 16);
+        assert_eq!(&map.lit[0..4], &[0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(&map.lit[4..8], &[1.0, 1.0, 0.0, 0.0]);
+        glow.set([0.0, 0.0], 6400.0, &west_built(), 63, 4);
+        assert_eq!(glow.map().expect("set").lit, vec![0.0; 16]);
+        glow.clear();
+        assert!(glow.map().is_none());
+    }
+
+    #[test]
+    fn a_rewrite_of_the_cover_counts_its_cells_again() {
+        use crate::ground::surface_maps::cover;
+        let patch = |layer, at: [u32; 2], size: [u32; 2], class| crate::CoverPatch {
+            layer,
+            at,
+            size,
+            classes: vec![class; (size[0] * size[1]) as usize],
+            marks: 0,
+        };
+        let mut glow = TownGlow::default();
+        glow.set([0.0, 0.0], 6400.0, &west_built(), 64, 4);
+        let first = glow.map().expect("set").version;
+        // A late answer marks half a lit cell the past's country: that cell dims, its map is new to the sky.
+        glow.patch(&patch(
+            crate::CoverLayer::Window,
+            [0, 16],
+            [16, 8],
+            cover::BUILT | cover::PAST_COUNTRY,
+        ));
+        let map = glow.map().expect("set");
+        assert_eq!(&map.lit[4..8], &[0.5, 1.0, 0.0, 0.0]);
+        let second = map.version;
+        assert!(second > first);
+        // Across a cell's edge, both cells it crosses.
+        glow.patch(&patch(
+            crate::CoverLayer::Window,
+            [12, 32],
+            [8, 16],
+            cover::GRASS,
+        ));
+        let map = glow.map().expect("set");
+        assert_eq!(&map.lit[8..12], &[0.75, 0.75, 0.0, 0.0]);
+        let third = map.version;
+        assert!(third > second);
+        // Nothing changed, a near tile's or one off the window: the same map.
+        glow.patch(&patch(
+            crate::CoverLayer::Window,
+            [40, 40],
+            [8, 8],
+            cover::TREE,
+        ));
+        glow.patch(&patch(
+            crate::CoverLayer::Near([0, 0]),
+            [0, 0],
+            [64, 64],
+            cover::GRASS,
+        ));
+        glow.patch(&patch(
+            crate::CoverLayer::Window,
+            [60, 60],
+            [8, 8],
+            cover::GRASS,
+        ));
+        assert_eq!(glow.map().expect("set").version, third);
+        // Built up again where it was not, and the maps handed in again: never a version the sky held.
+        glow.patch(&patch(
+            crate::CoverLayer::Window,
+            [48, 0],
+            [16, 16],
+            cover::BUILT,
+        ));
+        assert_eq!(glow.map().expect("set").lit[3], 1.0);
+        let fourth = glow.map().expect("set").version;
+        glow.clear();
+        glow.set([0.0, 0.0], 6400.0, &west_built(), 64, 4);
+        assert!(glow.map().expect("set").version > fourth);
+        assert_eq!(&glow.map().expect("set").lit[4..8], &[1.0, 1.0, 0.0, 0.0]);
     }
 }

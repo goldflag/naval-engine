@@ -28,12 +28,13 @@ pub const RAIN_WGSL: &str = include_str!("../shaders/rain.wgsl");
 pub const SPLASHES_WGSL: &str = include_str!("../shaders/splashes.wgsl");
 pub const BOLT_WGSL: &str = include_str!("../shaders/bolt.wgsl");
 pub const AERIAL_WGSL: &str = include_str!("../shaders/aerial.wgsl");
+pub const GLOW_FIELD_WGSL: &str = include_str!("../shaders/glow_field.wgsl");
 pub const WEATHER_WGSL: &str = include_str!("../shaders/weather.wgsl");
 
 /// The clouds' WGSL for the renderer core's shader library (with the files' disk paths, for hot reload): the shared
 /// modules in dependency order (over the sky's, `naval_sky::shaders::FILES`), then the passes. [`register`] adds
 /// them; the keys match the paths the clouds compose with here.
-pub const FILES: [naval_render::ShaderFile; 19] = [
+pub const FILES: [naval_render::ShaderFile; 20] = [
     naval_render::shader_file!("shaders/common.wgsl"),
     naval_render::shader_file!("shaders/screen.wgsl"),
     naval_render::shader_file!("shaders/precipitation.wgsl"),
@@ -53,6 +54,7 @@ pub const FILES: [naval_render::ShaderFile; 19] = [
     naval_render::shader_file!("shaders/bolt.wgsl"),
     naval_render::shader_file!("shaders/aerial.wgsl"),
     naval_render::shader_file!("shaders/weather.wgsl"),
+    naval_render::shader_file!("shaders/glow_field.wgsl"),
 ];
 
 /// Library keys of the passes in [`FILES`].
@@ -68,6 +70,7 @@ pub const RAIN_PATH: &str = "naval-clouds/shaders/rain.wgsl";
 pub const SPLASHES_PATH: &str = "naval-clouds/shaders/splashes.wgsl";
 pub const BOLT_PATH: &str = "naval-clouds/shaders/bolt.wgsl";
 pub const AERIAL_PATH: &str = "naval-clouds/shaders/aerial.wgsl";
+pub const GLOW_FIELD_PATH: &str = "naval-clouds/shaders/glow_field.wgsl";
 pub const WEATHER_PATH: &str = "naval-clouds/shaders/weather.wgsl";
 
 /// Adds the clouds' WGSL to the renderer core's library, after the sky's (`naval_sky::shaders::register`).
@@ -175,6 +178,8 @@ mod tests {
             (SPLASHES_WGSL, SPLASHES_PATH),
             (BOLT_WGSL, BOLT_PATH),
             (WEATHER_WGSL, WEATHER_PATH),
+            (AERIAL_WGSL, AERIAL_PATH),
+            (GLOW_FIELD_WGSL, GLOW_FIELD_PATH),
         ] {
             let module =
                 compose(source, path, &[]).unwrap_or_else(|report| panic!("{path}: {report}"));

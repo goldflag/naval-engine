@@ -28,7 +28,7 @@
 #import naval_ocean::screen_reflection::screen_space_reflection
 #import naval_ocean::water_body::{BACKSCATTER, REFRACTION_SQUARED, subsurface_reflectance, upwelling, column_transmittance, water_body}
 #import naval_ocean::water_properties::{WaterField, sample_water, water_beam, water_pigment}
-#import naval_ocean::foam::{FOAM_GLOSS, STREAK_TEAR_STRETCH, bubble_walls, with_bubble_walls, foam_sparkle, foam_patterns, foam_footprint, foam_tear, torn_cover, foam_share, whitecap_foam, windrow_opacity, billows, thin_foam, foam_radiance, aeration_with_wake, aerated_reflectance, bubble_cloud, foam_over, churned_water, gale_streaks}
+#import naval_ocean::foam::{FOAM_GLOSS, STREAK_TEAR_STRETCH, bubble_walls, with_bubble_walls, foam_sparkle, foam_patterns, foam_footprint, foam_tear, torn_cover, foam_share, whitecap_foam, windrow_opacity, billows, thin_foam, foam_radiance, aeration_with_wake, aerated_reflectance, bubble_cloud, foam_over, churned_water, gale_streaks, lace_layout, hex_foam}
 #import naval_ocean::wake::{wake_height, trail_relief, wake_surface, hull_shelter, shelter_light, shelter_reflect, wake_sampler}
 #import naval_ocean::waves::{waves, field_displacement, field_derivatives, field_extras, field_sampler, field_uv, scatter, copies_grad, mix_zero, mix_mean, mix_variance, displacement, HullSurface, hull_surface, hull_sea_active, breaking_group, Shore, shore_at, shore_whitecaps, surf}
 #import naval_ocean::underwater_ray::water_path_light
@@ -673,6 +673,14 @@ fn fragment(input: VertexOut, @builtin(front_facing) front: bool) -> @location(0
     // Foam: the texture laid in the wind's frame and drawn out along it by the crest foam's wind stretch.
     let stretch = surface.foam.x * 2.0 + 1.0;
     var patterns = foam_patterns(foam_map, foam_sampler, surface.foam.z, xz, heading, stretch, sun_direction);
+    // A wake's foam reads the texture hex-tiled, its tile never repeating (its derivatives taken here, in uniform
+    // control flow).
+    let hex_uv = lace_layout(xz, heading, stretch);
+    let hex_dx = dpdx(hex_uv);
+    let hex_dy = dpdy(hex_uv);
+    if wake.foam > 1e-3 {
+        patterns.pattern = hex_foam(foam_map, foam_sampler, hex_uv, hex_dx, hex_dy);
+    }
     let foam_size = foam_footprint(xz);
     // Near the eye, every foam's lace takes the bubbles' walls (`bubble_walls`), only where there is foam to draw them:
     // whitecaps, a wake's white water, the surf, a shore's (no derivatives taken).
@@ -686,7 +694,7 @@ fn fragment(input: VertexOut, @builtin(front_facing) front: bool) -> @location(0
     let sky_up = env_radiance(sky_atlas, sky_sampler, sky_env, normalize(vec3<f32>(up.x, max(up.y, 0.0), up.z)), 1.0);
     let foam_light = foam_radiance(sky_up * contact.sky_share, sun_radiance, up, sun_direction, lit);
     // The realistic wake's churned water is the whitecaps' dense white water.
-    let churned = churned_water(wake.foam, wake.young, patterns.pattern, patterns.blur);
+    let churned = churned_water(wake.foam, wake.young, wake.mass, patterns.pattern, max(patterns.blur, wake.soft));
     let aerated = aeration_with_wake(sample.bubbles * (1.0 - whitecaps.averaged), wake.bubbles);
 #ifdef OIL
     // Under a film of oil the water's light crosses it down and back up, the oil's own dark brown takes what it stops,
@@ -738,8 +746,8 @@ fn fragment(input: VertexOut, @builtin(front_facing) front: bool) -> @location(0
     // The breaking that leaves the windrows' foam is damped on a slick too.
     windrows *= unbroken;
 #endif
-    let white = billows(patterns.pattern.a, patterns.churn_sunward, lace, max(whitecaps.dense, churned.dense), patterns.blur,
-        absorption);
+    let white = billows(patterns.pattern.a, patterns.churn_sunward, lace, max(whitecaps.dense, churned.dense),
+        max(patterns.blur, wake.soft), absorption);
     // Where the water thins against a hull or a shore, broken foam: torn along the line at metres (the foam's tear, laid
     // finer), thinning away from the contact, lace rather than a painted stripe.
     var shore_tear = 0.5;

@@ -389,6 +389,16 @@ fn boundaries(
             ],
             t,
         ),
+        // Taiwan's townhouses at the lane: an iron gate in a low concrete wall before a house's forecourt now and then,
+        // no hedges.
+        Taiwan => weighted(
+            &[
+                (0.75, None),
+                (0.17, wall(CONCRETE, COPE_CONCRETE, 1.2)),
+                (0.08, fence(BRIGHT_WHITE, 1.4)),
+            ],
+            t,
+        ),
         Tropical | Micronesia | Atoll => weighted(
             &[
                 (0.7, None),
@@ -471,6 +481,10 @@ fn boundaries(
             u,
         ),
         Tropical | Micronesia | Atoll => weighted(&[(0.2, hedge(green, 1.2)), (0.8, None)], u),
+        Taiwan => weighted(
+            &[(0.12, wall(CONCRETE, COPE_CONCRETE, 1.6)), (0.88, None)],
+            u,
+        ),
     };
     (front, sides)
 }
@@ -479,7 +493,7 @@ fn boundaries(
 fn pavement(region: Region) -> f32 {
     use Region::*;
     match region {
-        EastAsia => 0.3,
+        EastAsia | Taiwan => 0.3,
         American | West | Florida | Hawaii => 2.4,
         Tropical | Micronesia | Atoll | Arid | NorthAfrica | Nile => 0.8,
         _ => 1.6,
@@ -511,7 +525,8 @@ pub fn hash12(p: [f32; 2]) -> f32 {
 
 /// Whether the shader's facade puts a door in bay `bay` of `b`'s ground floor (`window_style`'s and
 /// `window_style_past`'s rule: a house's or a terrace's one bay in six or so, but a past period's Japanese house's,
-/// which slides; a block's one in eight but where a shop front fills its ground floor).
+/// which slides; a block's one in eight but where a shop front fills its ground floor; `window_style_taiwan`'s in
+/// Taiwan, a block's one in five but where a shop front fills it, on three in four).
 pub fn door_at(b: &Building, region: Region, bay: f32) -> bool {
     let seed = f32::from(b.seed);
     let cell = hash13([bay.floor(), 41.0, seed]);
@@ -519,7 +534,15 @@ pub fn door_at(b: &Building, region: Region, bay: f32) -> bool {
         Kind::House | Kind::Terrace => {
             !(b.period.is_past() && region == Region::EastAsia) && cell < 0.16
         }
-        Kind::Block | Kind::Tower => hash12([seed, 3.0]) >= 0.5 && cell < 0.12,
+        Kind::Block | Kind::Tower => {
+            // Taiwan's: a shop front on three in four, a door in one bay in five of the rest (`window_style_taiwan`).
+            let (shops, doors) = if region == Region::Taiwan {
+                (0.75, 0.2)
+            } else {
+                (0.5, 0.12)
+            };
+            hash12([seed, 3.0]) >= shops && cell < doors
+        }
         _ => false,
     }
 }
@@ -877,6 +900,7 @@ mod tests {
             roof: Roof::Gabled { rise: 3.0 },
             ground: [2.0, 2.0, 2.0],
             height: 5.6,
+            base: 0.0,
             storeys: 2,
             storey_m: 2.8,
             wall: 4,
@@ -904,6 +928,17 @@ mod tests {
             .filter(|c| *c < 0.16)
             .count();
         assert!((180..=320).contains(&doors), "{doors}");
+    }
+
+    #[test]
+    fn taiwans_blocks_take_their_doors_where_its_shader_draws_them() {
+        // Seed 2 a shop front in Taiwan (its hash under three in four) but not elsewhere (over one in two); bay 17 a
+        // door's hash under either rule.
+        let block = house(0.0, 0.0, Kind::Block, 2);
+        assert!((0.5..0.75).contains(&hash12([2.0, 3.0])));
+        assert!(hash13([17.0, 41.0, 2.0]) < 0.12);
+        assert!(door_at(&block, Region::EastAsia, 17.0));
+        assert!(!door_at(&block, Region::Taiwan, 17.0));
     }
 
     #[test]

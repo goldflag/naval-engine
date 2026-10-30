@@ -8,7 +8,7 @@
 //! OpenMapTiles carries no building type: a footprint's type comes from the land use about it and the points of
 //! interest on it, and from its own shape ([`super::plan_building`]).
 
-use super::{CHUNK_M, Footprint, geometry};
+use super::{CHUNK_M, Footprint, Part, geometry};
 
 /// What the land about a building is used for, from OpenMapTiles' `landuse` classes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -287,6 +287,9 @@ pub struct MapTags {
     pub zones: Vec<Zone>,
     pub pois: Vec<Poi>,
     pub outlines: Vec<Outline>,
+    /// OSM's outlines whose middles lie in the chunks about this one, within the map's reach of it: they stand in their
+    /// own chunks, and are read here only for the building a part of this chunk's belongs to ([`merge_outlines`]).
+    pub outlines_about: Vec<Outline>,
     pub water: Vec<WaterArea>,
     pub piers: Vec<Pier>,
     pub landmarks: Vec<Landmark>,
@@ -296,6 +299,10 @@ pub struct MapTags {
     /// maps no port land and no cranes, and a marina's or a power station's waterfront is industrial land at the water
     /// too.
     pub port: bool,
+    /// Areas the host draws itself (a landmark of its own; rings, any orientation): nothing whose middle lies in one
+    /// stands (a footprint, a part, a landmark, a lighthouse, a crane, a pier's deck), nor an infill lot reaching into
+    /// one ([`MapTags::cleared_at`]).
+    pub cleared: Vec<Vec<[f32; 2]>>,
 }
 
 /// What a footprint stands in: its land's usage, the point of interest on it, whether the sea is near, and the pier deck
@@ -352,6 +359,31 @@ impl MapTags {
             && self.piers.is_empty()
             && self.landmarks.is_empty()
             && self.roads.is_empty()
+    }
+
+    /// Whether chunk-local point `p` lies in an area the host draws itself ([`MapTags::cleared`]).
+    pub fn cleared_at(&self, p: [f32; 2]) -> bool {
+        self.cleared.iter().any(|ring| {
+            ring.len() >= 3 && inside(&bounds_of(ring), p) && geometry::contains(ring, p)
+        })
+    }
+
+    /// Whether chunk-local `ring` reaches into an area the host draws itself at all ([`MapTags::cleared`]): their
+    /// edges cross, or one holds the other's point (an infill lot's wall through a narrow area, or a small area within
+    /// the lot).
+    pub fn cleared_over(&self, ring: &[[f32; 2]]) -> bool {
+        if self.cleared.is_empty() || ring.len() < 3 {
+            return false;
+        }
+        let b = bounds_of(ring);
+        self.cleared.iter().any(|area| {
+            let a = bounds_of(area);
+            a[0] <= b[2]
+                && a[2] >= b[0]
+                && a[1] <= b[3]
+                && a[3] >= b[1]
+                && geometry::overlaps(area, ring)
+        })
     }
 
     /// Whether a road or railway crosses a footprint: its strip reaches into the circle about the footprint's middle
@@ -522,20 +554,34 @@ impl MapTags {
 /// cap, and OpenStreetMap's (when it has one) is taken instead.
 pub const CAPPED_M: f32 = 34.0;
 
+/// The least `min_height` that starts a part above the ground (m): below it, it stands on the ground.
+pub const PART_BASE_M: f32 = 0.5;
+
 /// Merges OpenStreetMap's outlines with the footprints (both chunk-local): a footprint whose middle an outline holds
 /// takes that outline's height where it has none or a capped one ([`CAPPED_M`]), and its colour; an outline that holds
 /// no footprint's middle, and whose own middle no footprint holds, is added as a footprint of its own (a building
-/// Microsoft's data misses), unless another part draws it or it starts above the ground.
-pub fn merge_outlines(footprints: &mut Vec<Footprint>, outlines: &[Outline]) {
-    if outlines.is_empty() {
+/// Microsoft's data misses), unless its parts draw it (`hide_3d`).
+///
+/// A building mapped as parts (`building:part`s, one on another: a tower's shaft, its crown, its spire) stands as its
+/// parts, each a footprint of its own from its base (`min_height`) to its height ([`Part`]), all read at their
+/// building's middle; the footprint whose middle lies in such a building (an outline drawn by parts it holds, or a part
+/// raised over the ground with a part on the ground there too) is left out, the parts standing in its place (a part on
+/// the ground with no height of its own takes the footprint's). The outlines `about` the chunk (whose middles lie in
+/// its neighbours, [`MapTags::outlines_about`]) are read for the building a part belongs to, and stand nowhere here:
+/// a tower whose parts lie across a chunk's edge keeps one middle, and its parts meet.
+pub fn merge_outlines(footprints: &mut Vec<Footprint>, outlines: &[Outline], about: &[Outline]) {
+    if outlines.is_empty() && about.is_empty() {
         return;
     }
+    // The chunk's own outlines first, then those about it.
+    let all: Vec<&Outline> = outlines.iter().chain(about).collect();
+    let own = |o: usize| o < outlines.len();
     let grid = CellGrid::new();
     // The outlines by the cells their boxes touch, and the footprints likewise: every point query reads one cell.
-    let obounds: Vec<[f32; 4]> = outlines.iter().map(|o| bounds_of(&o.ring)).collect();
+    let obounds: Vec<[f32; 4]> = all.iter().map(|o| bounds_of(&o.ring)).collect();
     let mut ocells: Vec<Vec<u32>> = vec![Vec::new(); grid.len()];
     for (o, b) in obounds.iter().enumerate() {
-        if outlines[o].ring.len() >= 3 {
+        if all[o].ring.len() >= 3 {
             grid.insert(&mut ocells, b, o as u32);
         }
     }
@@ -546,9 +592,89 @@ pub fn merge_outlines(footprints: &mut Vec<Footprint>, outlines: &[Outline]) {
             grid.insert(&mut fcells, b, k as u32);
         }
     }
-    let mut matched = vec![false; outlines.len()];
-    for f in footprints.iter_mut() {
-        if f.ring.len() < 3 {
+    // The outlines holding point `p`, and the footprints.
+    let (grid, ocells, obounds, fcells, fbounds, all) =
+        (&grid, &ocells, &obounds, &fcells, &fbounds, &all);
+    let outlines_at = move |p: [f32; 2]| {
+        ocells[grid.cell(p)]
+            .iter()
+            .map(|&o| o as usize)
+            .filter(move |&o| inside(&obounds[o], p) && geometry::contains(&all[o].ring, p))
+    };
+    let held: &[Footprint] = footprints;
+    let footprints_at = move |p: [f32; 2]| {
+        fcells[grid.cell(p)]
+            .iter()
+            .map(|&k| k as usize)
+            .filter(move |&k| inside(&fbounds[k], p) && geometry::contains(&held[k].ring, p))
+    };
+    let middles: Vec<[f32; 2]> = all
+        .iter()
+        .map(|o| {
+            if o.ring.len() >= 3 {
+                geometry::centroid(&o.ring)
+            } else {
+                [f32::NAN; 2]
+            }
+        })
+        .collect();
+    // What each outline is: drawn by its parts (`hide_3d`), a part raised over the ground (a base and a height over
+    // it), or standing on the ground.
+    let raised: Vec<bool> = all
+        .iter()
+        .map(|o| {
+            !o.hide_3d
+                && o.min_height >= PART_BASE_M
+                && o.height.is_some_and(|h| h >= o.min_height + 1.0)
+        })
+        .collect();
+    let on_ground = |o: usize| !all[o].hide_3d && all[o].min_height < PART_BASE_M;
+    let real = |o: usize| all[o].ring.len() >= 3;
+    // An outline drawn by its parts that holds one of them that stands (its parts are in the data, not only beyond the
+    // chunk's reach; a part with no height over its base stands nowhere, and leaves the footprint under it standing); a
+    // footprint holding a raised part's middle or a grounded outline's; a grounded outline holding a raised part's.
+    let mut has_parts = vec![false; all.len()];
+    let mut holds_raised = vec![false; footprints.len()];
+    let mut holds_ground = vec![false; footprints.len()];
+    let mut under_raised = vec![false; all.len()];
+    for o in (0..all.len()).filter(|&o| real(o) && (raised[o] || on_ground(o))) {
+        for h in outlines_at(middles[o]) {
+            if all[h].hide_3d {
+                has_parts[h] = true;
+            } else if raised[o] && on_ground(h) {
+                under_raised[h] = true;
+            }
+        }
+        for k in footprints_at(middles[o]) {
+            if raised[o] {
+                holds_raised[k] = true;
+            } else if on_ground(o) {
+                holds_ground[k] = true;
+            }
+        }
+    }
+    // The footprints a building's parts draw, left out.
+    let drawn: Vec<bool> = footprints
+        .iter()
+        .enumerate()
+        .map(|(k, f)| {
+            if f.ring.len() < 3 {
+                return false;
+            }
+            let (mut hidden, mut in_raised, mut in_ground) = (false, false, false);
+            for o in outlines_at(geometry::centroid(&f.ring)) {
+                hidden |= has_parts[o];
+                in_raised |= raised[o];
+                in_ground |= on_ground(o);
+            }
+            hidden || ((in_raised || holds_raised[k]) && (in_ground || holds_ground[k]))
+        })
+        .collect();
+    let mut matched = vec![false; all.len()];
+    // Each footprint's height and colour from the outlines over it (set once the queries are done).
+    let mut lent: Vec<(usize, Option<f32>, Option<[u8; 3]>)> = Vec::new();
+    for (k, f) in footprints.iter().enumerate() {
+        if f.ring.len() < 3 || drawn[k] {
             continue;
         }
         let m = geometry::centroid(&f.ring);
@@ -556,48 +682,99 @@ pub fn merge_outlines(footprints: &mut Vec<Footprint>, outlines: &[Outline]) {
         // church's outline); the tallest gives its height.
         let mut best: Option<(f32, usize)> = None;
         let mut tallest: Option<f32> = None;
-        for &o in &ocells[grid.cell(m)] {
-            let o = o as usize;
-            if !inside(&obounds[o], m) || !geometry::contains(&outlines[o].ring, m) {
-                continue;
-            }
+        for o in outlines_at(m).filter(|&o| own(o)) {
             matched[o] = true;
-            let area = geometry::area(&outlines[o].ring);
+            let area = geometry::area(&all[o].ring);
             if best.is_none_or(|(a, _)| area > a) {
                 best = Some((area, o));
             }
-            if let Some(h) = outlines[o].height {
+            if let Some(h) = all[o].height {
                 tallest = Some(tallest.map_or(h, |t: f32| t.max(h)));
             }
         }
         let Some((_, o)) = best else { continue };
         let capped = f.height.is_none_or(|h| !(2.5..CAPPED_M).contains(&h));
-        if capped && let Some(h) = tallest.filter(|h| f.height.is_none_or(|old| *h > old)) {
-            f.height = Some(h);
-        }
-        if f.colour.is_none() {
-            f.colour = outlines[o].colour;
-        }
+        let height = match tallest.filter(|h| f.height.is_none_or(|old| *h > old)) {
+            Some(h) if capped => Some(h),
+            _ => f.height,
+        };
+        lent.push((k, height, f.colour.or(all[o].colour)));
     }
+    // A part's building's middle: the largest outline drawn by its parts, footprint left out for them or grounded
+    // outline over point `p` (itself, for a grounded one); `p` where none is.
+    let middle_of = |p: [f32; 2]| -> [f32; 2] {
+        let mut best: Option<(f32, [f32; 2])> = None;
+        let mut consider = |ring: &[[f32; 2]]| {
+            let area = geometry::area(ring);
+            if best.is_none_or(|(a, _)| area > a) {
+                best = Some((area, geometry::centroid(ring)));
+            }
+        };
+        for o in outlines_at(p).filter(|&o| has_parts[o] || on_ground(o)) {
+            consider(&all[o].ring);
+        }
+        for k in footprints_at(p).filter(|&k| drawn[k]) {
+            consider(&footprints[k].ring);
+        }
+        best.map_or(p, |(_, middle)| middle)
+    };
     let mut added = Vec::new();
     for (o, outline) in outlines.iter().enumerate() {
-        if matched[o] || outline.ring.len() < 3 || outline.hide_3d || outline.min_height >= 0.5 {
+        if matched[o] || !real(o) || outline.hide_3d {
             continue;
         }
-        let oc = geometry::centroid(&outline.ring);
-        let held = fcells[grid.cell(oc)].iter().any(|&k| {
-            let k = k as usize;
-            inside(&fbounds[k], oc) && geometry::contains(&footprints[k].ring, oc)
-        });
-        if !held {
-            added.push(Footprint {
-                ring: outline.ring.clone(),
-                height: outline.height,
-                kind: None,
-                colour: outline.colour,
-            });
+        let m = middles[o];
+        let footprint = |height: Option<f32>, part: Option<Part>| Footprint {
+            ring: outline.ring.clone(),
+            height,
+            kind: None,
+            colour: outline.colour,
+            part,
+        };
+        if raised[o] {
+            added.push(footprint(
+                outline.height,
+                Some(Part {
+                    base: outline.min_height,
+                    middle: middle_of(m),
+                }),
+            ));
+            continue;
         }
+        // A part over the ground with no height to stand to.
+        if outline.min_height >= PART_BASE_M {
+            continue;
+        }
+        if footprints_at(m).any(|k| !drawn[k]) {
+            continue;
+        }
+        // The footprint left out for it (the largest), whose height it takes where it has none.
+        let left_out = footprints_at(m).filter(|&k| drawn[k]).max_by(|&a, &b| {
+            geometry::area(&footprints[a].ring).total_cmp(&geometry::area(&footprints[b].ring))
+        });
+        let part_of = outlines_at(m).any(|h| has_parts[h]) || left_out.is_some() || under_raised[o];
+        let height = outline
+            .height
+            .or_else(|| left_out.and_then(|k| footprints[k].height));
+        added.push(footprint(
+            height,
+            part_of.then(|| Part {
+                base: 0.0,
+                middle: middle_of(m),
+            }),
+        ));
     }
+    for (k, height, colour) in lent {
+        footprints[k].height = height;
+        footprints[k].colour = colour;
+    }
+    footprints.retain({
+        let mut k = 0;
+        move |_| {
+            k += 1;
+            !drawn[k - 1]
+        }
+    });
     footprints.extend(added);
 }
 
@@ -925,6 +1102,7 @@ mod tests {
             height,
             kind: None,
             colour: None,
+            part: None,
         };
         let mut footprints = vec![
             // No height: OSM's 30 m taken. Capped at 35 m: OSM's 80 m taken. A measured 12 m kept over OSM's 9.
@@ -954,14 +1132,226 @@ mod tests {
                 ..outline(square(700.0, 700.0, 10.0), Some(10.0))
             },
         ];
-        merge_outlines(&mut footprints, &outlines);
-        assert_eq!(footprints.len(), 4);
+        merge_outlines(&mut footprints, &outlines, &[]);
+        assert_eq!(footprints.len(), 5);
         assert_eq!(footprints[0].height, Some(30.0));
         assert_eq!(footprints[1].height, Some(80.0));
         assert_eq!(footprints[2].height, Some(12.0));
         assert_eq!(footprints[0].colour, Some([200, 0, 0]));
         assert_eq!(footprints[3].ring, square(500.0, 500.0, 30.0));
         assert_eq!(footprints[3].height, None);
+        assert_eq!(footprints[3].part, None);
+        // The part floating over open ground stands as mapped, from its base.
+        assert_eq!(footprints[4].ring, square(600.0, 600.0, 10.0));
+        assert_eq!(
+            footprints[4].part,
+            Some(Part {
+                base: 20.0,
+                middle: [605.0, 605.0]
+            })
+        );
+    }
+
+    /// Taipei 101 as OpenStreetMap draws it: the complex's outline drawn by its parts, the shaft on the ground to 386 m,
+    /// a slab, the crown, the top and the spire stacked on it, a podium on the ground beside it; and Microsoft's
+    /// footprint of the tower, capped at 34 m.
+    fn taipei_101() -> (Vec<Footprint>, Vec<Outline>) {
+        let part = |ring: Vec<[f32; 2]>, base: f32, top: f32| Outline {
+            ring,
+            height: Some(top),
+            min_height: base,
+            colour: None,
+            hide_3d: false,
+        };
+        let outlines = vec![
+            Outline {
+                hide_3d: true,
+                ..part(square(400.0, 400.0, 125.0), 0.0, 508.0)
+            },
+            part(square(430.0, 430.0, 53.0), 0.0, 386.0),
+            part(square(434.0, 434.0, 45.0), 386.0, 391.0),
+            part(square(445.0, 445.0, 23.0), 390.0, 439.0),
+            part(square(450.0, 450.0, 13.0), 439.0, 448.0),
+            part(square(455.8, 455.8, 1.4), 448.0, 508.0),
+            part(square(490.0, 405.0, 30.0), 0.0, 25.0),
+        ];
+        let footprints = vec![Footprint {
+            ring: square(431.0, 431.0, 51.0),
+            height: Some(34.5),
+            ..Footprint::default()
+        }];
+        (footprints, outlines)
+    }
+
+    #[test]
+    fn a_tower_mapped_as_parts_stands_as_its_parts() {
+        let (mut footprints, outlines) = taipei_101();
+        merge_outlines(&mut footprints, &outlines, &[]);
+        // Microsoft's footprint left out, the outline drawn by its parts, every part standing.
+        assert_eq!(footprints.len(), 6, "{footprints:?}");
+        let middle = [462.5, 462.5];
+        let parts: Vec<(f32, Option<f32>)> = footprints
+            .iter()
+            .map(|f| {
+                let p = f.part.expect("a part");
+                assert_eq!(p.middle, middle, "each read at the complex's middle");
+                (p.base, f.height)
+            })
+            .collect();
+        assert_eq!(
+            parts,
+            vec![
+                (0.0, Some(386.0)),
+                (386.0, Some(391.0)),
+                (390.0, Some(439.0)),
+                (439.0, Some(448.0)),
+                (448.0, Some(508.0)),
+                (0.0, Some(25.0)),
+            ]
+        );
+        assert!(footprints.iter().filter(|f| f.raised()).count() == 4);
+    }
+
+    #[test]
+    fn a_footprint_under_a_raised_part_gives_way_to_the_parts() {
+        // No outline drawn by parts: a building on the ground with no height and a part over it from 40 to 90 m, over
+        // Microsoft's footprint (24 m). The footprint is left out; the building takes its height, the part stands on it.
+        let part = |ring: Vec<[f32; 2]>, base: f32, top: Option<f32>| Outline {
+            ring,
+            height: top,
+            min_height: base,
+            colour: None,
+            hide_3d: false,
+        };
+        let mut footprints = vec![
+            Footprint {
+                ring: square(100.0, 100.0, 40.0),
+                height: Some(24.0),
+                ..Footprint::default()
+            },
+            // Beside them a footprint under a raised part with nothing on the ground: it stands, at the part's top.
+            Footprint {
+                ring: square(300.0, 300.0, 20.0),
+                ..Footprint::default()
+            },
+        ];
+        let outlines = vec![
+            part(square(99.0, 99.0, 42.0), 0.0, None),
+            part(square(110.0, 110.0, 20.0), 40.0, Some(90.0)),
+            part(square(301.0, 301.0, 18.0), 12.0, Some(30.0)),
+        ];
+        merge_outlines(&mut footprints, &outlines, &[]);
+        assert_eq!(footprints.len(), 3, "{footprints:?}");
+        assert_eq!(footprints[0].ring, square(300.0, 300.0, 20.0));
+        assert_eq!(footprints[0].height, Some(30.0));
+        assert_eq!(footprints[0].part, None);
+        let [_, under, raised] = &footprints[..] else {
+            unreachable!()
+        };
+        assert_eq!(under.ring, square(99.0, 99.0, 42.0));
+        assert_eq!(under.height, Some(24.0));
+        assert_eq!(under.part.map(|p| p.base), Some(0.0));
+        assert_eq!(raised.ring, square(110.0, 110.0, 20.0));
+        assert_eq!(
+            raised.part.map(|p| (p.base, p.middle)),
+            Some((40.0, [120.0, 120.0]))
+        );
+        assert_eq!(under.part.map(|p| p.middle), Some([120.0, 120.0]));
+    }
+
+    #[test]
+    fn a_part_that_cannot_stand_leaves_microsofts_footprint_standing() {
+        // A building drawn by its parts holding Microsoft's footprint (18 m) and one part from 12 m with no height: the
+        // part stands nowhere, so the footprint stands in its place.
+        let mut footprints = vec![Footprint {
+            ring: square(110.0, 110.0, 30.0),
+            height: Some(18.0),
+            ..Footprint::default()
+        }];
+        let outlines = vec![
+            Outline {
+                ring: square(100.0, 100.0, 50.0),
+                height: None,
+                min_height: 0.0,
+                colour: None,
+                hide_3d: true,
+            },
+            Outline {
+                ring: square(112.0, 112.0, 26.0),
+                height: None,
+                min_height: 12.0,
+                colour: None,
+                hide_3d: false,
+            },
+        ];
+        merge_outlines(&mut footprints, &outlines, &[]);
+        assert_eq!(footprints.len(), 1, "{footprints:?}");
+        assert_eq!(footprints[0].ring, square(110.0, 110.0, 30.0));
+        assert_eq!(
+            (footprints[0].height, footprints[0].part),
+            (Some(18.0), None)
+        );
+    }
+
+    #[test]
+    fn a_towers_parts_across_a_chunks_edge_keep_one_middle() {
+        // A building drawn by its parts about theatre (995, 430): its outline and shaft (on the ground to 120 m) in
+        // chunk (0, 0), its crown (from 120 m) about (1005, 430) in chunk (1, 0); the ground rising 0.1 m a metre east.
+        let outline = |x: f32, side: f32, base: f32, top: f32, hide_3d: bool| Outline {
+            ring: square(x, 400.0 + (60.0 - side) * 0.5, side),
+            height: Some(top),
+            min_height: base,
+            colour: None,
+            hide_3d,
+        };
+        // Each chunk's own outlines and those about it, in its own frame (x from its corner).
+        let shift = |o: &Outline, dx: f32| Outline {
+            ring: o.ring.iter().map(|p| [p[0] + dx, p[1]]).collect(),
+            ..o.clone()
+        };
+        let building = outline(965.0, 60.0, 0.0, 160.0, true);
+        let shaft = outline(975.0, 40.0, 0.0, 120.0, false);
+        let crown = outline(995.0, 20.0, 120.0, 160.0, false);
+        let mut west = Vec::new();
+        merge_outlines(
+            &mut west,
+            &[building.clone(), shaft.clone()],
+            std::slice::from_ref(&crown),
+        );
+        let mut east = Vec::new();
+        merge_outlines(
+            &mut east,
+            &[shift(&crown, -1000.0)],
+            &[shift(&building, -1000.0), shift(&shaft, -1000.0)],
+        );
+        // Each part stands once, in its own chunk, at the building's middle.
+        assert_eq!((west.len(), east.len()), (1, 1), "{west:?} {east:?}");
+        let (shaft, crown) = (&west[0], &east[0]);
+        let middle = |f: &Footprint| f.part.expect("a part").middle;
+        assert!((middle(shaft)[0] - 995.0).abs() < 1e-3, "{shaft:?}");
+        assert!((middle(crown)[0] + 5.0).abs() < 1e-3, "{crown:?}");
+        // Planned in their chunks: one colour and hash, and the crown's walls start at the shaft's top.
+        let plan = |f: &Footprint, chunk: i32| {
+            let ground = move |p: [f32; 2]| 5.0 + 0.1 * (p[0] + 1000.0 * chunk as f32);
+            crate::buildings::plan_building(
+                f,
+                [chunk, 0],
+                0.6,
+                crate::buildings::Region::Temperate,
+                crate::buildings::Period::Today,
+                &Setting::default(),
+                &ground,
+            )
+            .expect("it stands")
+        };
+        let (shaft, crown) = (plan(shaft, 0), plan(crown, 1));
+        assert_eq!((shaft.seed, shaft.wall), (crown.seed, crown.wall));
+        let top = shaft.ground[1] + shaft.height;
+        assert!(
+            (crate::buildings::mesh::foot_of(&crown) - top).abs() < 1e-3,
+            "{} {top}",
+            crate::buildings::mesh::foot_of(&crown)
+        );
     }
 
     #[test]

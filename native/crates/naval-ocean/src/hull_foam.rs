@@ -145,7 +145,7 @@ impl HullContactFoam {
         if self.enabled {
             for ship in ships {
                 // A laden surface hull may ride metres below its design waterline; a diving submarine leaves the surface.
-                let surface = (1.0 + (ship.position[1] + ship.draft * 0.6) / 3.0).clamp(0.0, 1.0);
+                let surface = crate::ship_wake::surfaced(ship.position[1] + ship.draft * 0.6);
                 let target = (ship.speed.abs() / ship.forward_speed.max(1.0)).min(1.0) * surface;
                 let previous = self
                     .speeds

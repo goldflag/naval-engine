@@ -6,7 +6,7 @@ host's side (the footprints' source, the infill's cover, the chunks about the ca
 `theatre::buildings` (docs/archive/native-theatre-history.md, "Buildings").
 
 ```rust
-tags::merge_outlines(&mut real, &tags.outlines);  // OSM's heights, colours and the buildings Microsoft misses
+tags::merge_outlines(&mut real, &tags.outlines);  // OSM's heights, colours, parts and the buildings Microsoft misses
 let mesh = build_chunk(&ChunkInput { key, footprints: &real, infill: &lots, tags: &tags, ground: &|p| h(p), region });
 let mut layer = BuildingsLayer::new(&mut ctx, &environment.bind_group, BuildingSettings::for_quality(&quality))?;
 layer.queue_chunk(key, Arc::new(mesh));   // uploaded from its prepare, 8 MB a frame at most
@@ -19,6 +19,30 @@ layer.camera_theatre(); layer.held_lod(index); layer.holds_mesh(key, &mesh); lay
 "Buildings"): land-use zones, the points of interest that type a building, OSM's building outlines, the water, the
 piers, the roads, a port's presence and the landmarks the host knows by name. An empty one types the footprints by
 their shape and size alone, as before 2026-10-05. `region` is the chunk's place's palettes (`Region::at`, below).
+
+A host that draws some landmarks itself (another program on the engine) hands the buildings the areas to leave clear,
+in latitude and longitude, polygons or circles (2026-10-29, naval-landscape's `buildings::set_clear_areas`):
+
+```rust
+use naval_landscape::buildings::{ClearArea, set_clear_areas};
+set_clear_areas(vec![
+    ClearArea::Circle { middle: LatLon { lat: 25.0336, lon: 121.5650 }, radius_m: 90.0 },   // Taipei 101, drawn by the host
+    ClearArea::Polygon(vec![a, b, c, d]),                                                   // any ring, either way round
+]);
+set_clear_areas(Vec::new());   // none: every building stands again
+```
+
+Every building whose middle lies in an area is left out at every level and from every source: Microsoft's footprints,
+OSM's outlines and parts (a part by its building's middle, so a tower goes whole), a block's parcels, the landmarks,
+the map's lighthouses, the quays' cranes, piers' decks, the far level's masses (a run by its middle lot, a block by its
+middle); an infill lot reaching into one at all is left out (their edges crossing, or either holding the other's
+point: `MapTags::cleared_over`), and the lots are laid about the footprints in them before those go, so the infill
+never fills the hole. The host passes the chunk-local rings in `MapTags::cleared` (`MapTags::cleared_at`), and the far
+level's `stood`. The worker reads the areas once as it begins a batch, and makes and marks its chunks by that reading
+(a hash of the areas over each); a chunk under an area added, moved or taken away is stale and made again, the old mesh
+drawn until the new one is in (any thread, any time, before a scenario's frame is known too), and a drawn chunk whose
+mesh has left the memory's cache keeps its mark, so it is made again too. The on-disk caches hold only the sources (the index,
+Microsoft's files and tiles, the map's tiles), the made meshes only memory, so nothing on disk is made again.
 
 - **Chunks.** Fixed 1 km squares of the theatre's metres (`CHUNK_M`; chunk (i, j) from (i, j) km), so a chunk made once
   serves every window and scene that comes back to it. A footprint belongs to the chunk holding its middle; its ring is
@@ -36,8 +60,9 @@ their shape and size alone, as before 2026-10-05. `region` is the chunk's place'
 - **Plan** (`plan_building`). The ring cleaned (repeats and collinear points within 0.4 m dropped, counter-clockwise);
   footprints under 6 m², standing in the sea by the window's heights, or across a cliff (more than 6 m plus a quarter of
   the length between the highest and lowest ground under them: the heights' 40-140 m samples put coastal buildings on
-  the shelf's face) are left out. The source's height is taken between 2.5 and 400 m (`MIN_DATA_HEIGHT_M`,
-  `MAX_DATA_HEIGHT_M`); otherwise it is estimated from the area, the elongation and the share of the ground built over
+  the shelf's face) are left out. The source's height is taken between 2.5 and 850 m (`MIN_DATA_HEIGHT_M`,
+  `MAX_DATA_HEIGHT_M`, 400 m until 2026-10-29: Taipei 101 is 508 m, the Burj Khalifa 828 m; at most 127 window rows,
+  `MAX_STOREYS`, the vertex's snorm8: 457 m of offices' storeys); otherwise it is estimated from the area, the elongation and the share of the ground built over
   about it (`DensityGrid`: 100 m cells of the chunk, each with its neighbours): sheds under 30 m² one 2.6 m storey;
   houses under 220 m² one or two storeys of 2.8 m (three in a dense terrace; one in the tropics' and dry countries'
   suburbs); 220-1300 m² terraces of two or three, blocks of three to six where the ground is built over; larger, blocks
@@ -45,6 +70,33 @@ their shape and size alone, as before 2026-10-05. `region` is the chunk's place'
   compact 500-2,500 m² blocks, but in the tropics, dry countries, Micronesia and on atolls), else an industrial shed of 9 m. Measured: a tower
   from 36 m, an industrial shed over 1500 m² under 13 m. A footprint on a pier stands on its deck. A block or a row
   the source drew as one is cut into the buildings it holds ("Parcels", below).
+- **Parts** of OSM's buildings (2026-10-29, `tags::merge_outlines`, `Footprint::part`). A tower mapped as
+  `building:part`s stacked one on another (Taipei 101: its shaft on the ground to 386 m, a slab to 391, its crown from
+  390 to 439, its top to 448, its 2 m² spire to 508; the complex's outline `hide_3d`) stands as its parts, each a
+  footprint of its own from its base (`min_height`, `Part::base`) to its height. Until then every part above the
+  ground was dropped, so the tower stood at its shaft's 386 m. A part keeps the middle of its building (the largest
+  outline its parts draw, footprint left out for them, or grounded outline over its middle, `Part::middle`): its plan
+  hashes and reads the mean ground there, so the parts of one tower take one colour, one storey and bay, windows that
+  run on from part to part, and meet without a gap. A chunk reads the outlines whose middles lie in its neighbours
+  within the map's 150 m reach too (`MapTags::outlines_about`, standing only in their own chunks), so a tower whose
+  parts lie across a chunk's edge keeps one middle in both, and its crown starts at its shaft's top on sloping ground.
+  A part stands as mapped: no church's, lighthouse's, stack's or tank's made parts about it, no factory's chimneys, a
+  flat top (a works' part too, no gable or sawtooth over its mapped top), never cut into parcels; one narrower than 4 m
+  (a mast, a spire) has no window rows up it, and a raised one as small as 1 m² stands. Walls start at the base over
+  the mean ground (`mesh::foot_of`): nothing below it, nor the 1.5 m sink, at both near levels, and a raised part is
+  closed underneath (a skybridge's floor seen from the street, plain in its walls' colour). A raised part counts in no
+  ground's share built (`DensityGrid`), lays no footing or yard, holds no landmark, and in a past period is judged with
+  its building (the thinning reads the building's middle; a building built later goes whole, every part of it where any
+  part holds the listed point or its middle lies within 35 m of it, `Thinning::later_at`) and goes where the cap leaves
+  nothing of it. Microsoft's footprint whose middle lies in a building its parts draw (an outline `hide_3d` holding a
+  part that stands, or a raised part over it with a grounded outline there) is left out, the parts standing in its
+  place, where it once took the tallest part's height; a grounded part with no height of its own takes the
+  footprint's. A part with no height over its base stands nowhere and draws no building, so the footprint under it
+  stands. A part raised over nothing (a bridge
+  between towers) stands as mapped; one with no height over its base is dropped, as before. Both near levels read
+  the map at zoom 14 (`osm_zoom`): OpenMapTiles' zoom 13 holds a tile's buildings as one shape with no heights, parts
+  or colours, so a tower boxed 3.5 km off fell to an estimate, and a city with no footprints of Microsoft's (Taiwan's)
+  to blobs.
 - **Types** (2026-10-05, from the map's `Setting`: the land use at a footprint's middle, the most specific zone
   winning, a point of interest on it or within 6 m, the sea within 150 m of a round one, the pier under it):
   - *Church* on a `place_of_worship` point (40-8,000 m²): a nave of 5-20 m eaves under a steep gable (42-52 degrees,
@@ -99,8 +151,12 @@ their shape and size alone, as before 2026-10-05. `region` is the chunk's place'
   delta from Alexandria to Port Said, Cairo, the Fayoum, the valley within 35 km of the river to Aswan), Mediterranean
   (its northern shores, Iberia, Turkey, Madeira, Latin America south of that border), American
   (the rest of North America: the East Coast, the South, the Midwest, the Pacific north-west's siding), Temperate
-  (France, central and southern Germany, the Alps, Poland, the Baltic states), East Asian (Japan from Hokkaido to Okinawa, Korea, Taiwan, eastern China; not
-  Russia's Primorye), Arid (Arabia, the Levant, the Middle East, the Canaries; a dry style in the tropics), Hawaii (its
+  (France, central and southern Germany, the Alps, Poland, the Baltic states), East Asian (Japan from Hokkaido to Okinawa, Korea, eastern China with Fujian's coast
+  and islands; not Russia's Primorye), Taiwan (2026-10-29: Taiwan, Penghu, Green Island and Orchid Island in 21.8-25.4° N,
+  119.3-122.1° E, Fujian's coast and islands north of 24° N and west of 120.1° E left out (Nanri, Pingtan, Haitan, the
+  Longgao peninsula, Wuqiu's islet with them); Kinmen with Lieyu, Xiamen's island and Dadeng left out; Matsu's Nangan,
+  Beigan, Gaodeng, Dongju, Xiju and Dongyin; in a past period East Asian, `Region::in_period`: Japanese-ruled from
+  1895 to 1945), Arid (Arabia, the Levant, the Middle East, the Canaries; a dry style in the tropics), Hawaii (its
   main islands, Niihau to the Big Island), Micronesia (the Marianas, Palau and the Carolines north of 0.5° N and east
   of 130.5° E, Kosrae, Wake, Midway), Atoll (the Marshalls, Kiribati, Nauru, Tuvalu, Tokelau: east of 160.5° E
   between 11° S and 15° N, the Solomons' Malaita, Makira and Temotu left out; the Phoenix and Line Islands), Tropical
@@ -109,25 +165,26 @@ their shape and size alone, as before 2026-10-05. `region` is the chunk's place'
   Angeles) and Japan temperate; until 2026-10-09 Britain, Ireland, the Low Countries and Denmark were temperate (red and
   orange tile over white render), Iceland and Norway shared painted iron, and Florida was American; until 2026-10-09
   (later) Malta, Greece and the Maghreb's coast were Mediterranean (terracotta), Egypt and Libya arid, a warm
-  country's flat roofs were dark gravel, tar and asphalt, and Hawaii, Micronesia and the atolls were tropical.
+  country's flat roofs were dark gravel, tar and asphalt, and Hawaii, Micronesia and the atolls were tropical; until
+  2026-10-29 Taiwan was East Asian (Japan's two-storey houses under kawara over Taipei).
 - **Roofs** (`palette::roof_rules`). A house, shed or terrace whose footprint fills at least 80% of its smallest
   rectangle, no wider than 16 m and under 13 m tall takes that rectangle and a pitched roof along its long side: gabled,
   or hipped (15% of Nordic, Icelandic and Scottish roofs, 25% North Sea, 30% British, 35% temperate, 45%
   Mediterranean, 45% Greek, 40% Maltese and North African, 50% Egyptian, 35% American, 55% American West, 70%
-  Floridian, 70% Hawaiian, 40% Micronesian, 35% on an atoll, 50% East Asian, 60% tropical, 50% dry), pitched
+  Floridian, 70% Hawaiian, 40% Micronesian, 35% on an atoll, 50% East Asian, 35% Taiwanese, 60% tropical, 50% dry), pitched
   26-42 degrees (30-44 British, 35-47 Scottish and Irish, 40-54 North Sea, 18-27 in the Mediterranean, 20-28 Greek,
   18-28 Maltese and North African, 16-24 Egyptian, 20-32 Hawaiian, 14-24 Micronesian, 16-30 on an atoll, 22-36 American,
-  17-27 American West (a ranch house's 4:12 to 6:12), 18-26 Floridian, 16-28 East Asian, 18-28 in the tropics, 16-24 in
+  17-27 American West (a ranch house's 4:12 to 6:12), 18-26 Floridian, 16-28 East Asian and Taiwanese, 18-28 in the tropics, 16-24 in
   a dry country, 14-24 on a shed; four in five of a dry country's houses flat, one in five of the American West's
   (gravel and tar), 15% of Florida's, 95% of Malta's, 97% of Egypt's, 88% of North Africa's, 55% of Greece's, 65% of
-  Micronesia's, 10% of Hawaii's and an atoll's). A
+  Micronesia's, 95% of Taiwan's, 10% of Hawaii's and an atoll's). A
   terraced house (a terrace's footprint no longer than 18 m and a quarter
   longer than wide: one house of a row, as OSM maps Britain's and Holland's) turns its ridge across its width, along
   the street, gabled at a quarter of its region's spread of pitch and at most 4.2 m high, so a row's roofs run on as
   one instead of a sawtooth of gables. A low block (six storeys at most, 22 m wide, near rectangular) wears a hipped
   tile roof of 18-26 degrees on 40% of Nordic blocks, 35% Mediterranean and North Sea, 30% Scottish and Irish, 25%
   temperate, 20% British, 15% Icelandic, 10% American, American West and Floridian, 5% Greek and Hawaiian, 3% North
-  African, none in Malta, Egypt, Micronesia or on an atoll. A measured height is the
+  African, none in Malta, Egypt, Taiwan, Micronesia or on an atoll. A measured height is the
   roof's mean, so the eaves stand half the rise below it. Everything else is a flat roof over the ring (ear clipping;
   holes, such as courtyards, are roofed over). The roofs' colours by region (houses; blocks and others in brackets):
 
@@ -144,6 +201,7 @@ their shape and size alone, as before 2026-10-05. `region` is the chunk's place'
   | American | grey, brown and dark asphalt shingles, asphalt, black, slate | light grey, beige and blue-grey siding, white, brick, pastels |
   | American West | grey, brown and dark asphalt shingles, asphalt, one in ten concrete (sand) tile; one in five flat, gravel or tar (blocks: shingles, some terracotta, mostly flat) | white and cream stucco, whitewash, light ochre, peach, sand, beige and grey siding, stone, a pastel now and then |
   | East Asian | grey kawara (the colour cube's 102 grey), anthracite and black glazed tile, blue slate, lead, galvanised, blue, green and green-grey sheet metal (blocks: kawara and anthracite on the few pitched, most flat) | white, cream, light concrete, bright white, grey and beige siding, green-grey, stone, sand, dark timber now and then |
+  | Taiwan | flat (grey concrete, green-grey waterproofing, felt, gravel, brown and red-brown heat tiles); blue, galvanised, rusted and white sheet, red clay tile and kawara on the few pitched (blocks: flat) | small ceramic tiles (four homes in five, `buildings.wgsl`'s `wall_material`) in greys and dark greys, beige, tan, dun, olive, salmon, mauve, rose and brown, brick-red now and then, a white one; streaked by the rain (Weathering) |
   | Tropical | galvanised and rusted corrugated iron, light galvanised, red, blue and green iron, a little terracotta | white render, cream, pastels, sand, painted boards |
   | Arid | flat concrete, white, gravel, membrane (a pitched one terracotta or concrete) | sand, cream, white, limestone, ochre |
   | Malta | flat (limestone screed, a new entry, pale concrete, white, membrane); terracotta on the few pitched | honey limestone (a new entry, ashlar), limestone, cream, pale ochre, sand, white |
@@ -156,22 +214,29 @@ their shape and size alone, as before 2026-10-05. `region` is the chunk's place'
 
   Flat roofs: gravel, tar, concrete, pale or white membrane, asphalt; in a warm, dry country (the Mediterranean,
   Greece, Malta, North Africa, the arid lands) pale concrete, membranes, limewash and light gravel only (a warm
-  limestone screed on half of Malta's and on a fifth of North Africa's), in Egypt dusty concrete, gravel and tan
-  (`palette::flat_roofs`). Warehouses and factories galvanised, grey,
+  limestone screed on half of Malta's and on a fifth of North Africa's), in Egypt dusty concrete, gravel and tan, in
+  Taiwan grey concrete, green-grey waterproofing, felt and gravel, a brown or red-brown heat tile (隔熱磚) now and then (`palette::flat_roofs`). Warehouses and factories galvanised, grey,
   coloured sheet or concrete (brick mills and warehouses beside them in Britain and the North Sea's country); churches
   by region (slate, patina and lead in the north and west, a square tower without a spire on more than half of
   England's and Wales', red sandstone in Britain and Scotland now and then, brick
   Gothic under copper and black tile by the North Sea, black and copper in the Nordic countries and red iron in
   Iceland under a spire, terracotta in the Mediterranean, a dome over most Greek churches from 150 m² (blue,
   terracotta or white) and over Malta's from 400 m² (lead and red), a white steeple in Florida and Hawaii, an iron
-  spire in Micronesia and on the atolls); offices glass and
+  spire in Micronesia and on the atolls, a Taiwanese temple's red walls under orange and green glazed tile); offices glass and
   concrete. OSM's `building:colour` (a CSS
   name or hex) paints the walls (`tags::parse_colour`, then the colour cube's nearest entry). What a footprint is
   (`estimate`) follows its region too: in the American West a small footprint is a ranch house of one storey (two on
   two in five) where the ground is thinly built, a townhouse terrace where it is thicker, a block of three to five
   storeys only downtown (built over above 55%; four to eight on larger footprints), garden apartments of two storeys
   otherwise; in East Asia a small footprint is a two-storey house (one in seven of one, one in seventeen of three), and
-  over 30% built a flat concrete block of three to six storeys (five to eight on larger footprints); in Britain,
+  over 30% built a flat concrete block of three to six storeys (five to eight on larger footprints); in Taiwan
+  (2026-10-29) a footprint under 1,300 m² over 30% built a townhouse (透天厝, 街屋) or a row of them of four or five
+  storeys (a walk-up, 公寓, from 220 m² when under 1.8 times as long as wide; shops below on commercial land, not an
+  office), a townhouse of three or four elsewhere; over 1,300 m² a long row's outline (over three times as long as
+  wide, a school's aside) its townhouses, a tower (大樓) of 12-25 storeys up to 4,000 m² and under 2.5 times as long as
+  wide over 30% built (over 15% on residential land; an office tower on commercial land from 2,500 m²), a market's or
+  an estate's block of five to eight beyond, a school or an estate's block of three to five where thinly built, a
+  village's factory or store (`MAX_ESTIMATED_STOREYS` holds but for the towers); in Britain,
   Ireland and the North Sea's country a small footprint over 30% built is a terrace of two storeys (three on one in
   seven), elsewhere a house of two storeys (one in eight of one; Scottish and Irish cottages one in two of one); in
   Florida a house of one storey (two on one in five) where under 45% is built; in Malta a small footprint over 30%
@@ -189,9 +254,9 @@ their shape and size alone, as before 2026-10-05. `region` is the chunk's place'
   unmapped land is cut back into the buildings it holds, each planned as its own (`plan_building` with the piece's
   ring, the block's kind and a height stepped from the block's: its own walls, roof, bays and seed). Along its length
   into frontages of its region's widths (`frontage`: a terrace's 4.6-6.4 m in Britain, Ireland and the North Sea,
-  4.8-7 m in America, 5.5-9 m about the Mediterranean, 4.5-7.5 m in East Asia; a block's 7-16 m in Britain, Ireland
+  4.8-7 m in America, 5.5-9 m about the Mediterranean, 4.5-7.5 m in East Asia, 4-6 m in Taiwan; a block's 7-16 m in Britain, Ireland
   and the North Sea, 9-20 m about the Mediterranean, 9-16 m in Greece, 7-13 m in Malta, 13-24 m in temperate Europe,
-  Scandinavia and Iceland, 8-22 m in America, 12-30 m in the American West); a block deeper than 24 m (`ONE_ROW_M`) as
+  Scandinavia and Iceland, 8-22 m in America, 12-30 m in the American West, 10-18 m in Taiwan's walk-ups); a block deeper than 24 m (`ONE_ROW_M`) as
   two rows back to back, parted within 15% of its depth of its middle; one deeper than 46 m (`COURT_M`) as its two
   street rows, a building across each end and a court of one storey between (a perimeter block's yards and
   workshops). A piece's storeys step from the block's by its region's shares (`steps`, of two down, one down, one up
@@ -214,7 +279,7 @@ their shape and size alone, as before 2026-10-05. `region` is the chunk's place'
   inside its neighbour, drawn and shaded for nothing, and above a lower neighbour's roof it would fight that roof's
   parapet, in the same plane and facing the same way, for the same pixels. Costs under "Costs" (2026-10-28).
 - **Walls** reach 1.5 m below the lowest ground under the building (`SINK_M`; the drawn land's level of detail lies a
-  little off the heights' bilinear surface) and up to its eaves over the mean ground, never less than 2.2 m over the
+  little off the heights' bilinear surface; a raised part's start at its base, "Parts" above) and up to its eaves over the mean ground, never less than 2.2 m over the
   highest. Every face is flat-shaded with its own vertices (round parts smooth), 24 bytes each (`BuildingVertex`:
   position, snorm8 normal with the window rows in w, f16 facade coordinates, palette entries, hash, and a byte of kind
   (bits 0-3), part (4-6: wall, roof, gable, banded, glass, steel, dome) and detail (7)).
@@ -260,7 +325,8 @@ their shape and size alone, as before 2026-10-05. `region` is the chunk's place'
   Florida, boards or siding on two Hawaiian houses in three, corrugated sheet on one atoll house in four, siding on an
   American house, siding or boards on a Nordic one,
   painted sheet, siding or render on an Icelandic one and siding on half of East Asia's; panels on a house are render
-  and on most East Asian blocks tile. *Windows*: 22 cells of one bay by one storey, 128², drawn with
+  and on most East Asian blocks tile; four Taiwanese homes in five (houses, terraces, blocks and towers) wear the tile
+  whatever their render, panel, brick, siding or stone colour, the rest bare or painted concrete. *Windows*: 22 cells of one bay by one storey, 128², drawn with
   4 × 4 samples a texel: the colour premultiplied by its cover (the wall shows round it), and the normal, the glass
   and the share the building's accent colour tints (shutters, doors, a shop's sign, a curtain wall's glass). Sash and shuttered sash
   (temperate, British, American), French windows between shutters and casements in a stone surround (the
@@ -271,7 +337,11 @@ their shape and size alone, as before 2026-10-05. `region` is the chunk's place'
   panelled door and an American garage on the ground floor now and then, a block's windows, French doors onto iron
   balconies (a Japanese block's balconies with solid parapets before sliding doors, its windows under hoods), a shop
   front under its sign, a curtain wall, ribbons, a factory's high ribbon, roller doors, a church's leaded arches and its
-  belfry's louvres. Which one a bay and storey takes: the region and the kind, the
+  belfry's louvres; Taiwan's homes (2026-10-29, `window_style_taiwan`): aluminium sliders, most behind an iron cage
+  (鐵窗, `Window::Cage`: its frame, close bars and rails 0.12 m proud of the wall over its floor and under a sheet hood,
+  in the building's accent: white, cream, rust or aluminium grey) on a townhouse's or a walk-up's upper floors (half
+  to all of a building's by its hash, one in seven of a tower's), roller shutters (鐵捲門) on most of a townhouse's
+  ground floor, shops along three walk-ups' and towers' ground floors in four, their balconies stacked. Which one a bay and storey takes: the region and the kind, the
   building's hash and the bay's (`window_style`). The glass reflects the sky (roughness 0.04 since 2026-10-13), the
   room behind it shows through (below; until 2026-10-13 a blind drawn in one in six and a third of the windows glowing
   flat at night), and the relief leans the shading normal (the shadow's lookup keeps the face's). Derivatives are taken once, before any branch, and the reads take them explicitly
@@ -321,10 +391,10 @@ their shape and size alone, as before 2026-10-05. `region` is the chunk's place'
 - **Weathering** (2026-10-14; `grime_mean`, `wall_grime`, `weathered`, `roof_surface` in `buildings.wgsl`). The owner
   found the walls and roofs too clean, every tile and wall one flat colour. Kept light, as on the ships. Each building
   takes an age by its hash (0.15-1 today, offices and towers under half of it; 0.45-1 in a past period), and its region
-  a wetness (`region_wet`: Britain and Ireland 1, the tropics 0.9, the North Sea 0.85, East Asia 0.75, Florida 0.65,
+  a wetness (`region_wet`: Britain and Ireland 1, the tropics and Taiwan 0.9, the North Sea 0.85, East Asia 0.75, Florida 0.65,
   Nordic and temperate Europe 0.6, Iceland and America 0.45, the Mediterranean 0.25, Malta and Greece 0.15, the American
-  West and North Africa 0.1, the deserts none) and a sun (`region_sun`: the deserts 1 down to the tropics 0.6, none north
-  of the Mediterranean).
+  West and North Africa 0.1, the deserts none) and a sun (`region_sun`: the deserts 1 down to the tropics 0.6 and Taiwan 0.45, none
+  north of the Mediterranean).
   - *Walls* (High and Ultra; drawn under the windows' frames and glass): dirt run down from the head in streaks a
     fifth of a metre apart, a few dark and most faint, their runs longer where the region is wet, more down a flat
     roof's parapet than under a pitched roof's eaves; a wash under each window's sill (the storey's own, or the next
@@ -332,7 +402,8 @@ their shape and size alone, as before 2026-10-05. `region` is the chunk's place'
     a ragged tide line; algae in blotches on a damp north face (black mould in the tropics, every face alike); rust
     run down a sheet wall from its laps every 2.4 m; paint and render bleached toward grey on a sunny country's
     southern faces. A material shows its dirt by its colour: render, stucco and concrete the most, stone 85%, brick and
-    boards half, sheet a third (its rust apart), glazed tile a quarter. A past coal town's walls darken to 0.86 (0.8
+    boards half, sheet a third (its rust apart), glazed tile a quarter (Taiwan's tiles 0.7: they streak and darken as render
+  does). A past coal town's walls darken to 0.86 (0.8
     until 2026-10-14) and carry the rest of their soot in the runs. The streaks and runs fade to their mean as they
     outgrow the pixel (by 2.5 m a pixel), and Medium's walls take that mean.
   - *Roofs*: each tile its own shade in broken bond, a newer one in forty; rolled tiles (kawara; Spanish and Roman
@@ -375,12 +446,18 @@ their shape and size alone, as before 2026-10-05. `region` is the chunk's place'
   On flat roofs: a stair and lift housing on blocks, towers and offices of four storeys or more, air-conditioning units
   (one per 140 m² of roof; coolers on the American West's and dry countries' flat houses), vents, a Japanese block's
   water tank on its stand (55% of those of three storeys or more), a New York-style timber or tarred water tower (half
-  the American blocks of six or more), water tanks on a warm, dry country's flat roofs (one on seven houses in ten,
+  the American blocks of six or more), Taiwan's (2026-10-29, today only) sheet-metal shed (頂樓加蓋) over a
+  townhouse's flat roof (three in five), a walk-up's (half) or a tower's (one in six), its whole width but 0.35 m a
+  side and 45-90% of its length from one end, 2.3-2.9 m high, grey, blue, cream or white sheet under a blue,
+  galvanised, rusted or white roof (no stair housing under it), and its steel water tanks (stainless, now and then
+  white) on their stands, the water tower's shape 1-1.45 m across (1.8-2.6 m on a tower): one on a townhouse (two on
+  one in four), one to three on a walk-up, two to four on a tower, on the shed's roof from its far end or about the
+  roof, water tanks on a warm, dry country's flat roofs (one on seven houses in ten,
   one per 120 m² of a block's roof up to eight; a solar heater's white tank over its dark panel in Greece, Malta and
   the Mediterranean, white and black tanks in North Africa, Egypt and the arid lands); on pitched roofs, chimneys by
   region (nineteen houses in twenty in Britain and
   Ireland, four in five in temperate countries, three in five by the North Sea, one in ten in Florida and none in East
-  Asia, Hawaii, Micronesia or on an atoll, brick where brick is usual) and a stack every 5.5 m along a British or Irish terrace's ridge (a terraced
+  Asia, Taiwan, Hawaii, Micronesia or on an atoll, brick where brick is usual) and a stack every 5.5 m along a British or Irish terrace's ridge (a terraced
   house's own on its party wall). The sides
   take the building's walls (or brick, timber, steel), the tops its roof. They cast into the sun's near map and the
   nearest land map ("land 1", texels of 0.2-1 m; native/docs/render-core/shadows.md, "Land maps"); the farther maps would not resolve them.
@@ -406,7 +483,7 @@ their shape and size alone, as before 2026-10-05. `region` is the chunk's place'
 - **Grounds** (2026-10-14, High and Ultra; `grounds.rs`). About a house or terrace, as `Shape::Near` pieces (boxes,
   stepped down a slope in runs of at most 6 m, each piece on the ground under it): its front boundary along the road
   nearest it within 45 m, set back from the road's edge by the region's pavement (1.6 m; America's 2.4, the tropics' and
-  dry countries' 0.8, Japan's 0.3) when 1-30 m remain, with a 1.1 m gate before the door; a detached house's sides from
+  dry countries' 0.8, Japan's and Taiwan's 0.3) when 1-30 m remain, with a 1.1 m gate before the door; a detached house's sides from
   that line back past the house, half way to its neighbours; a step under every door the shader draws (the same hash
   of the bay, `grounds::door_at`, mirroring `buildings.wgsl`'s `hash13`), a stoop of several risers where the ground
   falls away below it, none where a neighbour's wall stands before it (a terrace's party wall); blocks and towers have
@@ -415,7 +492,8 @@ their shape and size alone, as before 2026-10-05. `region` is the chunk's place'
   Ireland's stone walls; the North Sea's low hedges; Europe's rendered walls and hedges; Scandinavia's
   white or Falu red picket fences; America's open lawns (three in five) or a white picket fence; the American West's
   hedges and low stucco walls; the Mediterranean's and dry countries' rendered walls 1-2.2 m high; Japan's tall hedges,
-  board fences and concrete or stone walls; the tropics' mostly open. Walls are the building's own brick or render where
+  board fences and concrete or stone walls; Taiwan's townhouses open to the lane (three in four), a low concrete wall
+  or a white iron gate before the rest, no hedges; the tropics' mostly open. Walls are the building's own brick or render where
   it is masonry; hedges are boxes shaded as leaves (`PART_LEAF`: speckled clumps of their green, the top as the sides). Yards (a garden's
   own ground) are not drawn: the photograph under the town carries them.
 - **Footing** (2026-10-14; naval-client `theatre::buildings`, `Context::footing`). Within the fine relief's reach
@@ -440,13 +518,15 @@ their shape and size alone, as before 2026-10-05. `region` is the chunk's place'
   maps reach about the focused hull (380 m for the wide map in a theatre scene); since 2026-10-08 the render core's land
   maps (native/docs/render-core/shadows.md, "Land maps") follow the camera's view of the land out to 4 km, and the chunks cast into them
   too, culled against each map's sides and against the view's moved out by a 150 m building's shadow (at most
-  1.5 km), so a town seen from the air or the free camera shades its streets wherever the ship is.
+  1.5 km; since 2026-10-29 the chunk's own height where taller, so a 508 m tower out of view still shades the
+  streets in it), so a town seen from the air or the free camera shades its streets wherever the ship is.
 - **Infill** (`infill`). Where the source has none, generic buildings over built-up cover (WorldCover's class 50 in
   the window's maps): the theatre cut into districts of 420 m, each with its own street grid at a hashed heading and
   offset, blocks of 96 × 52 m between 12 m streets, two rows of lots back to back; a lot is built on where the cover is
   built-up there, more often where the cover about it is (an empty lot now and then in a thin suburb), on land over 1 m
   and slopes under 0.22, wholly inside its district (districts meet along a gap, as along a main road), and never in a
-  100 m cell holding any footprint of the source (`occupied`). What stands: houses on 12-17 m lots, set back 3-6 m and
+  100 m cell holding any footprint of the source (`occupied`), nor reaching into an area the host draws itself (the
+  intro's `set_clear_areas`). What stands: houses on 12-17 m lots, set back 3-6 m and
   turned a little; terraces where the town thickens; in a European or Nordic core blocks of three to six storeys filling
   their lots (in the tropics and dry countries rarely, and two or three storeys; three to five in Malta's, four to
   seven in Athens' and the Nile's, two or three in North Africa's, whose houses are of one storey). By region (`infill::Grid`, the region of each
@@ -457,7 +537,10 @@ their shape and size alone, as before 2026-10-05. `region` is the chunk's place'
   the town is built over at all (a Scottish or Irish cottage of one storey on two in five of the rest), three to five
   storeys in a core; East Asia's blocks 64 × 34 m between 6 m lanes, houses 6-10.5 m on 9-12 m lots a metre or two from the lane
   and a metre or two apart, of two storeys, a small apartment house now and then, and in its centres three- to
-  six-storey blocks standing apart (82% of the lot's width); Hawaii's blocks 120 × 62 m between 12 m streets (Honolulu's 50
+  six-storey blocks standing apart (82% of the lot's width); Taiwan's (2026-10-29, `infill::taiwanese`) blocks 72 × 36 m
+  between 6 m lanes (巷, 弄), rows of flat-roofed townhouses (透天厝, 街屋) across 97% of their 4-6 m lots, 12-17 m
+  deep in their 18 m, half a metre from the lane at most, of three or four storeys (four or five where the cover about
+  them is over 60% built), walk-ups (公寓) of four or five where a block is thickest, no detached houses; Hawaii's blocks 120 × 62 m between 12 m streets (Honolulu's 50
   ft lots), 14-18 m lots, three houses in five of one storey, a core's blocks of two or three now and then; Micronesia's
   and the atolls' houses of one storey, a core's blocks rarely, as the tropics'. Every choice hashes the lot's theatre position, so a lot
   gets the same building whichever window or chunk makes it.
@@ -490,7 +573,9 @@ their shape and size alone, as before 2026-10-05. `region` is the chunk's place'
   whole files' stores (64 stores or 3 million footprints at most). Meanwhile the chunks under the file are made with the
   infill alone and marked as waiting; once the split lands they are made again (a counter of the splits finished, read
   when a chunk is begun) and the layer swaps them in. The RPC's `buildings.state` is `waiting` while a file streams
-  (`worker.streaming`, `worker.streamed_mb`), so a capture waits for the real footprints.
+  (`worker.streaming`, `worker.streamed_mb`), so a capture waits for the real footprints. The dataset has no file for
+  Taiwan (no quadkey of its index there, 2026-10-29): the island's buildings are OSM's outlines and parts (each its
+  own footprint, "Parts" above) and the infill where the map has none.
 
 **Costs** (Windows 11, RTX 5070 Ti, release, 2026-10-04). Meshing on the CPU: 49 chunks of Reykjavík (8,032 buildings)
 in 20 ms on one thread, 190,000 triangles and 10.9 MB whole, 134,000 and 7.6 MB as boxes (the dataset's footprints
@@ -515,7 +600,7 @@ With the map's types (Apple M5 Pro, release, 2026-10-05, other agents building: 
 chunks about Tjörnin 18 ms with the map against 7 ms without on one thread (9,919 buildings and 225,000 triangles
 against 8,036 and 191,000: OSM's outlines add a fifth), the tags 5 ms of it (`the_maps_types_cost_over_reykjavik`).
 Drawn over a town at the same view, the triangles grow 4-9% over Monterey and 6-8% over Reykjavík (the parts and
-OSM's outlines together; box chunks read zoom 13, whose small buildings are left out); Honiara's 2-14 times, Microsoft
+OSM's outlines together; box chunks read zoom 13 until 2026-10-29, whose small buildings are left out); Honiara's 2-14 times, Microsoft
 having no footprints there and OSM thousands (the 1,300-4,100 buildings held within 10 km, the infill's, become
 7,300-12,500, most of them mapped; 6-12 MB on the GPU). Whole frames with the buildings and without could not be told apart from the machine's
 noise (±0.5 ms at 6-13 ms a frame, the same as before the change): docs/archive/native-theatre-history.md, "Buildings",
@@ -595,7 +680,7 @@ minaret faced out and the crane dropped from a box chunk; sawtooth roofs and tan
 chunk with a church's point, a lighthouse landmark in the sea (on its plinth, its lantern lit) and one taking a
 footprint, a port's quay and a pier raising each; the setting off the map (a school within a residential zone, a hole
 in a zone, the sea by a round footprint, a pier's deck); OSM outlines lending heights (none or capped) and colours
-and adding what the footprints miss (not parts above the ground or `hide_3d`); CSS colours parsed; quays found along
+and adding what the footprints miss (not `hide_3d`; parts above the ground too since 2026-10-29, a stacked tower whole); CSS colours parsed; quays found along
 industrial land at the water (by the ground, or by mapped water); a street through an infill lot; features cut to
 their tiles (a square across two tiles halved, a line's pieces). Since 2026-10-08: the facade textures whole (every
 layer and mip, under 16 MB), every window holding glass (doors, a garage, a roller shutter and a belfry little or
@@ -646,7 +731,14 @@ town's own (Valletta's planned grid and Taranto's old town alike broken); a wall
 from that neighbour's eaves, its gable not counted, and a piece of a block whose box level simplifies its outline
 keeps the walls it no longer shares; Britain's merged rows over 220 m² where more than 45% is built are still the
 estimate's blocks of four to six storeys, cut into houses of that height rather than lowered to a terrace's two or
-three.
+three. The parts (2026-10-29): a building's middle across a chunk's edge is read from OSM's outlines about the chunk
+only, not from Microsoft's footprint left out in the chunk beside it (a chunk sees only its own), nor from an outline
+whose middle lies more than 150 m beyond the chunk; where either decides it, the parts on the two sides take two
+middles (two colours, and on sloping ground a step where they meet). Wanted: the footprints about a chunk handed in
+as its outlines about are (the quadkeys' stores hold the neighbours' chunks), and the reach for parts set by the
+largest building drawn by parts rather than the map's 150 m. A part of a building in a past period is judged by its
+own land's and worship's lifts (`thinning::lifts` reads its ring), so a church's tower part may go while its nave
+stays.
 
 ## The far level
 
@@ -661,7 +753,8 @@ masses would change their grain where they end.
   row of lots on built-up land is cut into runs of about 30 m (`RUN_M`; at most 1,000 runs a square kilometre,
   `MOST_RUNS_KM2`, so East Asia's small blocks run whole rows), and each run is one mass: as long as the share of its
   lots built on, as deep and as high as the infill's buildings there (houses, terraces or a core's blocks by the
-  region's rules), set back as they are, under a gable at the region's pitch or flat, in the region's palette for the
+  region's rules; Taiwan's rows of townhouses of three to five storeys and walk-ups of four or five, flat as its roofs
+  are, and in a past period its lots Taiwan's and their look East Asia's), set back as they are, under a gable at the region's pitch or flat, in the region's palette for the
   period. A mass is 24 bytes (`far::Mass`), an instance of one shape (`far_shape`: 30 vertices) sized, turned and
   roofed by `buildings.wgsl`'s `vs_far` and lit by the buildings' own fragment shader (the windows' mean by day, lit
   at night). A built-up chunk holds 700-900 runs and 115-215 blocks' masses, about 19-27 KB.

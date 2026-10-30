@@ -27,7 +27,8 @@
 
 #import naval_sky::common::{sky, air, transmittance_table, PI}
 #import naval_sky::atmosphere::{planet_km, sky_radiance_to_point, camera_km, held}
-#import naval_sky::bruneton::{get_transmittance_to_sun, get_profile_density, mie_phase_function}
+#import naval_sky::bruneton::{get_transmittance_to_sun, get_profile_density, mie_phase_function, rayleigh_phase_function}
+#import naval_sky::aerial::{glow_field, glow_light}
 #import naval_sky::environment::{SkyEnvironment, env_radiance}
 #import naval_clouds::shadow::{CloudShadow, shadow_uv, clear_berth, EDGE}
 #import naval::aerial_volume::{AERIAL_SLICES, aerial_slice_distance}
@@ -79,6 +80,8 @@ const RAIN_TAPER: f32 = 100.0;
 
 // The rain's share of the haze at the sea (0 dry, 1 all of it), set at the top of `aerial_main`.
 var<private> rain_share: f32;
+// The towns' light (`naval_sky::aerial::glow_light`): the lit land's radiance, w 1 while it burns. Set there too.
+var<private> town_glow: vec4<f32>;
 
 // One slice interval of a column, from its start: the haze's in-scatter (rgb), the transmittance over it (rgb, both
 // media), and greys for the scan: the haze's transmittance, the atmosphere's (550 nm), and the atmosphere's scattering
@@ -282,6 +285,26 @@ fn haze_source(position: vec3<f32>, direction: vec3<f32>, extinction: f32, ambie
     return light * lit + ambient;
 }
 
+// The towns' light at night a point `height` m up scatters toward the eye along `direction` (native/docs/terrain/night.md,
+// "The towns' light in the sky"), per the haze's scattering `haze` (per m, its Cornette–Shanks phase) and the
+// atmosphere's `scattering` (rgb per m, Rayleigh's phase): the field's net flux as a beam from the lit land, by the phase
+// toward the eye, and the rest of its fluence as light from every side. Over the clouds that cast the ground shadow,
+// only what their mean shade (`shade_mean`, the deck's cover) lets through.
+fn town_light(position: vec3<f32>, height: f32, direction: vec3<f32>, haze: f32, scattering: vec3<f32>, shade_mean: f32) -> vec3<f32> {
+    let field = glow_field(position.xz, height);
+    if field.x <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    let beam = length(field.yzw);
+    let toward = -field.yzw / max(beam, 1e-12);
+    let nu = dot(direction, toward);
+    let diffuse = max(field.x - beam, 0.0) / (4.0 * PI);
+    let light = haze * (diffuse + beam * mie_phase_function(params.phase.x, nu))
+        + scattering * (diffuse + beam * rayleigh_phase_function(nu));
+    let into_cloud = clamp((height - params.phase.z) / max(params.phase.w - params.phase.z, 1.0), 0.0, 1.0);
+    return town_glow.rgb * light * mix(1.0, shade_mean, into_cloud);
+}
+
 // The atmosphere's extinction and scattering (rgb), and its scattering at 550 nm (per m), at `height_km` above the sea:
 // the share a view sees.
 struct AtmosphereAt {
@@ -335,6 +358,10 @@ fn step_stretch(
     // Above the layer the haze's in-scatter is nothing worth its lights' reads.
     if haze * span > 1e-6 {
         source += haze * params.phase.y * haze_source(position, direction, extinction_at_sea, ambient, lit);
+    }
+    // The towns' light at night, only while it burns.
+    if town_glow.w > 0.0 {
+        source += town_light(position, height_km * 1000.0, direction, haze * params.phase.y, atmosphere.scattering_rgb, shade_mean);
     }
     var out = stretch;
     out.scatter += stretch.transmittance * source * (1.0 - exp(-extinction * span)) / max(extinction, vec3<f32>(1e-12));
@@ -434,6 +461,7 @@ fn aerial_main(
     let end = aerial_slice_distance(f32(slice));
     let extinction_at_sea = haze_extinction();
     rain_share = select(0.0, min(params.view.y / extinction_at_sea, 1.0), extinction_at_sea > 0.0 && params.view.y > 0.0);
+    town_glow = glow_light();
     var stretch = empty_stretch();
     if on {
         stretch = slice_interval(direction, slice, extinction_at_sea, ambient, shade_mean);

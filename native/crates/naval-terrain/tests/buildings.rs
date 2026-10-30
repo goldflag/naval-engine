@@ -84,6 +84,7 @@ fn a_chunk_handed_in_is_drawn_where_it_stands() {
             height: Some(24.0),
             kind: None,
             colour: None,
+            part: None,
         },
         Footprint {
             ring: vec![
@@ -97,6 +98,7 @@ fn a_chunk_handed_in_is_drawn_where_it_stands() {
             height: None,
             kind: None,
             colour: None,
+            part: None,
         },
     ];
     for k in 0..6 {
@@ -105,6 +107,7 @@ fn a_chunk_handed_in_is_drawn_where_it_stands() {
             height: None,
             kind: None,
             colour: None,
+            part: None,
         });
     }
     let key = ChunkKey {
@@ -227,12 +230,14 @@ fn a_tower_shades_its_neighbours_through_the_sun_maps() {
             height: Some(60.0),
             kind: None,
             colour: None,
+            part: None,
         },
         Footprint {
             ring: square(130.0, 80.0, 90.0, 60.0),
             height: Some(8.0),
             kind: None,
             colour: None,
+            part: None,
         },
     ];
     let key = ChunkKey {

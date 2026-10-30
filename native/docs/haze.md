@@ -34,6 +34,9 @@ The haze is lit by:
   `direct_scale`, `moon_scale`, as the clouds take them), through the haze above the point (delta-Eddington scaled:
   what the haze scatters forward stays in the beam), and through the clouds (their ground shadow map down the light's
   rays; beyond the map's 40 km the map's mean rather than full light, so the far haze under a deck stays shaded);
+- at night, the towns' light (2026-10-29): what the lit land sends up, a beam from the land by the haze's phase and the
+  rest as from every side (`town_light`, `native/docs/terrain/night.md`, "The towns' light in the sky"); the atmosphere
+  scatters it by Rayleigh's phase;
 - the sky's light: the environment (the sky above, the sea below, the clouds included) weighted by the haze's phase,
   a quadrature over bands of angle from the ray (the cone within 25° from a 12° level, rings at 50° and 105° and the
   back from the roughest level), so forward scattering takes the bright band of sky right behind the haze.

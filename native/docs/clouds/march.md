@@ -579,6 +579,12 @@ not the clouds it strikes from. Now:
   (`StrikeClouds`), which the layers follow only where the scene chose them (`weathers.rs`; otherwise their heights are
   the weather's own); an intra-cloud flash placed above the layers lights only their top. The stills' intra-cloud flash
   is seed 15, 1.8 km up, inside the deck.
+- **The towns' light from below** (2026-10-29): over a lit town at night a cloud's base and underside take the light
+  the land sends up (`town_light_from_below`: the upward flux of `naval_sky::aerial::glow_field` at the sample, through
+  the cloud the layers' weather puts under it as the sea's bounce is taken, at the strength that leaves a thick deck's
+  base sending back 0.7 of it), in the march and the environment's bake, so the sea reflects it; nothing while the
+  header says it does not burn (by day, at sea, on the Medium land, with the lights out). How the light is laid:
+  `native/docs/terrain/night.md`, "The towns' light in the sky".
 - **Star shells under a low base** (2026-10-20): a burning star shell under the clouds lights their base, drawn by
   naval-effects' light in the air (`air_light.rs`, `cloud_base`) over what the composite drew, not in the march: the base
   sends back 0.7 of the light from below where the clouds cover the pixel, taken through its lowest 150 m. It reads the

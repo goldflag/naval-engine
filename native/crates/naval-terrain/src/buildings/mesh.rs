@@ -62,6 +62,16 @@ pub const SINK_M: f32 = 1.5;
 /// How deep a pier's sides reach under the sea (m).
 pub const PIER_FOOT_M: f32 = -2.5;
 
+/// Where a building's walls start (m above the sea): [`SINK_M`] below the lowest ground under it, or a part's base over
+/// its mean ground ([`super::Part`]: nothing of it reaches down, nor sinks into the part it stands on).
+pub fn foot_of(b: &Building) -> f32 {
+    if b.base > 0.0 {
+        b.ground[1] + b.base
+    } else {
+        b.ground[0] - SINK_M
+    }
+}
+
 /// A vertex's style bytes.
 pub fn style_of(wall: u8, roof: u8, seed: u8, kind: Kind, part: u8, detail: bool) -> [u8; 4] {
     [
@@ -146,7 +156,9 @@ pub const CRANE_LAND_M2: f32 = 20_000.0;
 /// map, density from the source's footprints) and extruded, the piers' decks and the quays' cranes.
 pub fn build_chunk(input: &ChunkInput) -> ChunkMesh {
     let density = DensityGrid::new(input.footprints);
-    let mut mesh = MeshBuilder::default().with_region(input.region);
+    // A past period's Taiwan is made as East Asia (`Region::in_period`): its palettes, roofs, clutter and facades.
+    let region = input.region.in_period(input.period);
+    let mut mesh = MeshBuilder::default().with_region(region);
     mesh.mesh.period = input.period;
     let tags = input.tags;
     let ground = input.ground;
@@ -154,18 +166,35 @@ pub fn build_chunk(input: &ChunkInput) -> ChunkMesh {
     let lod = input.key.lod;
     let all: Vec<&Footprint> = input.footprints.iter().chain(input.infill).collect();
     let mut taken = vec![false; all.len()];
+    // In an area the host draws itself: a footprint whose middle lies there (a part by its building's, all its parts
+    // together), an infill lot reaching into it (the hole stays empty).
+    let cleared = |k: usize, f: &Footprint| {
+        !tags.cleared.is_empty()
+            && if k < input.footprints.len() {
+                tags.cleared_at(
+                    f.part
+                        .map_or_else(|| geometry::centroid(&f.ring), |p| p.middle),
+                )
+            } else {
+                tags.cleared_over(&f.ring)
+            }
+    };
     let holding = |p: [f32; 2]| {
         all.iter().position(|f| {
             f.ring.len() >= 3
+                && !f.raised()
                 && (geometry::contains(&f.ring, p) || geometry::ring_distance(&f.ring, p) < 4.0)
         })
     };
     // The landmarks, and a lighthouse the map's points name where no footprint stands (none of the host's within 60 m):
     // each takes the footprint it stands on (but a keeper's house, which its tower rises from).
+    // Nothing of the map's stands in an area the host draws itself (`MapTags::cleared`).
     let mut standing: Vec<Landmark> = tags.landmarks.clone();
+    standing.retain(|l| !tags.cleared_at(l.at));
     for poi in &tags.pois {
         let at = poi.at;
         if poi.kind == PoiKind::Lighthouse
+            && !tags.cleared_at(at)
             && (0.0..super::CHUNK_M as f32).contains(&at[0])
             && (0.0..super::CHUNK_M as f32).contains(&at[1])
             && holding(at).is_none()
@@ -200,6 +229,7 @@ pub fn build_chunk(input: &ChunkInput) -> ChunkMesh {
             roof: Roof::Flat,
             ground: [g, g, g],
             height: 3.0,
+            base: 0.0,
             storeys: 1,
             storey_m: 3.0,
             wall: 13,
@@ -230,7 +260,7 @@ pub fn build_chunk(input: &ChunkInput) -> ChunkMesh {
                         &house,
                         index,
                         density.at(c),
-                        input.region,
+                        region,
                         input.period,
                         &setting,
                         ground,
@@ -288,16 +318,33 @@ pub fn build_chunk(input: &ChunkInput) -> ChunkMesh {
     let roads = Roads::new(&tags.roads);
     let mut footings = Footings::default();
     let mut yards: Vec<(Building, usize)> = Vec::new();
+    // The buildings drawn by OSM's parts built after the period, by their middles (`Part::middle`): all of one goes
+    // where any of its parts is listed, as its whole footprint went.
+    let later_parts: Vec<[f32; 2]> = thin.map_or_else(Vec::new, |t| {
+        input
+            .footprints
+            .iter()
+            .filter(|f| f.ring.len() >= 3 && t.later(&f.ring))
+            .filter_map(|f| f.part.map(|p| p.middle))
+            .collect()
+    });
     for (k, footprint) in all.iter().enumerate() {
-        if taken[k] || footprint.ring.len() < 3 {
+        if taken[k] || footprint.ring.len() < 3 || cleared(k, footprint) {
             continue;
         }
-        let c = geometry::centroid(&footprint.ring);
+        // A part is judged where its building stands (its parts kept or left out together).
+        let c = footprint
+            .part
+            .map_or_else(|| geometry::centroid(&footprint.ring), |p| p.middle);
         let mut setting = tags.setting(&footprint.ring, ground);
         // Whether its ground is kept with it, once it stands (below).
         let mut its_ground = false;
         if let Some(t) = thin {
-            if t.later(&footprint.ring) {
+            if t.later(&footprint.ring)
+                || footprint
+                    .part
+                    .is_some_and(|p| t.later_at(p.middle) || later_parts.contains(&p.middle))
+            {
                 continue;
             }
             let whole = t.in_yard(c) || waterfront.as_ref().is_some_and(|w| w.keeps(c, &setting));
@@ -318,7 +365,7 @@ pub fn build_chunk(input: &ChunkInput) -> ChunkMesh {
             footprint,
             index,
             density.at(c),
-            input.region,
+            region,
             input.period,
             &setting,
             ground,
@@ -335,17 +382,22 @@ pub fn build_chunk(input: &ChunkInput) -> ChunkMesh {
         {
             continue;
         }
-        // A block or a row the source drew as one: the buildings it holds (`parcels`), each standing as its own.
-        let pieces = parcels::split(
-            footprint,
-            &building,
-            index,
-            density.at(c),
-            input.region,
-            input.period,
-            &setting,
-            ground,
-        );
+        // A block or a row the source drew as one: the buildings it holds (`parcels`), each standing as its own; never one
+        // of OSM's parts, drawn as mapped.
+        let pieces = if footprint.part.is_some() {
+            Vec::new()
+        } else {
+            parcels::split(
+                footprint,
+                &building,
+                index,
+                density.at(c),
+                region,
+                input.period,
+                &setting,
+                ground,
+            )
+        };
         let cut = !pieces.is_empty();
         let pieces = if cut { pieces } else { vec![building] };
         // Each piece's walls against its neighbours', drawn only above them.
@@ -372,7 +424,8 @@ pub fn build_chunk(input: &ChunkInput) -> ChunkMesh {
             mesh.building(&building, lod);
             mesh.front = None;
             mesh.party.clear();
-            if lod == Lod::Full {
+            // A raised part's ground is its building's: no footing, no yard of its own.
+            if lod == Lod::Full && building.base <= 0.0 {
                 let me = footings.add(&building.ring);
                 if matches!(
                     building.kind,
@@ -390,7 +443,7 @@ pub fn build_chunk(input: &ChunkInput) -> ChunkMesh {
         grounds::grounds(
             b,
             *me,
-            input.region,
+            region,
             &roads,
             &footings,
             ground,
@@ -402,6 +455,7 @@ pub fn build_chunk(input: &ChunkInput) -> ChunkMesh {
         let c = geometry::centroid(&pier.ring);
         if (0.0..super::CHUNK_M as f32).contains(&c[0])
             && (0.0..super::CHUNK_M as f32).contains(&c[1])
+            && !tags.cleared_at(c)
         {
             mesh.deck(pier, index);
         }
@@ -417,9 +471,10 @@ pub fn build_chunk(input: &ChunkInput) -> ChunkMesh {
                 let Extra::Crane { at, .. } = crane else {
                     continue;
                 };
-                if all
-                    .iter()
-                    .any(|f| f.ring.len() >= 3 && geometry::contains(&f.ring, at))
+                if tags.cleared_at(at)
+                    || all
+                        .iter()
+                        .any(|f| f.ring.len() >= 3 && geometry::contains(&f.ring, at))
                 {
                     continue;
                 }
@@ -430,6 +485,7 @@ pub fn build_chunk(input: &ChunkInput) -> ChunkMesh {
                     roof: Roof::Flat,
                     ground: [g, g, g],
                     height: 3.0,
+                    base: 0.0,
                     storeys: 1,
                     storey_m: 3.0,
                     wall: 0,
@@ -910,6 +966,30 @@ impl MeshBuilder {
     /// A flat roof over `ring` at `y`.
     fn flat_roof(&mut self, b: &Building, ring: &[[f32; 2]], y: f32) {
         self.flat_ring(ring, y, Self::style(b, PART_ROOF));
+    }
+
+    /// A raised part's underside over `ring` at its foot `y` ([`foot_of`]), facing down and plain in the walls' colour:
+    /// a skybridge's floor seen from the street, a crown's overhang over its shaft (where it rests on a roof, the two
+    /// face away from each other and only one is ever drawn; the shadows' casters draw both faces).
+    fn soffit(&mut self, b: &Building, ring: &[[f32; 2]], y: f32) {
+        let first = self.mesh.vertices.len() as u32;
+        let c = geometry::centroid(ring);
+        let style = Self::style(b, PART_GABLE);
+        for p in ring {
+            self.push_vertex(
+                [p[0], y, p[1]],
+                [0.0, -1.0, 0.0],
+                [p[0] - c[0], p[1] - c[1]],
+                0,
+                style,
+            );
+        }
+        // Counter-clockwise in (x, z) faces down as it is (`flat_ring`'s reversed).
+        for t in geometry::triangulate(ring) {
+            self.mesh
+                .indices
+                .extend_from_slice(&[first + t[0], first + t[1], first + t[2]]);
+        }
     }
 
     /// A pitched roof over the four corners `r` (a rectangle, counter-clockwise, its ridge's side first) from the eaves
@@ -1394,7 +1474,7 @@ impl MeshBuilder {
         if ring.len() < 3 || signed_area2(ring) <= 0.0 {
             return;
         }
-        let bottom = b.ground[0] - SINK_M;
+        let bottom = foot_of(b);
         // The eaves over the mean ground, and never under the highest ground's storey.
         let eave = (b.ground[1] + b.height).max(b.ground[2] + 2.2);
         match b.kind {
@@ -1447,6 +1527,9 @@ impl MeshBuilder {
                     };
                     let top = self.wall_top(b, lod);
                     self.walls(b, ring, bottom, top, PART_WALL);
+                    if b.base > 0.0 {
+                        self.soffit(b, ring, bottom);
+                    }
                     match b.roof {
                         Roof::Flat | Roof::Cone { .. } => {
                             self.flat_roof(b, ring, eave);
@@ -1481,6 +1564,9 @@ impl MeshBuilder {
                     // A flat roof's parapet on its box too, so the skyline holds from one level to the next.
                     let top = self.wall_top(b, lod);
                     self.walls(b, &coarse, bottom, top, PART_WALL);
+                    if b.base > 0.0 {
+                        self.soffit(b, &coarse, bottom);
+                    }
                     self.flat_roof(b, &coarse, top);
                 }
             },
@@ -1528,6 +1614,7 @@ mod tests {
             roof,
             ground: [4.0, 5.0, 6.0],
             height,
+            base: 0.0,
             storeys: 3,
             storey_m: 3.0,
             wall: 1,
@@ -1965,6 +2052,166 @@ mod tests {
         }
     }
 
+    /// Taipei 101's shaft, crown and spire as OSM's parts, all of the complex whose middle is (462.5, 462.5).
+    fn stacked_tower() -> Vec<Footprint> {
+        let part = |x: f32, side: f32, base: f32, top: f32| Footprint {
+            ring: vec![[x, x], [x + side, x], [x + side, x + side], [x, x + side]],
+            height: Some(top),
+            part: Some(super::super::Part {
+                base,
+                middle: [462.5, 462.5],
+            }),
+            ..Footprint::default()
+        };
+        vec![
+            part(430.0, 53.0, 0.0, 386.0),
+            part(445.0, 23.0, 390.0, 439.0),
+            part(455.8, 1.4, 448.0, 508.0),
+        ]
+    }
+
+    #[test]
+    fn a_raised_part_is_closed_underneath() {
+        // A skybridge mapped from 20 to 25 m over the mean ground: its floor seen from the street, at both levels.
+        let ring = vec![[0.0, 0.0], [30.0, 0.0], [30.0, 6.0], [0.0, 6.0]];
+        let bridge = Building {
+            base: 20.0,
+            ..plain(ring.clone(), 25.0, Roof::Flat, Kind::Office)
+        };
+        let foot = foot_of(&bridge);
+        assert_eq!(foot, 25.0);
+        for lod in [Lod::Full, Lod::Box] {
+            let mut m = MeshBuilder::default();
+            m.building(&bridge, lod);
+            let mesh = m.finish();
+            faces_out(&mesh);
+            assert_eq!(mesh.min[1], foot, "{lod:?}");
+            // The ring at its foot, facing down, whole (30 by 6 m).
+            let under: f32 = mesh
+                .indices
+                .chunks(3)
+                .map(|t| [t[0], t[1], t[2]].map(|i| mesh.vertices[i as usize]))
+                .filter(|t| {
+                    t.iter()
+                        .all(|v| normal(v)[1] < -0.99 && v.position[1] == foot)
+                })
+                .map(|[a, b, c]| {
+                    let n = cross(sub(b.position, a.position), sub(c.position, a.position));
+                    0.5 * n[1].abs()
+                })
+                .sum();
+            assert!((under - 180.0).abs() < 1e-2, "{lod:?}: {under}");
+        }
+        // One on the ground has no underside.
+        let mut m = MeshBuilder::default();
+        m.building(&plain(ring, 25.0, Roof::Flat, Kind::Office), Lod::Full);
+        assert!(!m.finish().vertices.iter().any(|v| normal(v)[1] < -0.99));
+    }
+
+    #[test]
+    fn an_infill_lot_reaching_into_a_clear_area_at_all_is_left_out() {
+        let ground = |_: [f32; 2]| 5.0;
+        let lot = |x: f32| Footprint {
+            ring: vec![[x, 100.0], [x + 20.0, 100.0], [x + 20.0, 120.0], [x, 120.0]],
+            height: Some(9.0),
+            kind: Some(Kind::Block),
+            ..Footprint::default()
+        };
+        let infill = vec![lot(100.0), lot(200.0), lot(300.0)];
+        let mesh = |tags: &MapTags| {
+            build_chunk(&ChunkInput {
+                key: ChunkKey {
+                    index: [0, 0],
+                    lod: Lod::Full,
+                },
+                footprints: &[],
+                infill: &infill,
+                tags,
+                ground: &ground,
+                region: Region::Temperate,
+                period: Period::Today,
+                thinning: None,
+            })
+        };
+        let tags = MapTags {
+            cleared: vec![
+                // Across the first lot's north wall: none of the lot's corners, nor its middle, in it.
+                vec![[109.0, 90.0], [111.0, 90.0], [111.0, 105.0], [109.0, 105.0]],
+                // Right through the second: none of either's corners in the other.
+                vec![[209.0, 50.0], [211.0, 50.0], [211.0, 150.0], [209.0, 150.0]],
+            ],
+            ..MapTags::default()
+        };
+        assert_eq!(mesh(&MapTags::default()).buildings, 3);
+        let cleared = mesh(&tags);
+        assert_eq!(cleared.buildings, 1);
+        assert!(cleared.min[0] >= 290.0, "{:?}", cleared.min);
+    }
+
+    #[test]
+    fn a_tower_drawn_by_its_parts_stands_from_each_base_to_its_top() {
+        let ground = |p: [f32; 2]| 6.0 + 0.01 * (p[0] - 400.0);
+        let tags = MapTags::default();
+        let footprints = stacked_tower();
+        let input = |footprints: &'_ [Footprint], lod: Lod| {
+            build_chunk(&ChunkInput {
+                key: ChunkKey { index: [0, 0], lod },
+                footprints,
+                infill: &[],
+                tags: &tags,
+                ground: &ground,
+                region: Region::Temperate,
+                period: Period::Today,
+                thinning: None,
+            })
+        };
+        // Read at the complex's middle: its ground there.
+        let mean = ground([462.5, 462.5]);
+        for lod in [Lod::Full, Lod::Box] {
+            let mesh = input(&footprints, lod);
+            assert_eq!(mesh.buildings, 3, "{lod:?}");
+            faces_out(&mesh);
+            let top = mesh
+                .vertices
+                .iter()
+                .map(|v| v.position[1])
+                .fold(f32::MIN, f32::max);
+            assert!(
+                (mean + 508.0..mean + 510.0).contains(&top),
+                "{lod:?}: {top}"
+            );
+            // One building's colours and hash on every part.
+            let walls: Vec<[u8; 4]> = mesh
+                .vertices
+                .iter()
+                .filter(|v| (v.style[3] >> 4) & 7 == PART_WALL)
+                .map(|v| v.style)
+                .collect();
+            assert!(
+                walls
+                    .iter()
+                    .all(|s| s[0] == walls[0][0] && s[2] == walls[0][2])
+            );
+            // The spire reaches the obstruction lights' rule: a lamp at its top.
+            let beacons = crate::night::beacons_of(&mesh);
+            assert!(
+                beacons.iter().any(|b| b[1] > mean + 508.0),
+                "{lod:?}: {beacons:?}"
+            );
+            // The crown alone: its walls start at its base, nothing under it, nothing sunk.
+            let crown = input(&footprints[1..2], lod);
+            assert_eq!(crown.buildings, 1);
+            assert!(
+                (crown.min[1] - (mean + 390.0)).abs() < 1e-3,
+                "{lod:?}: {}",
+                crown.min[1]
+            );
+            // The shaft from below the ground, as any building.
+            let shaft = input(&footprints[..1], lod);
+            assert!(shaft.min[1] < ground([430.0, 430.0]) - SINK_M + 0.01);
+        }
+    }
+
     #[test]
     fn a_chunk_plans_and_builds_its_footprints() {
         let ground = |p: [f32; 2]| 3.0 + p[0] * 0.001;
@@ -2115,5 +2362,30 @@ mod tests {
         // A setting off the map's tags: the pier holds its deck height.
         let s: Setting = tags.setting(&rect(150.0, 548.0, 3.0, 3.0).ring, &ground);
         assert_eq!(s.pier, Some(1.1));
+        // The whole chunk an area the host draws itself: no church, lighthouse, landmark, crane or pier stands.
+        let cleared = MapTags {
+            cleared: vec![vec![
+                [-10.0, -10.0],
+                [1010.0, -10.0],
+                [1010.0, 1010.0],
+                [-10.0, 1010.0],
+            ]],
+            ..tags.clone()
+        };
+        let empty = build_chunk(&ChunkInput {
+            key: ChunkKey {
+                index: [0, 0],
+                lod: Lod::Full,
+            },
+            footprints: &footprints,
+            infill: &[],
+            tags: &cleared,
+            ground: &ground,
+            region: Region::Temperate,
+            period: Period::Today,
+            thinning: None,
+        });
+        assert_eq!((empty.buildings, empty.cranes), (0, 0));
+        assert!(empty.vertices.is_empty() && empty.clutter.is_empty());
     }
 }

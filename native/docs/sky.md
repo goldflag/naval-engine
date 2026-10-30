@@ -455,7 +455,10 @@ tables and the weather's haze. What lives here:
   `fog_radiance` (both now unread by the scene).
 - `aerial::AerialCopy`: a buffer copy of the renderer's volume and its dome slice in group 1 (binding 12, read through
   `naval_sky::aerial`: `aerial_along(uv, distance)` for the clouds' march, `aerial_over_sky(color, uv)` for the dome).
-  A buffer because the passes that bind group 1 sample as many textures as a stage may.
+  A buffer because the passes that bind group 1 sample as many textures as a stage may. After them the same buffer
+  holds the towns' light at night (`GLOW_OFFSET`: a header, then the light the lit land sends up over a grid about the
+  window, `glow_light` and `glow_field`), which naval-clouds' `glow` pass lays and the aerial perspective and the
+  clouds' march read (`native/docs/terrain/night.md`, "The towns' light in the sky").
 - The dome draws the dome slice's haze over its radiance (`dome.wgsl`), so its horizon is the hazed sea's.
 - The environment's far fog map (binding 3, `fog_main`, `fog_fill.wgsl`, `env_fog`) is gone.
 

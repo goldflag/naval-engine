@@ -610,7 +610,7 @@ impl BowWaves {
             .retain(|(id, _)| ships.iter().any(|s| s.id == id));
         let mut candidates: Vec<(&BowShip<'_>, f64, f64)> = Vec::new();
         for ship in ships {
-            let surface = (1.0 + ship.position[1] / 3.0).clamp(0.0, 1.0);
+            let surface = crate::ship_wake::surfaced(ship.position[1]);
             let target = ship.speed.max(0.0) * surface;
             let previous = self
                 .speeds

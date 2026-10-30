@@ -312,6 +312,7 @@ impl GameSky {
         self.clouds.set_quality(device, quality);
         self.weather.set_quality(quality);
         let enabled = self.aerial.enabled;
+        let glow = self.aerial.ground_glow.take();
         self.aerial = AerialPerspective::new(
             device,
             &self.sky,
@@ -319,6 +320,7 @@ impl GameSky {
             naval_render::MakePipelines::Now,
         );
         self.aerial.enabled = enabled;
+        self.aerial.ground_glow = glow;
         let scene = self.scene;
         self.clouds.apply(queue, &mut self.sky, &scene);
         self.cut = true;
@@ -401,9 +403,9 @@ impl GameSky {
     }
 
     /// [`GameSky::update`], the sky's and the clouds' compute passes timed by the renderer core's timer (`sky tables`,
-    /// `sky environment`, `cloud shadow maps`, `cloud shadow resolve`, `cloud ground shadow`; each only on frames it
-    /// runs), the frame's uniforms written through `uploads` (the renderer core's staging belt in `prepare`; the sky's
-    /// rare table precompute through `queue`).
+    /// `ground glow`, `sky environment`, `cloud shadow maps`, `cloud shadow resolve`, `cloud ground shadow`; each only on
+    /// frames it runs), the frame's uniforms written through `uploads` (the renderer core's staging belt in `prepare`;
+    /// the sky's rare table precompute through `queue`).
     #[allow(clippy::too_many_arguments)]
     pub fn update_timed(
         &mut self,
@@ -487,6 +489,10 @@ impl GameSky {
         }
         // The weather composites, when the laying asks for them again, before anything reads the weather.
         self.clouds.encode_weather_timed(encoder, timer);
+        // The towns' light in the air before the environment's bake, whose clouds' bases take it: the header's write
+        // lands before every pass of the frame, so the bake reads it with the field laid for it.
+        self.aerial
+            .encode_glow(device, uploads, encoder, &self.sky, timer);
         self.sky.update_environment_timed(uploads, encoder, timer);
         self.clouds.encode_shadows_timed(encoder, timer);
         self.view = Some(*view);
@@ -522,6 +528,31 @@ impl GameSky {
             rain,
             None,
         );
+    }
+
+    /// The towns' light in the sky at night (`crate::glow`): the land's lit map and how it burns this frame, handed each
+    /// frame by the host (`naval_terrain::TerrainLayer::ground_glow`); `None` with no land, by day, on the Medium land or
+    /// with the lights out, when the sky draws as without it.
+    pub fn set_ground_glow(
+        &mut self,
+        glow: Option<(&crate::glow::GroundGlow, crate::glow::GlowLight)>,
+    ) {
+        // A held or paused picture's converged clouds hold the old light on their bases and in the air before them.
+        let held = self
+            .aerial
+            .ground_glow
+            .as_ref()
+            .map(|(map, light)| (map, *light));
+        if crate::glow::relights_clouds(held, glow) {
+            self.clouds.air_changed();
+        }
+        match glow {
+            None => self.aerial.ground_glow = None,
+            Some((map, light)) => match &mut self.aerial.ground_glow {
+                Some((held, held_light)) if held.version == map.version => *held_light = light,
+                slot => *slot = Some((map.clone(), light)),
+            },
+        }
     }
 
     /// The rain's share of the haze (`crate::aerial`): its extinction at the sea (per m) and its top, the clouds' base

@@ -1,7 +1,8 @@
 //! Roof clutter (native/docs/terrain/buildings.md, "Roof clutter"): what stands on a whole building's roof, as
 //! instances of a few shapes the layer draws within [`CLUTTER_M`] of the camera on High and Ultra. On a flat roof: air
 //! conditioners and vents, a block's stair and lift housing, a Japanese block's water tank on its stand, a New York
-//! block's timber water tower; on a pitched roof: chimneys (a row of them along a British terrace's ridge).
+//! block's timber water tower, a Taiwanese roof's sheet-metal shed and steel water tanks on their stands; on a pitched
+//! roof: chimneys (a row of them along a British terrace's ridge).
 //!
 //! In a past period (`Building::period`): no air conditioners, coolers, solar heaters or tanks, fewer housings, New
 //! York's water towers kept; chimneys on most pitched houses where coal and wood heated them, and stacks on Europe's
@@ -307,10 +308,29 @@ fn flat_roof(
         });
     };
     let past = b.period.is_past();
+    // Taiwan's sheet-metal rooftop shed (頂樓加蓋) over much of a townhouse's or a walk-up's roof, its stair's head in
+    // it, and steel water tanks on their stands on its roof or on the building's.
+    let taiwan = region == Region::Taiwan && !past;
+    let shed = if taiwan { shed_of(b, h) } else { None };
+    if let Some(s) = &shed {
+        let walls = [11u8, 25, 27, 13, 11, 25, 2][(h(133) * 6.99) as usize];
+        let top = [6u8, 7, 8, 15, 29, 6, 8, 7][(h(134) * 7.99) as usize];
+        out.push(Clutter {
+            at: [s.centre[0], eave, s.centre[1]],
+            yaw: s.axis[1].atan2(s.axis[0]),
+            size: [s.long, s.height, s.wide],
+            shape: Shape::Box as u32,
+            style: style(walls, top, b.seed, b.kind, PART_GABLE),
+        });
+        taken.push((s.centre, 0.5 * s.long.max(s.wide)));
+    }
+    if taiwan {
+        taiwan_tanks(b, shed.as_ref(), eave, (lo, hi), &mut taken, h, out);
+    }
     // A block's stair and lift housing, in its walls' colour, near its middle (in a past period on two in five of the
-    // taller blocks).
+    // taller blocks; none under a Taiwanese roof's shed).
     let storeys = b.storeys;
-    let housed = !past || (storeys >= 5 && h(120) < 0.4);
+    let housed = (!past || (storeys >= 5 && h(120) < 0.4)) && shed.is_none();
     if matches!(b.kind, Kind::Block | Kind::Tower | Kind::Office)
         && storeys >= 4
         && area > 250.0
@@ -502,6 +522,128 @@ fn flat_roof(
     }
 }
 
+/// A Taiwanese roof's shed: its middle and long axis on the roof (chunk-local), its length along that axis, width and
+/// height (m).
+struct Shed {
+    centre: [f32; 2],
+    axis: [f32; 2],
+    long: f32,
+    wide: f32,
+    height: f32,
+}
+
+/// The shed (頂樓加蓋) on a Taiwanese townhouse's (three in five), walk-up's (half) or tower's (one in six) flat roof:
+/// its whole width but a parapet's margin each side, 45-90% of its length from one end, 2.3-2.9 m high; none on a roof
+/// too small or not near its rectangle.
+fn shed_of(b: &Building, h: &dyn Fn(i64) -> f32) -> Option<Shed> {
+    let share = match b.kind {
+        Kind::House | Kind::Terrace => 0.6,
+        Kind::Block => 0.5,
+        Kind::Tower => 0.16,
+        _ => 0.0,
+    };
+    if h(130) >= share {
+        return None;
+    }
+    let rect = geometry::min_area_rect(&b.ring)?;
+    if rect.area() > 1.15 * geometry::area(&b.ring) || rect.area() < 25.0 {
+        return None;
+    }
+    let (along, across) = (rect.half[0], rect.half[1]);
+    let margin = 0.35;
+    let long = (2.0 * along * (0.45 + 0.45 * h(131)) - margin).min(2.0 * (along - margin));
+    let wide = 2.0 * (across - margin);
+    if long < 2.5 || wide < 2.5 {
+        return None;
+    }
+    // From one end or the other.
+    let end = if h(132) < 0.5 { -1.0 } else { 1.0 };
+    let shift = end * (along - margin - long * 0.5);
+    let a = rect.axis;
+    let centre = [rect.centre[0] + a[0] * shift, rect.centre[1] + a[1] * shift];
+    let n = [-a[1], a[0]];
+    let corner = |x: f32, y: f32| {
+        [
+            centre[0] + a[0] * x * long * 0.5 + n[0] * y * wide * 0.5,
+            centre[1] + a[1] * x * long * 0.5 + n[1] * y * wide * 0.5,
+        ]
+    };
+    // Its corners on the roof and no corner of the roof within it (a recess between its corners).
+    let within = |p: [f32; 2]| {
+        let d = [p[0] - centre[0], p[1] - centre[1]];
+        (d[0] * a[0] + d[1] * a[1]).abs() < long * 0.5
+            && (d[0] * n[0] + d[1] * n[1]).abs() < wide * 0.5
+    };
+    let inside = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
+        .iter()
+        .all(|&(x, y)| geometry::contains(&b.ring, corner(x, y)))
+        && !b.ring.iter().any(|&p| within(p));
+    inside.then_some(Shed {
+        centre,
+        axis: a,
+        long,
+        wide,
+        height: 2.3 + 0.6 * h(135),
+    })
+}
+
+/// Taiwan's water tanks: stainless (now and then white) cylinders on steel stands, one on a townhouse (two on one in
+/// four), one to three on a walk-up, two to four larger on a tower; on the shed's roof from its far end when there is
+/// one, else about the roof.
+#[allow(clippy::too_many_arguments)]
+fn taiwan_tanks(
+    b: &Building,
+    shed: Option<&Shed>,
+    eave: f32,
+    (lo, hi): ([f32; 2], [f32; 2]),
+    taken: &mut Vec<([f32; 2], f32)>,
+    h: &dyn Fn(i64) -> f32,
+    out: &mut Vec<Clutter>,
+) {
+    let n = match b.kind {
+        Kind::House | Kind::Terrace => 1 + u32::from(h(141) < 0.25),
+        Kind::Block => 1 + (h(141) * 2.99) as u32,
+        Kind::Tower => 2 + (h(141) * 2.99) as u32,
+        _ => 0,
+    };
+    let d = if b.kind == Kind::Tower {
+        1.8 + 0.8 * h(142)
+    } else {
+        1.0 + 0.45 * h(142)
+    };
+    let wall = [11u8, 11, 2, 13][(h(144) * 3.99) as usize];
+    for k in 0..n {
+        let k64 = i64::from(k);
+        let (p, foot) = if let Some(s) = shed {
+            let along = s.long * 0.5 - d * 0.5 - 0.3 - k as f32 * (d + 0.35);
+            if along < d * 0.5 - s.long * 0.5 {
+                break;
+            }
+            let across = (h(145 + k64) - 0.5) * (s.wide - d - 0.4).max(0.0);
+            let [a0, a1] = s.axis;
+            (
+                [
+                    s.centre[0] + a0 * along - a1 * across,
+                    s.centre[1] + a1 * along + a0 * across,
+                ],
+                eave + s.height,
+            )
+        } else {
+            match place(&b.ring, lo, hi, d * 0.5, taken, None, h, 150 + k64) {
+                Some(p) => (p, eave),
+                None => continue,
+            }
+        };
+        out.push(Clutter {
+            at: [p[0], foot, p[1]],
+            yaw: 0.0,
+            size: [d, 2.2 * d, d],
+            shape: Shape::Tower as u32,
+            style: style(wall, 29, b.seed, b.kind, PART_STEEL),
+        });
+    }
+}
+
 fn chimneys(
     b: &Building,
     region: Region,
@@ -607,7 +749,9 @@ fn todays_chimney_share(region: Region) -> f32 {
         Region::Mediterranean => 0.35,
         Region::Arid => 0.1,
         Region::Tropical => 0.05,
-        Region::EastAsia | Region::Hawaii | Region::Micronesia | Region::Atoll => 0.0,
+        Region::EastAsia | Region::Taiwan | Region::Hawaii | Region::Micronesia | Region::Atoll => {
+            0.0
+        }
     }
 }
 
@@ -709,6 +853,7 @@ mod tests {
             roof,
             ground: [4.0, 5.0, 6.0],
             height: f32::from(storeys) * 3.0,
+            base: 0.0,
             storeys,
             storey_m: 3.0,
             wall: 1,
@@ -723,6 +868,26 @@ mod tests {
 
     fn rect(x: f32, z: f32, w: f32, d: f32) -> Vec<[f32; 2]> {
         vec![[x, z], [x + w, z], [x + w, z + d], [x, z + d]]
+    }
+
+    #[test]
+    fn a_taiwanese_shed_keeps_off_a_recess_in_its_roof() {
+        let h = |_: i64| 0.5;
+        let whole = building(rect(0.0, 0.0, 20.0, 10.0), Kind::Terrace, Roof::Flat, 4);
+        assert!(shed_of(&whole, &h).is_some());
+        // A recess 2 m wide and 4 m deep into one side, between the shed's corners.
+        let notched = vec![
+            [0.0, 0.0],
+            [20.0, 0.0],
+            [20.0, 10.0],
+            [11.0, 10.0],
+            [11.0, 6.0],
+            [9.0, 6.0],
+            [9.0, 10.0],
+            [0.0, 10.0],
+        ];
+        let notched = building(notched, Kind::Terrace, Roof::Flat, 4);
+        assert!(shed_of(&notched, &h).is_none());
     }
 
     #[test]
@@ -891,9 +1056,76 @@ mod tests {
     }
 
     #[test]
+    fn taiwans_roofs_carry_sheds_and_steel_tanks_today_only() {
+        let now = sample(crate::buildings::Period::Today);
+        let then = sample(crate::buildings::Period::Year(1942));
+        let part = |c: &Clutter| (c.style[3] >> 4) & 7;
+        // A shed's top is sheet (a stair housing's the building's roof).
+        let shed = |c: &Clutter| {
+            c.shape == Shape::Box as u32
+                && c.size[0] >= 2.5
+                && c.size[2] >= 2.5
+                && c.size[1] >= 2.3
+                && [6, 7, 8, 15, 29].contains(&c.style[1])
+        };
+        let tank = |c: &Clutter| c.shape == Shape::Tower as u32 && part(c) == PART_STEEL;
+        let count = |set: &[(Region, Kind, Vec<Clutter>)],
+                     region: Region,
+                     kind: Kind,
+                     f: &dyn Fn(&Clutter) -> bool| {
+            set.iter()
+                .filter(|(r, k, _)| *r == region && *k == kind)
+                .map(|(_, _, p)| p.iter().filter(|c| f(c)).count())
+                .sum::<usize>()
+        };
+        // Of 24 flat roofs each: sheds on about three townhouses in five and half the walk-ups, a tank on every
+        // townhouse and walk-up, two or more on a tower.
+        let terraces = count(&now, Region::Taiwan, Kind::Terrace, &shed);
+        assert!((8..=20).contains(&terraces), "{terraces}");
+        assert!(count(&now, Region::Taiwan, Kind::Block, &shed) >= 6);
+        assert!(count(&now, Region::Taiwan, Kind::Terrace, &tank) >= 24);
+        assert!(count(&now, Region::Taiwan, Kind::House, &tank) >= 24);
+        assert!(count(&now, Region::Taiwan, Kind::Tower, &tank) >= 48);
+        // A shed within its roof, its sides sheet (grey, blue, cream, white or concrete) under a sheet roof; a tank on
+        // a shed stands on its roof.
+        for (region, kind, pieces) in &now {
+            if *region != Region::Taiwan || *kind != Kind::Terrace {
+                continue;
+            }
+            for c in pieces.iter().filter(|c| shed(c)) {
+                assert!(c.size[0] <= 20.0 && c.size[2] <= 9.0, "{c:?}");
+                assert!(
+                    [11, 25, 27, 13, 2].contains(&c.style[0])
+                        && [6, 7, 8, 15, 29].contains(&c.style[1])
+                );
+                assert_eq!(part(c), PART_GABLE);
+            }
+            if pieces.iter().any(shed) {
+                assert!(pieces.iter().any(|c| tank(c) && c.at[1] > 6.0 + 2.2));
+            }
+        }
+        // None elsewhere, none in the period; Japan's blocks keep their box tanks.
+        for set in [&now, &then] {
+            for region in [Region::EastAsia, Region::Temperate, Region::Tropical] {
+                for kind in [Kind::Terrace, Kind::Block, Kind::House] {
+                    assert_eq!(count(set, region, kind, &tank), 0, "{region:?} {kind:?}");
+                }
+            }
+        }
+        for kind in [Kind::Terrace, Kind::Block, Kind::Tower, Kind::House] {
+            assert_eq!(count(&then, Region::Taiwan, kind, &tank), 0);
+            assert_eq!(count(&then, Region::Taiwan, kind, &shed), 0);
+        }
+    }
+
+    #[test]
     fn todays_clutter_is_as_it_was() {
+        // Every region's as it was before Taiwan's own (2026-10-29).
         let mut h = 0xcbf2_9ce4_8422_2325u64;
-        for (_, _, pieces) in sample(crate::buildings::Period::Today) {
+        for (_, _, pieces) in sample(crate::buildings::Period::Today)
+            .into_iter()
+            .filter(|(region, _, _)| *region != Region::Taiwan)
+        {
             for b in bytemuck::cast_slice::<Clutter, u8>(&pieces) {
                 h ^= u64::from(*b);
                 h = h.wrapping_mul(0x0000_0100_0000_01b3);

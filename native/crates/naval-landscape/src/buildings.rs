@@ -23,7 +23,7 @@
 //! - **Infill** where the source has none (no file for the quadkey, or a 100 m cell with no footprint) over built-up
 //!   cover in the window's real-world maps (`naval_terrain::buildings::infill`).
 //! - **Types** from OpenStreetMap (`theatre::osm`, the tiles under the chunks the worker makes and only those, zoom 14
-//!   under a whole chunk and 13 under boxes, 14 under both in a past period): the land use a footprint stands in, the point of interest on it, OSM's
+//!   at both near levels, `osm_zoom`): the land use a footprint stands in, the point of interest on it, OSM's
 //!   own outlines (their heights where
 //!   Microsoft's are missing or capped, their colours, and the buildings Microsoft misses), the water and the piers
 //!   ([`tags_for`]), and a few landmarks the tiles cannot carry ([`LANDMARKS`]). A chunk made while some of its tiles
@@ -844,6 +844,195 @@ impl Context {
     }
 }
 
+/// An area the host draws itself (a landmark of its own), in latitude and longitude: every building whose middle lies
+/// in one is left out at every level and from every source (Microsoft's footprints, OSM's outlines and parts, the
+/// infill's lots, a block's parcels, the far level's masses, the landmarks, lighthouses, cranes and piers' decks), and
+/// the infill leaves it empty ([`set_clear_areas`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ClearArea {
+    /// A ring of points, either way round, closed or not.
+    Polygon(Vec<LatLon>),
+    /// A circle about `middle`, `radius_m` metres across the ground.
+    Circle { middle: LatLon, radius_m: f64 },
+}
+
+/// The sides of a circle's ring ([`ClearArea::Circle`]): its edge within 0.2% of the radius.
+const CIRCLE_SIDES: usize = 48;
+
+impl ClearArea {
+    /// Its ring in theatre metres about `geo` (x east, z south).
+    fn ring(&self, geo: LatLon) -> Vec<[f64; 2]> {
+        match self {
+            Self::Polygon(points) => points.iter().map(|p| to_local(geo, *p)).collect(),
+            Self::Circle { middle, radius_m } => {
+                let c = to_local(geo, *middle);
+                (0..CIRCLE_SIDES)
+                    .map(|k| {
+                        let a = std::f64::consts::TAU * k as f64 / CIRCLE_SIDES as f64;
+                        [c[0] + radius_m * a.cos(), c[1] + radius_m * a.sin()]
+                    })
+                    .collect()
+            }
+        }
+    }
+
+    /// A hash of the area, for the chunks under it to know it changed.
+    fn signature(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        let mut point = |p: &LatLon| {
+            p.lat.to_bits().hash(&mut h);
+            p.lon.to_bits().hash(&mut h);
+        };
+        match self {
+            Self::Polygon(points) => points.iter().for_each(&mut point),
+            Self::Circle { middle, radius_m } => {
+                point(middle);
+                radius_m.to_bits().hash(&mut h);
+            }
+        }
+        h.finish()
+    }
+}
+
+/// The areas handed ([`set_clear_areas`]), each with its ring and bounds in a scenario's frame as asked for.
+#[derive(Default)]
+struct Clearing {
+    areas: Vec<(ClearArea, u64)>,
+    /// By the frame's origin (its bits): each area's ring in theatre metres and its bounds (least x, z, most x, z).
+    framed: Mutex<HashMap<[u64; 2], Arc<Vec<Framed>>>>,
+}
+
+struct Framed {
+    ring: Vec<[f64; 2]>,
+    bounds: [f64; 4],
+    signature: u64,
+}
+
+impl Clearing {
+    fn framed(&self, geo: LatLon) -> Arc<Vec<Framed>> {
+        let mut framed = self.framed.lock().unwrap_or_else(|e| e.into_inner());
+        framed
+            .entry([geo.lat.to_bits(), geo.lon.to_bits()])
+            .or_insert_with(|| {
+                Arc::new(
+                    self.areas
+                        .iter()
+                        .map(|(area, signature)| {
+                            let ring = area.ring(geo);
+                            let bounds = ring.iter().fold(
+                                [f64::MAX, f64::MAX, f64::MIN, f64::MIN],
+                                |b, p| {
+                                    [
+                                        b[0].min(p[0]),
+                                        b[1].min(p[1]),
+                                        b[2].max(p[0]),
+                                        b[3].max(p[1]),
+                                    ]
+                                },
+                            );
+                            Framed {
+                                ring,
+                                bounds,
+                                signature: *signature,
+                            }
+                        })
+                        .collect(),
+                )
+            })
+            .clone()
+    }
+
+    /// The areas reaching into chunk `index` of `geo`'s frame.
+    fn under(&self, geo: LatLon, index: [i32; 2]) -> Vec<Framed> {
+        if self.areas.is_empty() {
+            return Vec::new();
+        }
+        let c = chunk_corner(index);
+        self.framed(geo)
+            .iter()
+            .filter(|a| {
+                a.bounds[0] <= c[0] + CHUNK_M
+                    && a.bounds[2] >= c[0]
+                    && a.bounds[1] <= c[1] + CHUNK_M
+                    && a.bounds[3] >= c[1]
+            })
+            .map(|a| Framed {
+                ring: a.ring.clone(),
+                bounds: a.bounds,
+                signature: a.signature,
+            })
+            .collect()
+    }
+
+    /// The areas over chunk `index` as a hash (0 for none): a chunk made under others is made again.
+    fn signature(&self, geo: LatLon, index: [i32; 2]) -> u64 {
+        if self.areas.is_empty() {
+            return 0;
+        }
+        let c = chunk_corner(index);
+        self.framed(geo)
+            .iter()
+            .filter(|a| {
+                a.bounds[0] <= c[0] + CHUNK_M
+                    && a.bounds[2] >= c[0]
+                    && a.bounds[1] <= c[1] + CHUNK_M
+                    && a.bounds[3] >= c[1]
+            })
+            .fold(0u64, |h, a| h.rotate_left(5) ^ a.signature)
+    }
+}
+
+static CLEARING: Mutex<Option<Arc<Clearing>>> = Mutex::new(None);
+
+fn clearing() -> Arc<Clearing> {
+    CLEARING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(Default::default)
+        .clone()
+}
+
+/// Hands the buildings the areas the host draws itself ([`ClearArea`]), in place of any handed before (none to clear
+/// them): every building whose middle lies in one is left out, and the chunks under an area added, moved or taken away
+/// are made again (the old mesh standing until the new one is in). Any thread, any time; a scenario's frame need not be
+/// known yet.
+pub fn set_clear_areas(areas: Vec<ClearArea>) {
+    let areas = areas
+        .into_iter()
+        .map(|a| {
+            let signature = a.signature();
+            (a, signature)
+        })
+        .collect();
+    *CLEARING.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(Clearing {
+        areas,
+        framed: Mutex::new(HashMap::new()),
+    }));
+    // The feed asks again (`want`), and the chunks under a change are stale.
+    streamer().wake.notify_one();
+}
+
+/// The areas handed last ([`set_clear_areas`]).
+pub fn clear_areas() -> Vec<ClearArea> {
+    clearing().areas.iter().map(|(a, _)| a.clone()).collect()
+}
+
+/// The areas reaching into chunk `index` of `geo`'s frame, as chunk-local rings (`MapTags::cleared`).
+fn cleared_rings(clearing: &Clearing, geo: LatLon, index: [i32; 2]) -> Vec<Vec<[f32; 2]>> {
+    let c = chunk_corner(index);
+    clearing
+        .under(geo, index)
+        .into_iter()
+        .map(|a| {
+            a.ring
+                .iter()
+                .map(|p| [(p[0] - c[0]) as f32, (p[1] - c[1]) as f32])
+                .collect()
+        })
+        .collect()
+}
+
 /// A made mesh's key: the scenario's frame, the heights' spacing, whether the cover was had, the palettes, the period
 /// ([`Period::key`]), the chunk.
 type MadeKey = ([u64; 2], u32, bool, u8, u16, ChunkKey);
@@ -860,6 +1049,8 @@ struct Made {
     answered: u64,
     /// The relief's pages it was made on ([`Context::relief_under`]).
     relief: u64,
+    /// The areas the host draws itself over it when it was begun ([`Clearing::signature`]).
+    cleared: u64,
 }
 
 impl Made {
@@ -875,7 +1066,7 @@ impl Made {
     /// thinning about the camera, a window's estimate): its masses stand on the ground that stood.
     fn stale_for(&self, context: &Context, chunk: ChunkKey) -> bool {
         self.stale()
-            || self.relief != context.relief_under(chunk)
+            || self.evicted().stale_for(context, chunk)
             || (chunk.lod == Lod::Far
                 && context.period.is_past()
                 && super::period_land::changed_since(
@@ -890,6 +1081,31 @@ impl Made {
                     ],
                     true,
                 ))
+    }
+
+    /// What it was made on, kept past its eviction from the cache ([`State::evicted`]).
+    fn evicted(&self) -> Evicted {
+        Evicted {
+            relief: self.relief,
+            cleared: self.cleared,
+        }
+    }
+}
+
+/// What a mesh evicted from the cache was made on: the relief's pages ([`Made::relief`]) and the areas the host draws
+/// itself over it ([`Made::cleared`]).
+#[derive(Clone, Copy)]
+struct Evicted {
+    relief: u64,
+    cleared: u64,
+}
+
+impl Evicted {
+    /// Whether chunk `chunk`, still drawn, is to be made again: the relief under it, or the areas over it, changed
+    /// since it was made.
+    fn stale_for(&self, context: &Context, chunk: ChunkKey) -> bool {
+        self.relief != context.relief_under(chunk)
+            || self.cleared != clearing().signature(context.geo, chunk.index)
     }
 }
 
@@ -948,9 +1164,9 @@ struct State {
     /// Chunks made without some of their tiles, when, and the splits finished before: kept past their meshes'
     /// eviction, so a drawn chunk whose mesh left the cache is made again only when it lacked something.
     incomplete: HashMap<MadeKey, (Instant, u64)>,
-    /// The relief's pages each mesh evicted from the cache was made on ([`Made::relief`]): a drawn chunk whose mesh left
-    /// the cache is made again when they change.
-    evicted_relief: HashMap<MadeKey, u64>,
+    /// What each mesh evicted from the cache was made on ([`Evicted`]): a drawn chunk whose mesh left the cache is made
+    /// again when the relief under it or the areas over it change.
+    evicted: HashMap<MadeKey, Evicted>,
     quads: HashMap<([u64; 2], String), Arc<QuadStore>>,
     quad_order: VecDeque<([u64; 2], String)>,
     index: Option<Arc<Index>>,
@@ -998,7 +1214,7 @@ fn streamer() -> &'static Streamer {
             made_bytes: 0,
             failed: HashMap::new(),
             incomplete: HashMap::new(),
-            evicted_relief: HashMap::new(),
+            evicted: HashMap::new(),
             quads: HashMap::new(),
             quad_order: VecDeque::new(),
             index: None,
@@ -1147,6 +1363,9 @@ fn work() {
         };
         let started = Instant::now();
         let epoch = split_epoch();
+        // The areas the host draws itself as the batch is begun, the meshes made and marked by them alike: one handed
+        // meanwhile makes its chunks again.
+        let cleared = clearing();
         // Read before the far chunks' ground is: an answer changing meanwhile makes them again.
         let answered = if far {
             super::period_land::version()
@@ -1154,9 +1373,9 @@ fn work() {
             0
         };
         let result = if far {
-            Ok((make_far(&context, &batch), 0))
+            Ok((make_far(&context, &batch, &cleared), 0))
         } else {
-            make(&context, &batch)
+            make_under(&context, &batch, &cleared)
         };
         let mut state = lock();
         state.status.fetched = 0;
@@ -1189,8 +1408,9 @@ fn work() {
                         epoch,
                         answered,
                         relief: context.relief_under(chunk),
+                        cleared: cleared.signature(context.geo, chunk.index),
                     };
-                    state.evicted_relief.remove(&k);
+                    state.evicted.remove(&k);
                     if let Some(old) = state.made.insert(k, made) {
                         state.made_bytes -= old.mesh.bytes();
                     } else {
@@ -1203,7 +1423,7 @@ fn work() {
                 {
                     if let Some(made) = state.made.remove(&old) {
                         state.made_bytes -= made.mesh.bytes();
-                        state.evicted_relief.insert(old, made.relief);
+                        state.evicted.insert(old, made.evicted());
                     }
                 }
                 MADE_VERSION.fetch_add(1, Ordering::Release);
@@ -1668,6 +1888,16 @@ pub fn make(
     context: &Context,
     batch: &[ChunkKey],
 ) -> Result<(Vec<(ChunkKey, Arc<ChunkMesh>, Done)>, usize), FetchError> {
+    make_under(context, batch, &clearing())
+}
+
+/// [`make`] under the areas `cleared` (the worker's, read as its batch is begun).
+#[allow(clippy::type_complexity)]
+fn make_under(
+    context: &Context,
+    batch: &[ChunkKey],
+    cleared: &Clearing,
+) -> Result<(Vec<(ChunkKey, Arc<ChunkMesh>, Done)>, usize), FetchError> {
     let ground = &context.ground;
     let land: Vec<bool> = batch.iter().map(|c| ground.has_land(c.index)).collect();
     let chunk_keys: Vec<Vec<String>> = batch
@@ -1814,7 +2044,8 @@ pub fn make(
                                 tiles: have.len() == wanted.len() && !lacking.missing,
                                 awaiting: *awaiting || lacking.awaiting,
                             };
-                            let mesh = chunk_mesh(context, chunk, stores, &have, past);
+                            let mesh =
+                                chunk_mesh_under(context, chunk, stores, &have, past, cleared);
                             (k, chunk, Arc::new(mesh), done)
                         })
                         .collect::<Vec<_>>()
@@ -1843,7 +2074,11 @@ pub fn make(
 /// (`naval_terrain::buildings::far`), nothing fetched. In a past period only on the ground that stood
 /// (`period_land`'s answers: the buildings' thinning where it ran, the cover's estimate beyond); a chunk whose ground is
 /// not known yet, or that the window's maps do not wholly cover, is made again a minute later.
-fn make_far(context: &Context, batch: &[ChunkKey]) -> Vec<(ChunkKey, Arc<ChunkMesh>, Done)> {
+fn make_far(
+    context: &Context,
+    batch: &[ChunkKey],
+    cleared: &Clearing,
+) -> Vec<(ChunkKey, Arc<ChunkMesh>, Done)> {
     let answers = super::period_land::answers(context.geo, context.period);
     let threads = std::thread::available_parallelism()
         .map_or(2, |n| n.get())
@@ -1859,7 +2094,7 @@ fn make_far(context: &Context, batch: &[ChunkKey]) -> Vec<(ChunkKey, Arc<ChunkMe
                     qos.apply();
                     part.iter()
                         .map(|&chunk| {
-                            let (mesh, done) = far_mesh(context, answers, chunk);
+                            let (mesh, done) = far_mesh(context, answers, chunk, cleared);
                             (chunk, Arc::new(mesh), done)
                         })
                         .collect::<Vec<_>>()
@@ -1873,11 +2108,12 @@ fn make_far(context: &Context, batch: &[ChunkKey]) -> Vec<(ChunkKey, Arc<ChunkMe
     })
 }
 
-/// One far chunk's masses ([`make_far`]), and whether all it wanted was had.
+/// One far chunk's masses ([`make_far`]) under the areas `cleared`, and whether all it wanted was had.
 fn far_mesh(
     context: &Context,
     answers: Option<&super::period_land::Answers>,
     chunk: ChunkKey,
+    cleared: &Clearing,
 ) -> (ChunkMesh, Done) {
     let mut done = Done {
         tiles: true,
@@ -1899,10 +2135,12 @@ fn far_mesh(
         return (ChunkMesh::default(), done);
     }
     let corner = chunk_corner(chunk.index);
+    // No mass in an area the host draws itself.
+    let cleared = cleared_rings(cleared, context.geo, chunk.index);
     let stood = |p: [f64; 2]| {
-        !past
-            || ground
-                .is_some_and(|g| g.stood([(p[0] - corner[0]) as f32, (p[1] - corner[1]) as f32]))
+        let local = [(p[0] - corner[0]) as f32, (p[1] - corner[1]) as f32];
+        (!past || ground.is_some_and(|g| g.stood(local)))
+            && !cleared.iter().any(|ring| geometry::contains(ring, local))
     };
     let land = Land {
         ground: &context.ground,
@@ -1928,17 +2166,13 @@ fn far_mesh(
 /// How far about a chunk its map's tiles are read (m): a quay's water and a pier reaching in from beyond it.
 const TAGS_REACH_M: f64 = 150.0;
 
-/// The zoom a chunk's map is read at in `period`: the deepest (14) for a whole chunk, 13 (a quarter of the tiles, the
-/// small buildings and minor points left out) for one drawn as boxes, 3.5 km off and more. A past period reads 14 at
-/// both levels: what stood is decided from the map (the lifts' places of worship and small railway, military and
-/// harbour land, the working waterfront, OSM's outlines merged into the footprints), and a chunk must keep the same
-/// buildings whichever level draws it.
-fn osm_zoom(lod: Lod, period: Period) -> u8 {
-    match lod {
-        _ if period.is_past() => osm::ZOOM,
-        Lod::Full => osm::ZOOM,
-        Lod::Box | Lod::Far => osm::ZOOM - 1,
-    }
+/// The zoom a chunk's map is read at: the deepest (14) at both near levels, whatever the period. OpenMapTiles' zoom 13
+/// holds a tile's buildings as one shape with no heights, parts or colours (a boxed tower 3.5 km off fell to an
+/// estimate, and where Microsoft has no footprints, as in Taiwan, a city to blobs), and in a past period what stood is
+/// decided from the map (the lifts' places of worship and small railway, military and harbour land, the working
+/// waterfront, OSM's outlines merged into the footprints): a chunk keeps the same buildings whichever level draws it.
+fn osm_zoom(_lod: Lod, _period: Period) -> u8 {
+    osm::ZOOM
 }
 
 /// The OpenStreetMap tiles under chunk `chunk` and [`TAGS_REACH_M`] about it, at its level's zoom in `period`
@@ -1963,14 +2197,30 @@ pub fn chunk_mesh(
     tiles: &[Arc<OsmTile>],
     past: Option<&period::Prepared>,
 ) -> ChunkMesh {
+    chunk_mesh_under(context, chunk, stores, tiles, past, &clearing())
+}
+
+/// [`chunk_mesh`] under the areas `cleared` (the worker's, read as its batch is begun, so the mesh is marked by the
+/// areas it was made under).
+fn chunk_mesh_under(
+    context: &Context,
+    chunk: ChunkKey,
+    stores: &[Arc<QuadStore>],
+    tiles: &[Arc<OsmTile>],
+    past: Option<&period::Prepared>,
+    cleared: &Clearing,
+) -> ChunkMesh {
     let mut footprints: Vec<Footprint> = Vec::new();
     for store in stores {
         if let Some(found) = store.chunks.get(&chunk.index) {
             footprints.extend(found.iter().cloned());
         }
     }
-    let tags = tags_for(context.geo, chunk.index, tiles);
-    tags::merge_outlines(&mut footprints, &tags.outlines);
+    let mut tags = tags_for(context.geo, chunk.index, tiles);
+    // The areas the host draws itself: nothing of the chunk's stands there, and the infill leaves them empty (its lots
+    // are laid about every footprint, those in them too, and left out with them).
+    tags.cleared = cleared_rings(cleared, context.geo, chunk.index);
+    tags::merge_outlines(&mut footprints, &tags.outlines, &tags.outlines_about);
     let land = Land {
         ground: &context.ground,
         cover: context.cover.as_ref(),
@@ -2095,11 +2345,19 @@ pub fn tags_for(geo: LatLon, index: [i32; 2], tiles: &[Arc<OsmTile>]) -> MapTags
                     continue;
                 }
                 let c = geometry::centroid(&ring);
-                // Each building once: in the tile whose proper holds its middle, in the chunk that holds it.
-                if !in_chunk(c) || !geometry::contains(&quad, c) {
+                // Each building once: in the tile whose proper holds its middle, in the chunk that holds it; those
+                // about the chunk read for the building a part of its belongs to (`MapTags::outlines_about`).
+                let reach = TAGS_REACH_M as f32;
+                let near = |v: f32| (-reach..CHUNK_M as f32 + reach).contains(&v);
+                if !near(c[0]) || !near(c[1]) || !geometry::contains(&quad, c) {
                     continue;
                 }
-                out.outlines.push(Outline {
+                let outlines = if in_chunk(c) {
+                    &mut out.outlines
+                } else {
+                    &mut out.outlines_about
+                };
+                outlines.push(Outline {
                     ring,
                     height: b
                         .render_height
@@ -2354,7 +2612,7 @@ impl Feed {
                         let k = context.made_key(key);
                         // Drawn already and only its mesh gone from the cache: left as it is, unless what is drawn
                         // is a stand-in made without (or with) the cover, it was made lacking some of its tiles a
-                        // while ago, or the relief under it has changed since.
+                        // while ago, or the relief under it or the areas the host draws over it have changed since.
                         let mut flipped = k;
                         flipped.2 = !flipped.2;
                         let stand_in_held = state
@@ -2364,11 +2622,11 @@ impl Feed {
                         let retry = state.incomplete.get(&k).is_some_and(|(at, epoch)| {
                             at.elapsed() >= RETRY_AFTER || *epoch != split_epoch()
                         });
-                        let relief = state
-                            .evicted_relief
+                        let changed = state
+                            .evicted
                             .get(&k)
-                            .is_some_and(|r| *r != context.relief_under(key));
-                        if layer.holds(key) && !stand_in_held && !retry && !relief {
+                            .is_some_and(|e| e.stale_for(context, key));
+                        if layer.holds(key) && !stand_in_held && !retry && !changed {
                             continue;
                         }
                         missing.push(key);

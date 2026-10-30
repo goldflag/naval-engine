@@ -93,6 +93,17 @@ fn sample_with(
         },
         count: None,
     });
+    // The foam field's states (`naval_ocean::foam_sim`; a calm texel while the wakes have no field).
+    entries.push(wgpu::BindGroupLayoutEntry {
+        binding: 18,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2Array,
+            multisampled: false,
+        },
+        count: None,
+    });
     let wake_layout = d.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: None,
         entries: &entries,
@@ -204,6 +215,10 @@ fn sample_with(
             wgpu::BindGroupEntry {
                 binding: 17,
                 resource: sides.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 18,
+                resource: wgpu::BindingResource::TextureView(b.foam_sim),
             },
         ],
     });

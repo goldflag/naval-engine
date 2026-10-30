@@ -89,14 +89,35 @@ pub struct ChunkKey {
     pub lod: Lod,
 }
 
-/// A building's outline as the source gives it: a ring of chunk-local (x, z) metres, its height (m) and its walls'
-/// colour (sRGB) when the source has them, and its kind when the source knows it (the infill's lots).
+/// A building's outline as the source gives it: a ring of chunk-local (x, z) metres, its height (m, to its top) and its
+/// walls' colour (sRGB) when the source has them, its kind when the source knows it (the infill's lots), and for one of
+/// OpenStreetMap's building parts where its walls start and the building it belongs to ([`Part`]).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Footprint {
     pub ring: Vec<[f32; 2]>,
     pub height: Option<f32>,
     pub kind: Option<Kind>,
     pub colour: Option<[u8; 3]>,
+    pub part: Option<Part>,
+}
+
+/// One of OpenStreetMap's `building:part`s standing as a footprint of its own (`tags::merge_outlines`): a tower mapped
+/// as parts stacked one on another stands as they are drawn.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Part {
+    /// Where its walls start over its building's ground (m, OSM's `min_height`; 0 for a part on the ground): above it
+    /// nothing reaches down to the ground, nor sinks below its base ([`mesh::SINK_M`]).
+    pub base: f32,
+    /// The middle of the building it is part of (chunk-local x, z): its plan's hashes and its ground are read there, so
+    /// the parts of one tower take one colour, one storey and windows that run on from part to part.
+    pub middle: [f32; 2],
+}
+
+impl Footprint {
+    /// Whether it starts above the ground: one of OSM's parts with a base ([`Part::base`]).
+    pub fn raised(&self) -> bool {
+        self.part.is_some_and(|p| p.base > 0.0)
+    }
 }
 
 /// What a building is, for its height, roof, colours and windows (`buildings.wgsl`'s `KIND_*`, four bits).
@@ -247,6 +268,9 @@ pub struct Building {
     pub ground: [f32; 3],
     /// The walls' height above the mean ground (m): to the eaves under a pitched roof.
     pub height: f32,
+    /// Where its walls start over the mean ground (m): an OSM part's base ([`Part::base`]); 0 for one standing on the
+    /// ground, whose walls reach [`mesh::SINK_M`] below its lowest ground.
+    pub base: f32,
     /// Window rows, and a storey's height (m).
     pub storeys: u8,
     pub storey_m: f32,
@@ -276,13 +300,13 @@ pub fn hash01(x: i64, y: i64, seed: i64) -> f32 {
     (f64::from(h ^ (h >> 16)) / 4_294_967_296.0) as f32
 }
 
-/// The most a source's height may be and still be taken (m): the tallest towers; above it, or below
-/// [`MIN_DATA_HEIGHT_M`], the height is estimated instead.
-pub const MAX_DATA_HEIGHT_M: f32 = 400.0;
+/// The most a source's height may be and still be taken (m): the tallest towers (the Burj Khalifa's 828 m, Taipei 101's
+/// 508 m); above it, or below [`MIN_DATA_HEIGHT_M`], the height is estimated instead.
+pub const MAX_DATA_HEIGHT_M: f32 = 850.0;
 /// The least height taken from a source (m): Microsoft's model returns 0-2 m for many sheds and for footprints it could
 /// not measure.
 pub const MIN_DATA_HEIGHT_M: f32 = 2.5;
-/// The most storeys an estimate gives a block (no data); a rare tower in a dense core aside.
+/// The most storeys an estimate gives a block (no data); a rare tower in a dense core and Taiwan's towers aside.
 pub const MAX_ESTIMATED_STOREYS: u8 = 8;
 /// The first palette entry of the colour cube (`buildings.wgsl`): entries below it are the authored palettes.
 pub const CUBE_FIRST: u8 = 32;
@@ -320,13 +344,25 @@ pub fn plan_building(
 ) -> Option<Building> {
     let ring = geometry::simplify(&footprint.ring, 0.4)?;
     let area = geometry::area(&ring);
-    if area < 6.0 {
+    // A raised part may be a tower's mast or spire.
+    if area < if footprint.raised() { 1.0 } else { 6.0 } {
         return None;
     }
     let centre = geometry::centroid(&ring);
+    // A whole building, or one of OSM's parts ([`Part`]): a part's hashes and mean ground are its building's.
+    let whole = footprint.part.is_none();
+    let anchor = footprint.part.map_or(centre, |p| p.middle);
     // The building's own hashes, by where it stands in the theatre (decimetres): the same whichever window draws it.
-    let hx = i64::from(chunk[0]) * 10_000 + (centre[0] * 10.0) as i64;
-    let hz = i64::from(chunk[1]) * 10_000 + (centre[1] * 10.0) as i64;
+    // A part's building's middle may lie in the chunk beside it (`tags::merge_outlines`): rounded, so both agree.
+    let dm = |v: f32| {
+        if whole {
+            (v * 10.0) as i64
+        } else {
+            (v * 10.0).round() as i64
+        }
+    };
+    let hx = i64::from(chunk[0]) * 10_000 + dm(anchor[0]);
+    let hz = i64::from(chunk[1]) * 10_000 + dm(anchor[1]);
     let h = |k: i64| hash01(hx, hz, k);
     let rect = geometry::min_area_rect(&ring)?;
     let rectangular = area / rect.area().max(1e-3);
@@ -356,7 +392,9 @@ pub fn plan_building(
         if hi - lo > 6.0 + 0.25 * long {
             return None;
         }
-        (lo, sum / count, hi)
+        // A part's storeys counted from its building's middle, so stacked parts meet and their windows run on.
+        let mean = if whole { sum / count } else { ground(anchor) };
+        (lo, mean, hi)
     };
 
     let data = footprint
@@ -381,18 +419,21 @@ pub fn plan_building(
                 (kind, height)
             }
         }
-        None if setting.poi == Some(PoiKind::Lighthouse) && area < 400.0 => {
+        // A part stands as mapped: none of a lighthouse's, a church's, a stack's or a tank's own parts made about it.
+        None if whole && setting.poi == Some(PoiKind::Lighthouse) && area < 400.0 => {
             (Kind::Lighthouse, data.unwrap_or(14.0 + 10.0 * jitter))
         }
-        None if worship.is_some() && (40.0..8000.0).contains(&area) => (Kind::Church, 0.0),
+        None if whole && worship.is_some() && (40.0..8000.0).contains(&area) => (Kind::Church, 0.0),
         // A measured stack before any tank: tall for its width.
-        None if round
+        None if whole
+            && round
             && diameter <= 25.0
             && data.is_some_and(|t| t >= 20.0 && t >= 2.5 * diameter) =>
         {
             (Kind::Chimney, data.unwrap_or(30.0))
         }
-        None if round
+        None if whole
+            && round
             && (9.0..=110.0).contains(&diameter)
             && data.is_none_or(|h| h < 30.0)
             && (industrial
@@ -427,7 +468,8 @@ pub fn plan_building(
         },
     };
     // A rare tower in a dense core.
-    if footprint.kind.is_none()
+    if whole
+        && footprint.kind.is_none()
         && data.is_none()
         && kind == Kind::Block
         && density > 0.5
@@ -481,8 +523,18 @@ pub fn plan_building(
         }
         walls_m = walls_m.min(cap);
     }
+    // A part from its base up: none at all where it would start at its top (over the period's cap).
+    let base = footprint.part.map_or(0.0, |p| p.base);
+    if base > 0.0 && walls_m < base + 1.0 {
+        return None;
+    }
     let storey_m = storey_height(kind);
-    let storeys = storeys_of(walls_m, storey_m);
+    // A part too narrow for a room (a mast, a spire): plain walls, its window rows ending below it.
+    let storeys = if !whole && short < 4.0 {
+        1
+    } else {
+        storeys_of(walls_m, storey_m)
+    };
     let mut extras = Vec::new();
     let mut detail = h(17) < detail_share(region, kind);
     // No curtain wall in the period: an office of the time is masonry.
@@ -560,7 +612,10 @@ pub fn plan_building(
         }
         Kind::Industrial | Kind::Warehouse => {
             let rect_like = rectangular > 0.8;
-            let roof = if kind == Kind::Industrial
+            // A part under a flat top, as any part's: no roof over its mapped top, nor into the part standing on it.
+            let roof = if !whole {
+                Roof::Flat
+            } else if kind == Kind::Industrial
                 && rect_like
                 && short >= 14.0
                 && long >= 20.0
@@ -580,7 +635,7 @@ pub fn plan_building(
                 Roof::Flat
             };
             // A factory's chimneys (on the map's industrial land only): one or two through its roof near an end.
-            if kind == Kind::Industrial && industrial && area >= 900.0 && h(15) < 0.35 {
+            if whole && kind == Kind::Industrial && industrial && area >= 900.0 && h(15) < 0.35 {
                 let n = if h(16) < 0.35 { 2 } else { 1 };
                 let top = walls_m + 15.0 + 30.0 * h(25);
                 let side = if h(26) < 0.5 { -1.0 } else { 1.0 };
@@ -621,7 +676,8 @@ pub fn plan_building(
                 && short <= 22.0
                 && storeys <= 6
                 && h(28) < rules.block;
-            if small || block {
+            // A part under a flat top: the parts above stand on it.
+            if whole && (small || block) {
                 // A house of a terrace (one narrow footprint of a row: no longer than 18 m, a quarter longer than
                 // wide) has its ridge across its width, along the street, so the row's roofs run on as one.
                 let across = kind == Kind::Terrace
@@ -678,6 +734,7 @@ pub fn plan_building(
         roof,
         ground: [lo, mean, hi],
         height: height.max(2.2),
+        base,
         storeys,
         storey_m,
         wall,
@@ -818,6 +875,7 @@ fn church(
                 | Region::Nile => 20.0 + 8.0 * h(43),
                 Region::Tropical
                 | Region::EastAsia
+                | Region::Taiwan
                 | Region::Florida
                 | Region::Hawaii
                 | Region::Micronesia
@@ -919,7 +977,7 @@ fn church(
         _ => {
             // A synagogue, temple or the rest: a hipped roof, no tower (an East Asian temple's or shrine's steeper).
             let (body, roof) = if rect_like {
-                let pitch: f32 = if region == Region::EastAsia {
+                let pitch: f32 = if matches!(region, Region::EastAsia | Region::Taiwan) {
                     36.0 + 6.0 * h(43)
                 } else {
                     30.0
@@ -961,8 +1019,13 @@ pub fn bay_m(kind: Kind) -> f32 {
     }
 }
 
+/// The most window rows a building's walls hold (the vertex's snorm8): 457 m of offices' storeys, 394 m of flats'.
+pub const MAX_STOREYS: u8 = 127;
+
 fn storeys_of(height: f32, storey_m: f32) -> u8 {
-    (height / storey_m).round().clamp(1.0, 120.0) as u8
+    (height / storey_m)
+        .round()
+        .clamp(1.0, f32::from(MAX_STOREYS)) as u8
 }
 
 /// A building's kind and storeys without a measured height: from its area, its elongation (long over short side), the
@@ -1033,6 +1096,10 @@ pub fn estimate(
             Region::Atoll => (Kind::House, if t < 0.92 { 1 } else { 2 }),
             // Ranch houses of one storey, two-storey houses; townhouses only where the ground is built over.
             Region::West if density < 0.5 => (Kind::House, if t < 0.6 { 1 } else { 2 }),
+            // Taiwan's townhouses (透天厝, 街屋), narrow and deep in their rows: four and five storeys wherever the
+            // ground is built over, three and four about the towns.
+            Region::Taiwan if density > 0.3 => (Kind::Terrace, up(4, 1)),
+            Region::Taiwan => (Kind::Terrace, up(3, 1)),
             // Small houses close together: two storeys, now and then one or three.
             Region::EastAsia => (
                 Kind::House,
@@ -1101,6 +1168,49 @@ pub fn estimate(
         Region::Atoll if area < 1300.0 => {
             return if t < 0.7 { (Kind::House, 1) } else { block(2) };
         }
+        // Taiwan's walk-ups (公寓) and rows of townhouses of four and five storeys where the ground is built over (a
+        // row's outline, long for its depth, its townhouses), three and four about the towns; shops in their ground
+        // floors on commercial land, not offices.
+        Region::Taiwan if area < 1300.0 => {
+            return if density <= 0.3 {
+                (Kind::Terrace, up(3, 1))
+            } else if elongation > 1.8 {
+                (Kind::Terrace, up(4, 1))
+            } else {
+                (Kind::Block, up(4, 1))
+            };
+        }
+        // A long row's outline its townhouses; a school's wings.
+        Region::Taiwan if elongation > 3.0 && usage != Usage::Civic => {
+            return (
+                Kind::Terrace,
+                if density > 0.3 { up(4, 1) } else { up(3, 1) },
+            );
+        }
+        // Taiwan's towers (大樓) of 12 to 25 storeys where the ground is built over (and about a residential
+        // district's edge), shops below and flats above; an office tower on a large commercial footprint.
+        Region::Taiwan
+            if area < 4000.0
+                && elongation < 2.5
+                && (density > 0.3 || (usage == Usage::Residential && density > 0.15)) =>
+        {
+            let storeys = up(12, 13);
+            return if commercial && area >= 2500.0 {
+                (Kind::Office, storeys)
+            } else {
+                (Kind::Tower, storeys)
+            };
+        }
+        // A market's, a department store's or an estate's block of five to eight under one outline; a school, an
+        // estate's walk-ups; a village's factories and stores.
+        Region::Taiwan if density > 0.3 => return block(up(5, 3).min(MAX_ESTIMATED_STOREYS)),
+        Region::Taiwan => {
+            return match usage {
+                Usage::Residential | Usage::Civic => (Kind::Block, up(3, 2)),
+                Usage::Commercial => (Kind::Warehouse, 2),
+                _ => (Kind::Industrial, 2),
+            };
+        }
         Region::EastAsia if area < 1300.0 => {
             return if density > 0.3 {
                 block(up(3, 3))
@@ -1162,7 +1272,8 @@ impl DensityGrid {
         let side = CHUNK_M as f32 / cells as f32;
         let mut built = vec![0f32; cells * cells];
         for f in footprints {
-            if f.ring.len() < 3 {
+            // A raised part stands over ground its building's other parts already cover.
+            if f.ring.len() < 3 || f.raised() {
                 continue;
             }
             let c = geometry::centroid(&f.ring);
@@ -1241,6 +1352,132 @@ mod tests {
             poi: Some(poi),
             ..Setting::default()
         }
+    }
+
+    #[test]
+    fn the_tallest_towers_keep_their_heights() {
+        let ground = |_: [f32; 2]| 5.0;
+        let plan = |height: f32| {
+            let tower = Footprint {
+                height: Some(height),
+                ..square(400.0, 400.0, 60.0)
+            };
+            plan_building(
+                &tower,
+                [0, 0],
+                0.6,
+                Region::Temperate,
+                Period::Today,
+                &on(Usage::Commercial),
+                &ground,
+            )
+            .unwrap()
+        };
+        // Taipei 101's roof and spire, and the Burj Khalifa's 828 m: taken; past the tallest, estimated.
+        for height in [449.0, 508.0, 828.0] {
+            let b = plan(height);
+            assert_eq!((b.kind, b.height), (Kind::Office, height));
+            assert!(b.storeys <= MAX_STOREYS);
+        }
+        assert!(plan(900.0).height < 100.0);
+        // A storey of offices' window rows for each of its 449 m.
+        assert_eq!(plan(449.0).storeys, 125);
+    }
+
+    #[test]
+    fn a_part_takes_its_building_s_hashes_and_ground_and_stands_from_its_base() {
+        let ground = |p: [f32; 2]| 5.0 + 0.1 * (p[0] - 400.0);
+        let part = |x: f32, side: f32, base: f32, top: f32| Footprint {
+            height: Some(top),
+            part: Some(Part {
+                base,
+                middle: [420.0, 420.0],
+            }),
+            ..square(x, x, side)
+        };
+        let plan = |f: &Footprint| {
+            plan_building(
+                f,
+                [0, 0],
+                0.6,
+                Region::Temperate,
+                Period::Today,
+                &with_poi(PoiKind::Worship(Religion::Christian)),
+                &ground,
+            )
+            .unwrap()
+        };
+        let shaft = plan(&part(400.0, 40.0, 0.0, 120.0));
+        let crown = plan(&part(410.0, 20.0, 120.0, 160.0));
+        // Not a church's made tower on each part: as mapped, under a flat top.
+        assert_eq!((shaft.kind, crown.kind), (Kind::Tower, Kind::Tower));
+        assert!(shaft.extras.is_empty() && crown.extras.is_empty());
+        assert_eq!(crown.roof, Roof::Flat);
+        assert_eq!(
+            (shaft.wall, shaft.seed, shaft.bay, shaft.ground[1]),
+            (crown.wall, crown.seed, crown.bay, crown.ground[1])
+        );
+        assert_eq!(shaft.ground[1], ground([420.0, 420.0]));
+        assert_eq!((shaft.base, crown.base), (0.0, 120.0));
+        // A mast too narrow for rooms: no window rows up it. A part over the period's cap: none of it.
+        assert_eq!(plan(&part(419.0, 2.0, 160.0, 200.0)).storeys, 1);
+        let capped = Setting {
+            cap: Some(100.0),
+            ..Setting::default()
+        };
+        let then = |f: &Footprint| {
+            plan_building(
+                f,
+                [0, 0],
+                0.6,
+                Region::Temperate,
+                Period::Year(1942),
+                &capped,
+                &ground,
+            )
+        };
+        assert!(then(&part(410.0, 20.0, 120.0, 160.0)).is_none());
+        assert_eq!(then(&part(400.0, 40.0, 0.0, 120.0)).unwrap().height, 100.0);
+    }
+
+    #[test]
+    fn an_industrial_part_stands_under_a_flat_top() {
+        // A 20 by 40 m part of a works from 10 to 15 m: its top at 15 m as mapped, no gable over it into a part above.
+        let ground = |_: [f32; 2]| 5.0;
+        let part = Footprint {
+            height: Some(15.0),
+            part: Some(Part {
+                base: 10.0,
+                middle: [410.0, 420.0],
+            }),
+            ..rect(400.0, 400.0, 20.0, 40.0)
+        };
+        let plan = |f: &Footprint| {
+            plan_building(
+                f,
+                [0, 0],
+                0.6,
+                Region::Temperate,
+                Period::Today,
+                &on(Usage::Industrial),
+                &ground,
+            )
+            .unwrap()
+        };
+        let b = plan(&part);
+        assert_eq!(b.kind, Kind::Warehouse);
+        assert_eq!((b.roof, b.height, b.base), (Roof::Flat, 15.0, 10.0));
+        // The same footprint whole, on the ground: a warehouse's gable.
+        let whole = plan(&Footprint {
+            part: None,
+            ..part.clone()
+        });
+        assert_eq!(whole.kind, Kind::Warehouse);
+        assert!(
+            matches!(whole.roof, Roof::Gabled { .. }),
+            "{:?}",
+            whole.roof
+        );
     }
 
     #[test]
@@ -1859,6 +2096,95 @@ mod tests {
             seeds.len()
         );
         assert!(med.iter().any(|b| b.detail) && med.iter().any(|b| !b.detail));
+    }
+
+    #[test]
+    fn taiwans_estimates_are_townhouses_walk_ups_and_towers() {
+        let est = |area: f32, elongation: f32, density: f32, usage: Usage| {
+            (0..40)
+                .map(|k| {
+                    estimate(
+                        area,
+                        elongation,
+                        density,
+                        k as f32 / 40.0,
+                        Region::Taiwan,
+                        usage,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let homes = Usage::Residential;
+        // A dense street's footprints: townhouses and walk-ups of four and five storeys, both heights seen.
+        for (area, elongation) in [(80.0, 2.5), (150.0, 1.4), (400.0, 1.3), (700.0, 2.4)] {
+            let all = est(area, elongation, 0.45, homes);
+            assert!(
+                all.iter()
+                    .all(|(k, s)| matches!(k, Kind::Terrace | Kind::Block) && (4..=5).contains(s)),
+                "{area} {all:?}"
+            );
+            assert!(all.iter().any(|b| b.1 == 4) && all.iter().any(|b| b.1 == 5));
+        }
+        // Thinner ground: three and four.
+        assert!(
+            est(100.0, 2.0, 0.2, homes)
+                .iter()
+                .all(|(k, s)| *k == Kind::Terrace && (3..=4).contains(s))
+        );
+        // Over 1,300 m² where it is built over: towers of 12 to 25, offices on commercial land.
+        let towers = est(1800.0, 1.5, 0.45, homes);
+        assert!(
+            towers
+                .iter()
+                .all(|(k, s)| *k == Kind::Tower && (12..=25).contains(s)),
+            "{towers:?}"
+        );
+        assert!(towers.iter().any(|b| b.1 <= 14) && towers.iter().any(|b| b.1 >= 23));
+        assert!(
+            est(2500.0, 1.5, 0.5, Usage::Commercial)
+                .iter()
+                .all(|(k, s)| *k == Kind::Office && *s >= 12)
+        );
+        // A shophouse walk-up on commercial land, not an office; a market's or an estate's whole block under one
+        // outline five to eight, not a tower.
+        assert!(
+            est(500.0, 1.3, 0.45, Usage::Commercial)
+                .iter()
+                .all(|(k, _)| *k == Kind::Block)
+        );
+        assert!(
+            est(6000.0, 1.5, 0.5, homes)
+                .iter()
+                .all(|(k, s)| *k == Kind::Block && (5..=8).contains(s))
+        );
+        // A long row's outline its townhouses, an industrial estate's sheds, a village's factory.
+        assert!(
+            est(1500.0, 5.0, 0.45, homes)
+                .iter()
+                .all(|(k, s)| *k == Kind::Terrace && (4..=5).contains(s))
+        );
+        assert!(
+            est(1500.0, 1.5, 0.45, Usage::Industrial)
+                .iter()
+                .all(|(k, _)| *k != Kind::Tower)
+        );
+        assert!(
+            est(1600.0, 1.5, 0.08, Usage::Unknown)
+                .iter()
+                .all(|(k, s)| *k == Kind::Industrial && *s == 2)
+        );
+        // No detached house anywhere Taiwan's estimate reaches; East Asia's as it was.
+        for density in [0.05, 0.2, 0.4, 0.7] {
+            assert!(
+                est(150.0, 1.4, density, homes)
+                    .iter()
+                    .all(|(k, _)| *k != Kind::House)
+            );
+        }
+        assert_eq!(
+            estimate(150.0, 1.4, 0.45, 0.5, Region::EastAsia, homes),
+            (Kind::House, 2)
+        );
     }
 
     #[test]

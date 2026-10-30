@@ -18,6 +18,7 @@ use naval_render::{
 };
 use naval_sky::Sky;
 
+use crate::glow::{GlowLight, GlowPass, GroundGlow};
 use crate::gpu;
 use crate::layer::CloudShadow;
 use crate::shaders;
@@ -37,6 +38,7 @@ struct AerialUniforms {
 #[derive(Clone, Copy, Debug)]
 pub struct AerialPipelines {
     pass: PipelineId,
+    glow: PipelineId,
 }
 
 /// The aerial-perspective pass.
@@ -51,6 +53,10 @@ pub struct AerialPerspective {
     pipeline: Option<wgpu::ComputePipeline>,
     /// Group 0 over the renderer's volume (its textures never change).
     group: Option<wgpu::BindGroup>,
+    /// The towns' light in the air (`crate::glow`), laid before the environment's bake and the pass.
+    glow: GlowPass,
+    /// The host's lit map of the land and how it burns this frame ([`crate::GameSky::set_ground_glow`]).
+    pub(crate) ground_glow: Option<(GroundGlow, GlowLight)>,
 }
 
 fn pass_layouts(
@@ -98,6 +104,22 @@ impl AerialPerspective {
             let refs: Vec<Option<&wgpu::BindGroupLayout>> = all.iter().map(Some).collect();
             gpu::compute_pipeline(device, "aerial perspective", &module, "aerial_main", &refs)
         });
+        let mut glow = GlowPass::new(device);
+        glow.pipeline = make.is_now().then(|| {
+            let module = shaders::shader_module(
+                device,
+                shaders::GLOW_FIELD_WGSL,
+                shaders::GLOW_FIELD_PATH,
+                &[],
+            );
+            gpu::compute_pipeline(
+                device,
+                "ground glow",
+                &module,
+                "glow_main",
+                &[Some(&glow.layout)],
+            )
+        });
         Self {
             enabled: true,
             buffer,
@@ -105,6 +127,8 @@ impl AerialPerspective {
             layouts,
             pipeline,
             group: None,
+            glow,
+            ground_glow: None,
         }
     }
 
@@ -119,17 +143,45 @@ impl AerialPerspective {
             Vec::new(),
             naval_render::compute_recipe(pass_layouts(&self.layout, &self.layouts), "aerial_main"),
         )?;
-        Ok(AerialPipelines { pass })
+        let glow = ctx.add_pipeline(
+            "ground glow",
+            shaders::GLOW_FIELD_PATH,
+            Vec::new(),
+            naval_render::compute_recipe(vec![self.glow.layout.clone()], "glow_main"),
+        )?;
+        Ok(AerialPipelines { pass, glow })
     }
 
-    /// Takes the registry's current pipeline; whether it changed.
+    /// Takes the registry's current pipelines; whether either changed.
     pub fn adopt_pipelines(&mut self, registry: &PipelineRegistry, ids: &AerialPipelines) -> bool {
+        let mut changed = false;
+        let glow = registry.compute(ids.glow);
+        if self.glow.pipeline.as_ref() != Some(glow) {
+            // A rebuilt pass (a hot reload) lays the field again.
+            self.glow.pipeline = Some(glow.clone());
+            self.glow.lay_again();
+            changed = true;
+        }
         let new = registry.compute(ids.pass);
         if self.pipeline.as_ref() != Some(new) {
             self.pipeline = Some(new.clone());
-            return true;
+            changed = true;
         }
-        false
+        changed
+    }
+
+    /// The towns' light in the air (`crate::glow`): its header, and its field when the map or the air moved. Before
+    /// the environment's bake, which reads it as [`AerialPerspective::encode`] and the clouds' march do.
+    pub(crate) fn encode_glow(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &mut naval_render::UploadSink<'_>,
+        encoder: &mut wgpu::CommandEncoder,
+        sky: &Sky,
+        timer: Option<&GpuTimer>,
+    ) {
+        let glow = self.ground_glow.as_ref().map(|(map, light)| (map, *light));
+        self.glow.encode(device, queue, encoder, sky, glow, timer);
     }
 
     /// Fills `volume` for `camera` (the frame's, as the materials draw with it), then copies it into the sky's group

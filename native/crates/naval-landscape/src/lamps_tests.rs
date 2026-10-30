@@ -145,6 +145,28 @@ fn each_region_its_palette_and_each_road_its_lamp() {
         }),
         LampPalette::White
     );
+    // Taiwan's LEDs: Taipei, Kaohsiung, Magong on Penghu, Kinmen's Jincheng, Matsu's Nangan; Xiamen across the strait
+    // and Fujian's Nanri island (within Taiwan's box) sodium.
+    for (lat, lon) in [
+        (25.03, 121.56),
+        (22.62, 120.30),
+        (23.57, 119.58),
+        (24.43, 118.32),
+        (26.16, 119.95),
+    ] {
+        assert_eq!(
+            palette_at(LatLon { lat, lon }),
+            LampPalette::White,
+            "{lat}, {lon}"
+        );
+    }
+    for (lat, lon) in [(24.48, 118.09), (25.22, 119.48)] {
+        assert_eq!(
+            palette_at(LatLon { lat, lon }),
+            LampPalette::Sodium,
+            "{lat}, {lon}"
+        );
+    }
     assert_eq!(
         palette_at(LatLon {
             lat: 33.7,

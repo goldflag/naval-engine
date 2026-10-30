@@ -8,7 +8,7 @@
 
 #import naval_clouds::common::{clouds, shadow_length_a, shadow_length_b, world_to_planet, ray_sphere_second, RECIPROCAL_PI4}
 #import naval_clouds::field::{ColumnAbove, sample_weather, sample_media, weather_uv, column_above, any_deck}
-#import naval_clouds::march::{frame_light, clouds_sun_sky_irradiance, ray_light, sun_scattering, sky_light, apply_aerial_perspective, ray_spheres, ray_intersects_ground}
+#import naval_clouds::march::{frame_light, clouds_sun_sky_irradiance, ray_light, sun_scattering, sky_light, apply_aerial_perspective, ray_spheres, ray_intersects_ground, town_light_from_below}
 
 // Kilometres of the view ray through `pixel` (the dome's fragment position) that the clouds' shadow covers, 0 without
 // light shafts.
@@ -158,6 +158,7 @@ fn clouds_bake(origin: vec3<f32>, direction: vec3<f32>, through: f32) -> vec4<f3
         }
         var source = irradiance.sun * sun_scattering(toward_sun, opacity, 1.0 - column.closed, media, ray);
         source += sky_light(irradiance, weather, media, column, normalize(lit)) * RECIPROCAL_PI4 * clouds.scattering.x;
+        source += town_light_from_below(lit, lit_height, weather);
         source *= media.scattering;
         radiance += transmittance * (source - source * step_transmittance) / max(media.extinction, 1e-7);
         transmittance *= step_transmittance;

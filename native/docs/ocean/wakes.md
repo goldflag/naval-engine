@@ -164,8 +164,9 @@ local) halves the rings' height in 21 s, far faster than water's viscosity would
 over 12 m) times the fastest nearby hull's speed share, so a strike's rings passing a fast hull would have turned
 white for 200 m. Each impulse opens a ring train instead (up to 16, the newest kept): its footprint grown at √(gR/2),
 the group speed of the waves at k = 1/(2R), for 20 s after it last acts, fading over the last 5 s; inside it the hulls'
-breaking is not taken, and the strike's own white water (laid over the crater, decaying over the field's 9 s and
-spreading 3 m²/s) is the rings' breaking. A hull's shoulder foam near a fresh splash fades for those seconds. Since
+breaking is not taken. A strike lays no white water on the field: its white water is a deposit
+([foam.md](foam.md)), a round's its splash's, a charge's as wide as its gas bubble (a torpedo's warhead 1.4 times a 38 cm
+round's splash, a magazine's 2.4), laid on every tier. A hull's shoulder foam near a fresh splash fades for those seconds. Since
 2026-10-10 the threshold is taken only along the hulls' own sides, so rings outliving their train never break either
 ("Where the hulls' waves break" above).
 
@@ -227,8 +228,8 @@ are less certain than explosions'. No mine events exist in naval-sim.
 
 ## Trails
 
-`src/trail.rs` (`WakeFoam`) samples each hull's course every 3 m of travel and paints her churned band, her slick and
-the splashes' patches into an 8 × 8 tile atlas, each tile's painted boxes in the `Wake` uniform (`src/stamps.rs`,
+`src/trail.rs` (`WakeFoam`) samples each hull's course every 3 m of travel and paints her churned band and her slick
+into an 8 × 8 tile atlas, each tile's painted boxes in the `Wake` uniform (`src/stamps.rs`,
 `shaders/stamps.wgsl`: texel-aligned instanced quads, `max` blending). The surface reads it in `wake.wgsl`
 (`wake_surface`: the normal, foam, bubbles and the slick, which stills each cascade's short waves through
 `WaveUniforms::slick_shares`).
@@ -247,7 +248,7 @@ along each edge, over turquoise water lit by the bubble cloud, and a faint line 
 Native-only changes:
 
 - **Where a point lies across its band.** Each band stamp records its centre's offset from the band's centreline and its
-  half-width there (`Stamp::across`; `NO_BAND` for splash rings and torpedo tracks), and paints how central each point
+  half-width there (`Stamp::across`; `NO_BAND` for torpedo tracks and oil), and paints how central each point
   is into the atlas's blue (churned water) or alpha (slick), now `Rgba8Unorm` (`stamps.wgsl`, `TRACK_RANGE`,
   `TRACK_ZERO`). Stamps write it past their extent (a quarter of it, and at least 4.5 m and a texel since 2026-10-05) so
   it holds to the band's edge. Every stamp of a band agrees on it at a point; where bands overlap (a ship crossing her
@@ -278,8 +279,6 @@ Since (2026-10-04), against renders where the wake was a saturated teal band wit
   0.3) and the outline wanders ±40 % at two scales. Old churned water is sparser lace (0.62 cover, 0.55 opaque).
 - **Pale turquoise close astern only**: the bubble cloud thins from 0.3 of the half-width to the edge and keeps 40 % of
   itself once the water is old; the cloud's colour is paler (`foam.wgsl` `BUBBLE_PATH` 2.6 m).
-- **Splash patches** (no band) are dense white water only above 0.7 turbulence (`SPLASH_YOUNG`); elsewhere lace (since
-  2026-10-08 a soft patch, not a ring: "A splash's patch" below).
 - **The waterline**: the surface's shoreline foam, which drew a crisp white stripe along every hull, mostly gives way
   beside a hull to `hull_foam` ([foam.md](foam.md), "Foam shading").
 
@@ -316,13 +315,9 @@ battle starts, or after a jump of over 100 m; the [stand-in ship](../afloat.md)'
   (`trail::tests::the_slick_fades_in_where_her_trail_starts`, `a_later_pass_over_her_start_lays_a_new_slick`). Each
   stamp's quad is 80 bytes (was 64).
 
-**A splash's patch** (`trail.rs` impacts, `wake.wgsl`): a splash stamps one soft disc that spreads to about
-33 m × scale in 6 s and keeps growing slowly, its strength falling from about 0.9 to 0.45 in the first seconds and out
-between 6 s and 30 s (`IMPACT_LIFETIME`), and a brighter front ring for the first 10 s (the base surge). The shader
-keeps a splash's energy smooth, mottled broadly over 2.8 eddy lengths (never below 0.3 of its cover), and lets the
-surface's foam texture tear it into lace (`churned_water`), so the patch thins as it fades instead of being cut along
-the eddies. Dense white water only under the column's first second or two (`SPLASH_YOUNG`). Seen low across the sea it
-is the bright ellipse under a splash column.
+**Splashes** paint nothing into the trails' atlas: each leaves a deposit of its own (`src/splash_foam.rs`), carried by
+the drift. Within the foam field's window the field lays and carries a splash's foam and a stern's, and its foam takes
+the trails' place; beyond it the surface draws both itself ([foam.md](foam.md), "The foam wakes and splashes leave").
 
 ## Torpedo tracks
 
@@ -358,9 +353,11 @@ so the wakes take no group of their own. They join the surface's group 1 at bind
 | 9 | trail atlas (`Rgba8Unorm`, 2,048² on High: churned water in red, slick in green, where each lies across its band in blue and alpha) | fragment |
 | 10 | torpedo field (`R8Unorm`, 1,024²) | fragment |
 | 16 | oil atlas (`Rg8Unorm`, 1,536², since 2026-10-20: each leaking hull's oil film on a fine and a wide square; read by the surface's `OIL` variant alone, [oil.md](oil.md)) | fragment |
+| 18 | the foam field's two states (`Rgba16Float` array: 1,024² on High and Ultra, 512² on Medium, a calm texel on Low; [foam.md](foam.md)) | fragment |
 
 Since 2026-10-20 the `Wake` uniform also carries the oil slicks' rows after the contact foam's (40,560 bytes in all;
-40,688 with the stern's waves, [bow-waves.md](bow-waves.md)).
+40,688 with the stern's waves, [bow-waves.md](bow-waves.md)), then the splashes' deposits (64, two vec4s each) and the
+foam field's state and window (three vec4s).
 
 One packed uniform, as the web packs its arrays with `PackedVec4Arrays`, keeps the surface at 5 uniform buffers, 11
 sampled textures and 4 samplers per stage, well inside the defaults. `OceanSurface::set_wake` binds a `ShipWake` (or a
@@ -381,6 +378,8 @@ Apple M5 Pro, Metal, 2026-09-30, load average 85–100 all day (other agents' bu
 - **Surface shading of the wakes**: below the noise of serialised whole frames (2.9–3.0 ms at 1600 × 900 with and
   without the wakes bound, 150 interleaved frames each); the sampler exits early outside the trails' boxes and the bow
   wave and contact foam reaches. Measure again on a quiet machine before budgeting.
+- **Foam field** ([foam.md](foam.md)): two dispatches over its cells a step (1,024² on High), at most six a frame,
+  timed by the GPU timer as `ocean foam step`; not yet measured.
 - **CPU wake update** (trails, torpedo tracks, bow waves, contact foam, packing): a 941-frame replay of 90 s takes about
   1 s including every frame's GPU submission.
 
@@ -388,7 +387,7 @@ Apple M5 Pro, Metal, 2026-09-30, load average 85–100 all day (other agents' bu
 
 `naval-ocean`: `wake::kernel` (the pyramid sums to zero, follows |k| within 4 % from 6 to 12 × 2^levels cells, stays
 positive, matches a CPU reduce/collapse), `wake::generators`, `trail`, `torpedo_tracks`, `bow_waves`, `hull_profile`,
-every shader composes and validates, and `tests/wake.rs` (the GPU field against the web's diagnostic figures, the
+`foam_sim`, `splash_foam`, every shader composes and validates, and `tests/wake.rs` (the GPU field against the web's diagnostic figures, the
 strikes' rings, the field across a change of view). `naval-water-effects`' `tests/fixture_playback.rs` drives the
 trails, tracks, bow waves and contact foam from 100 s of a recorded battle twice with identical results.
 

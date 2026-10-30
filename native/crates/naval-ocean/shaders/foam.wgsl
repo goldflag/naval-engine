@@ -368,11 +368,14 @@ struct Churned {
 // The realistic wake's churned water from its sampler's foam `energy` and how `young` it is: behind the stern the same
 // dense, billowing white water as a whitecap's core, over the cover the sampler's eddies and ramp give it
 // (`churnedWater`); older, the streaks it leaves are lace, thinner and see-through.
-fn churned_water(energy: f32, young: f32, pattern: vec4<f32>, blur: f32) -> Churned {
+fn churned_water(energy: f32, young: f32, mass: f32, pattern: vec4<f32>, blur: f32) -> Churned {
     let cover = smoothstep(CHURN_START, CHURN_FULL, energy);
     // Where the churned water thins toward its edge it is thinner foam too, not the same white cut shorter.
     let body = mix(CHURN_THIN, 1.0, smoothstep(0.2, 0.85, energy));
-    let dense = foam_share(cover * CHURN_DENSE_COVER, pattern.r, blur, CHURN_EDGE) * dense_opacity(pattern.a, blur) * body;
+    // Its dense white water covers CHURN_DENSE_COVER of the lace; where it is one mass (`mass`), all of it, at full
+    // opacity.
+    let dense = foam_share(cover * mix(CHURN_DENSE_COVER, 1.0, mass), pattern.r, blur, CHURN_EDGE)
+        * mix(dense_opacity(pattern.a, blur), DENSE_OPACITY, mass) * body;
     let lace = foam_share(cover * CHURN_LACE_COVER, pattern.r, blur, CHURN_EDGE) * CHURN_LACE_OPACITY * body;
     return Churned(mix(lace, dense, young), cover * young);
 }
@@ -478,4 +481,43 @@ fn foam_sparkle(xz: vec2<f32>, size: f32, time: f32) -> f32 {
 // never darker than the water it covers without glints.
 fn foam_over(sea: vec3<f32>, water: vec3<f32>, foam: vec3<f32>, mirrored: vec3<f32>, reflectance: f32, opacity: f32) -> vec3<f32> {
     return mix(sea, max(mix(foam, mirrored, reflectance * FOAM_GLOSS), water), clamp(opacity, 0.0, 1.0));
+}
+
+// ---- The foam texture hex-tiled ------------------------------------------------------------------------------------
+// A wake's foam reads the foam texture through three copies of it laid on a grid of triangles HEX_CELL
+// tiles across, each copy shifted at random, blended toward the copy nearest its own corner and toward the one with
+// the most lace (HEX_SHARPNESS, HEX_LACE): its 40 m tile never shows as a repeat. Hex-tiling after Mikkelsen 2022
+// ("Practical Real-Time Hex-Tiling", JCGT 11(2)), written here from its description.
+const HEX_CELL: f32 = 0.45;
+const HEX_SHARPNESS: f32 = 7.0;
+const HEX_LACE: f32 = 0.6;
+
+// The lace's layout at grid point `xz` (`foam_patterns`' own), in tiles.
+fn lace_layout(xz: vec2<f32>, wind: f32, stretch: f32) -> vec2<f32> {
+    return foam_layout(xz, wind, stretch, FOAM_TILE);
+}
+
+fn hex_shift(corner: vec2<i32>) -> vec2<f32> {
+    let mixed = noise_seed(907u);
+    return vec2<f32>(noise_hash(corner.x, corner.y, mixed), noise_hash(corner.y, corner.x, mixed ^ 0x68e31da4u));
+}
+
+// The foam texture at `uv` (tiles) hex-tiled; `ddx`, `ddy` its derivatives, taken by the caller in uniform control flow.
+fn hex_foam(map: texture_2d<f32>, map_sampler: sampler, uv: vec2<f32>, ddx: vec2<f32>, ddy: vec2<f32>) -> vec4<f32> {
+    // The plane skewed onto the lattice of equilateral triangles, and the triangle's corners and barycentric weights.
+    let p = uv / HEX_CELL;
+    let skewed = vec2<f32>(p.x - p.y * 0.57735027, p.y * 1.15470054);
+    let base = vec2<i32>(floor(skewed));
+    let f = fract(skewed);
+    let upper = f.x + f.y >= 1.0;
+    let first = base + select(vec2<i32>(0), vec2<i32>(1), upper);
+    let second = base + select(vec2<i32>(0, 1), vec2<i32>(1, 0), upper);
+    let third = base + select(vec2<i32>(1, 0), vec2<i32>(0, 1), upper);
+    let weights = select(vec3<f32>(1.0 - f.x - f.y, f.y, f.x), vec3<f32>(f.x + f.y - 1.0, 1.0 - f.y, 1.0 - f.x), upper);
+    let a = textureSampleGrad(map, map_sampler, uv + hex_shift(first), ddx, ddy);
+    let b = textureSampleGrad(map, map_sampler, uv + hex_shift(second), ddx, ddy);
+    let c = textureSampleGrad(map, map_sampler, uv + hex_shift(third), ddx, ddy);
+    var w = pow(max(weights, vec3<f32>(0.0)), vec3<f32>(HEX_SHARPNESS)) * mix(vec3<f32>(1.0), vec3<f32>(a.r, b.r, c.r) + 0.1, HEX_LACE);
+    w /= max(w.x + w.y + w.z, 1e-6);
+    return a * w.x + b * w.y + c * w.z;
 }

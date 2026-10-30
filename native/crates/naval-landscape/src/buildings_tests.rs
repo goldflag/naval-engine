@@ -411,21 +411,21 @@ fn a_far_chunk_stands_its_town_from_the_cover() {
         index,
         lod: Lod::Far,
     };
-    let (mesh, done) = far_mesh(&context, None, key([0, 0]));
+    let (mesh, done) = far_mesh(&context, None, key([0, 0]), &Clearing::default());
     assert!(done.tiles && !done.awaiting);
     assert!(mesh.masses.len() > 50, "{}", mesh.masses.len());
     assert!(mesh.vertices.is_empty());
-    let (none, _) = far_mesh(&context, None, key([1, 1]));
+    let (none, _) = far_mesh(&context, None, key([1, 1]), &Clearing::default());
     assert!(none.masses.is_empty());
     // Past the window's maps: none, and made again later.
-    let (out, done) = far_mesh(&context, None, key([5, 0]));
+    let (out, done) = far_mesh(&context, None, key([5, 0]), &Clearing::default());
     assert!(out.masses.is_empty() && !done.tiles);
     // In a past period with nothing known of its ground: none yet, and made again later.
     let past = Context {
         period: Period::Year(1942),
         ..context
     };
-    let (unknown, done) = far_mesh(&past, None, key([0, 0]));
+    let (unknown, done) = far_mesh(&past, None, key([0, 0]), &Clearing::default());
     assert!(unknown.masses.is_empty() && !done.tiles);
 }
 
@@ -519,6 +519,241 @@ fn built_up_cover_with_no_footprints_is_filled_in() {
     })];
     let held = chunk_mesh(&context, key, &stores, &[], None);
     assert_eq!(held.buildings, 100);
+}
+
+/// The tests handing the host's clear areas (one list for the whole program), one at a time.
+static CLEAR_AREAS: Mutex<()> = Mutex::new(());
+
+#[test]
+fn the_hosts_clear_areas_leave_no_building_at_any_level_and_remake_their_chunks() {
+    let _one = CLEAR_AREAS.lock().unwrap_or_else(|e| e.into_inner());
+    // Its own frame (no other test's chunks under its areas): the tropical town moved to 10° N, 10° E.
+    let geo = LatLon {
+        lat: 10.0,
+        lon: 10.0,
+    };
+    let context = Context {
+        geo,
+        ..tropical_town()
+    };
+    let key = |lod| ChunkKey { index: [0, 0], lod };
+    // A 10 m footprint in each 100 m cell.
+    let mut fps = Vec::new();
+    for j in 0..10 {
+        for i in 0..10 {
+            let (x, z) = (
+                f32::from(i as u8) * 100.0 + 40.0,
+                f32::from(j as u8) * 100.0 + 40.0,
+            );
+            fps.push(Footprint {
+                ring: vec![[x, z], [x + 10.0, z], [x + 10.0, z + 10.0], [x, z + 10.0]],
+                ..Footprint::default()
+            });
+        }
+    }
+    let stores = vec![Arc::new(QuadStore {
+        chunks: HashMap::from([([0, 0], fps)]),
+        footprints: 100,
+        covered: true,
+    })];
+    let none: Vec<Arc<QuadStore>> = Vec::new();
+    set_clear_areas(Vec::new());
+    let made = |lod| chunk_mesh(&context, key(lod), &stores, &[], None);
+    assert_eq!(made(Lod::Full).buildings, 100);
+    let infill = chunk_mesh(&context, key(Lod::Full), &none, &[], None);
+    let (far, _) = far_mesh(&context, None, key(Lod::Far), &clearing());
+    let made_then = Made {
+        mesh: Arc::new(infill.clone()),
+        complete: true,
+        at: Instant::now(),
+        awaiting: false,
+        epoch: split_epoch(),
+        answered: 0,
+        relief: 0,
+        cleared: clearing().signature(geo, [0, 0]),
+    };
+    assert!(!made_then.stale_for(&context, key(Lod::Full)));
+    // A circle 120 m about theatre (500, 500) and a square about (150, 850).
+    let at = |x: f64, z: f64| to_lat_lon(geo, [x, z]);
+    set_clear_areas(vec![
+        ClearArea::Circle {
+            middle: at(500.0, 500.0),
+            radius_m: 120.0,
+        },
+        ClearArea::Polygon(vec![
+            at(100.0, 800.0),
+            at(200.0, 800.0),
+            at(200.0, 900.0),
+            at(100.0, 900.0),
+        ]),
+    ]);
+    // The chunk under them is made again; one beyond is not.
+    assert!(made_then.stale_for(&context, key(Lod::Full)));
+    assert_eq!(clearing().signature(geo, [3, 3]), 0);
+    // The four footprints whose middles lie in the circle and the one in the square, at both levels.
+    assert_eq!(made(Lod::Full).buildings, 95);
+    assert_eq!(made(Lod::Box).buildings, 95);
+    // The infill leaves the areas empty: no wall or roof in them.
+    let filled = chunk_mesh(&context, key(Lod::Full), &none, &[], None);
+    assert!(filled.buildings < infill.buildings);
+    // Within them by more than a few metres (a far run is judged by its middle lot, its mass a little off it).
+    let inside = |p: [f32; 2]| {
+        (f64::from(p[0]) - 500.0).hypot(f64::from(p[1]) - 500.0) < 115.0
+            || ((105.0..195.0).contains(&p[0]) && (805.0..895.0).contains(&p[1]))
+    };
+    assert!(
+        infill
+            .vertices
+            .iter()
+            .any(|v| inside([v.position[0], v.position[2]]))
+    );
+    assert!(
+        !filled
+            .vertices
+            .iter()
+            .any(|v| inside([v.position[0], v.position[2]]))
+    );
+    // Nor a far mass.
+    let (thinned, _) = far_mesh(&context, None, key(Lod::Far), &clearing());
+    let middle = |m: &naval_terrain::buildings::far::Mass| m.at();
+    assert!(far.masses.iter().any(|m| inside(middle(m))));
+    assert!(thinned.masses.len() < far.masses.len());
+    let left: Vec<([f32; 2], bool)> = thinned
+        .masses
+        .iter()
+        .filter(|m| inside(middle(m)))
+        .map(|m| (m.at(), m.is_block()))
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+    // Taken away: as before, and made again.
+    set_clear_areas(Vec::new());
+    assert!(clear_areas().is_empty());
+    assert_eq!(made(Lod::Full).buildings, 100);
+    assert!(!made_then.stale_for(&context, key(Lod::Full)));
+}
+
+#[test]
+fn a_drawn_chunk_whose_mesh_left_the_cache_is_made_again_under_new_clear_areas() {
+    let _one = CLEAR_AREAS.lock().unwrap_or_else(|e| e.into_inner());
+    // Its own frame: the tropical town at 11° N, 10° E.
+    let geo = LatLon {
+        lat: 11.0,
+        lon: 10.0,
+    };
+    let context = Context {
+        geo,
+        ..tropical_town()
+    };
+    let key = ChunkKey {
+        index: [0, 0],
+        lod: Lod::Full,
+    };
+    set_clear_areas(Vec::new());
+    let made = Made {
+        mesh: Arc::new(ChunkMesh::default()),
+        complete: true,
+        at: Instant::now(),
+        awaiting: false,
+        epoch: split_epoch(),
+        answered: 0,
+        relief: context.relief_under(key),
+        cleared: clearing().signature(geo, key.index),
+    };
+    // Evicted from the cache while still drawn: what it was made on is kept, and an area handed over it makes it again.
+    let evicted = made.evicted();
+    assert!(!evicted.stale_for(&context, key));
+    set_clear_areas(vec![ClearArea::Circle {
+        middle: to_lat_lon(geo, [500.0, 500.0]),
+        radius_m: 50.0,
+    }]);
+    assert!(evicted.stale_for(&context, key));
+    // Not one beyond the area.
+    let beyond = ChunkKey {
+        index: [4, 4],
+        ..key
+    };
+    let quiet = Evicted {
+        relief: context.relief_under(beyond),
+        cleared: 0,
+    };
+    assert!(!quiet.stale_for(&context, beyond));
+    // Taken away again: as it was made.
+    set_clear_areas(Vec::new());
+    assert!(!evicted.stale_for(&context, key));
+}
+
+#[test]
+fn a_chunk_is_made_and_marked_under_one_reading_of_the_clear_areas() {
+    let _one = CLEAR_AREAS.lock().unwrap_or_else(|e| e.into_inner());
+    // Its own frame: the tropical town at 12° N, 10° E, a footprint at (500, 500).
+    let geo = LatLon {
+        lat: 12.0,
+        lon: 10.0,
+    };
+    let context = Context {
+        geo,
+        ..tropical_town()
+    };
+    let key = |lod| ChunkKey { index: [0, 0], lod };
+    let stores = vec![Arc::new(QuadStore {
+        chunks: HashMap::from([(
+            [0, 0],
+            vec![Footprint {
+                ring: vec![
+                    [495.0, 495.0],
+                    [505.0, 495.0],
+                    [505.0, 505.0],
+                    [495.0, 505.0],
+                ],
+                ..Footprint::default()
+            }],
+        )]),
+        footprints: 1,
+        covered: true,
+    })];
+    let circle = || {
+        vec![ClearArea::Circle {
+            middle: to_lat_lon(geo, [500.0, 500.0]),
+            radius_m: 120.0,
+        }]
+    };
+    // A batch begun with no areas; a circle over the footprint handed before it is made, and taken away before it is
+    // done. Made as begun, the footprint (and the infill about it) and the far masses stand, and the mesh is marked so.
+    set_clear_areas(Vec::new());
+    let begun = clearing();
+    set_clear_areas(circle());
+    let inside = |p: [f32; 2]| (f64::from(p[0]) - 500.0).hypot(f64::from(p[1]) - 500.0) < 100.0;
+    let made = |c: &Clearing| {
+        let mesh = chunk_mesh_under(&context, key(Lod::Full), &stores, &[], None, c);
+        let near = mesh
+            .vertices
+            .iter()
+            .any(|v| inside([v.position[0], v.position[2]]));
+        let (far, _) = far_mesh(&context, None, key(Lod::Far), c);
+        (near, mesh.buildings, far.masses.len())
+    };
+    let (stood, buildings, masses) = made(&begun);
+    assert!(stood);
+    let marked = Made {
+        mesh: Arc::new(ChunkMesh::default()),
+        complete: true,
+        at: Instant::now(),
+        awaiting: false,
+        epoch: split_epoch(),
+        answered: 0,
+        relief: context.relief_under(key(Lod::Full)),
+        cleared: begun.signature(geo, [0, 0]),
+    };
+    // Made again while the circle stands; right as it is once it is taken away.
+    assert!(marked.stale_for(&context, key(Lod::Full)));
+    let under = clearing();
+    set_clear_areas(Vec::new());
+    assert!(!marked.stale_for(&context, key(Lod::Full)));
+    // Made under the circle (whatever is handed since): the footprint, the infill and the masses in it gone.
+    let (near, fewer, fewer_masses) = made(&under);
+    assert!(!near);
+    assert!(fewer < buildings, "{fewer} {buildings}");
+    assert!(fewer_masses < masses, "{fewer_masses} {masses}");
 }
 
 #[test]
@@ -731,7 +966,7 @@ fn the_maps_tags_type_the_chunks_buildings() {
         rect(150.0, 150.0, 50.0, 30.0),
         rect(600.0, 600.0, 30.0, 14.0),
     ];
-    tags::merge_outlines(&mut footprints, &tags.outlines);
+    tags::merge_outlines(&mut footprints, &tags.outlines, &tags.outlines_about);
     assert_eq!(footprints.len(), 3);
     let mesh = build_chunk(&ChunkInput {
         key: ChunkKey {

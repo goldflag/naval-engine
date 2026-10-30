@@ -43,10 +43,10 @@ QUALITY = 85
 # an eye at a man's height (the forest floor and the fine sand, repeating every 2-3 m: a few millimetres a texel, as the
 # nearest ground's pixels are; the pack holds every layer at 1024² either way).
 MATERIALS = [
-    ("grass", "aerial_grass_rock", 1024),
-    ("dry-grass", "aerial_ground_rock", 1024),
+    ("grass", "grass_ground", 512),
+    ("dry-grass", "withered_grass", 512),
     ("soil", "farm_soil", 512),
-    ("scrub", "coast_sand_rocks_02", 1024),
+    ("scrub", "sparse_grass", 512),
     ("dry-scrub", "aerial_rocks_01", 1024),
     ("forest", "leaves_forest_ground", 1024),
     ("rock", "aerial_rocks_02", 1024),

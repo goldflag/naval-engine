@@ -410,6 +410,8 @@ impl World {
             ambient: ambient as f32,
             flash,
         });
+        // The towns' light in the sky at night (none by day, or with the land's lights out).
+        self.sky.set_ground_glow(self.terrain.ground_glow());
         if let Some(ships) = self.ships.as_mut() {
             ships.advance(
                 &self.sky,

@@ -14,7 +14,6 @@ pub const WAKE_EXTENT: f64 = 1536.0;
 /// Edge (m) of each trail's slick square: wide enough to hold minutes of a straight run.
 pub const SLICK_EXTENT: f64 = 4096.0;
 const LIFETIME: f64 = 90.0;
-const IMPACT_LIFETIME: f64 = 30.0;
 /// Age (s) from which the churned water fades out by [`LIFETIME`].
 const CHURN_FADE: f64 = 60.0;
 const SAMPLE_DISTANCE: f64 = 3.0;
@@ -177,17 +176,6 @@ struct WakeSample {
     slick_power: f64,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct Impact {
-    x: f64,
-    z: f64,
-    born: f64,
-    scale: f64,
-    right_x: f64,
-    right_z: f64,
-    aspect: f64,
-}
-
 /// One stamp: a max-coverage ellipse (or ring) in a channel, world metres.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Stamp {
@@ -201,8 +189,8 @@ pub struct Stamp {
     pub ring: bool,
     pub channel: u8,
     /// Where the stamp lies across the band it belongs to, in the band's half-widths: its centre's offset from the
-    /// band's centreline and its own half-width. [`NO_BAND`] for stamps that belong to no band (splash rings, torpedo
-    /// tracks).
+    /// band's centreline and its own half-width. [`NO_BAND`] for stamps that belong to no band (a torpedo's track,
+    /// an oil slick's).
     pub across: [f64; 2],
     /// How far behind her trail's start a slick stamp near it lies along her trail, in the fade's lengths from where it
     /// begins: at its centre and per its own half-length astern. A point reads as lying that much further off the
@@ -287,7 +275,6 @@ pub struct WakeFoam {
     /// Every sample laid, by index (the slick keeps a sparser record for longer than the churn).
     history: Vec<WakeSample>,
     first: usize,
-    impacts: std::collections::VecDeque<Impact>,
     previous: Option<Motion>,
     /// Where the hull stands while she lays her trail, and how fast she turns there (rad/s): the band's head, painted
     /// at every rasterisation so it keeps up with her stern between samples.
@@ -301,8 +288,7 @@ pub struct WakeFoam {
     dirty: bool,
     /// Moves on every rasterisation or reset (the web's `texture.version`).
     pub raster_version: u64,
-    /// A rasterisation's impacts and churn stamps, kept as working room between frames.
-    impact_room: Vec<Impact>,
+    /// A rasterisation's churn stamps, kept as working room between frames.
     stamp_room: Vec<Stamp>,
 }
 
@@ -322,7 +308,6 @@ impl WakeFoam {
             slick_samples: Default::default(),
             history: Vec::new(),
             first: 0,
-            impacts: Default::default(),
             previous: None,
             head: None,
             slick_start: true,
@@ -331,7 +316,6 @@ impl WakeFoam {
             elapsed: 0.0,
             dirty: false,
             raster_version: 0,
-            impact_room: Vec::new(),
             stamp_room: Vec::new(),
         }
     }
@@ -419,18 +403,9 @@ impl WakeFoam {
             self.slick_samples.pop_front();
             self.slick_start = false;
         }
-        while self
-            .impacts
-            .front()
-            .is_some_and(|i| self.time - i.born > IMPACT_LIFETIME)
-        {
-            self.impacts.pop_front();
-        }
         self.compact();
         let slick = !self.slick_samples.is_empty();
-        if self.elapsed < update_interval
-            || (self.samples.is_empty() && self.impacts.is_empty() && !slick && !self.dirty)
-        {
+        if self.elapsed < update_interval || (self.samples.is_empty() && !slick && !self.dirty) {
             return;
         }
         self.elapsed = if self.elapsed.is_finite() {
@@ -439,7 +414,7 @@ impl WakeFoam {
             0.0
         };
         self.rasterize(state);
-        self.dirty = !self.samples.is_empty() || !self.impacts.is_empty() || slick;
+        self.dirty = !self.samples.is_empty() || slick;
     }
 
     /// Drop history no slick sample refers to any more.
@@ -494,31 +469,6 @@ impl WakeFoam {
         }
     }
 
-    /// A shell splash's patch of foam and aerated water at world `x`, `z` for a shell of `caliber_m`.
-    pub fn splash(&mut self, x: f64, z: f64, caliber_m: f64) {
-        if self.impacts.len() >= 32 {
-            self.impacts.pop_front();
-        }
-        // A hash of the impact point, not a random stream: every trail paints the same patch for one splash.
-        let hash = ((x * 12.9898 + z * 78.233).sin() * 43758.5453).abs() % 1.0;
-        let turn = hash * std::f64::consts::TAU;
-        self.impacts.push_back(Impact {
-            x,
-            z,
-            born: self.time,
-            scale: (caliber_m.max(0.05) / 0.38).powf(0.65),
-            right_x: turn.cos(),
-            right_z: turn.sin(),
-            aspect: 1.0 + (hash * 7.31 % 1.0) * 0.22,
-        });
-        self.dirty = true;
-    }
-
-    pub fn reset_impacts(&mut self) {
-        self.impacts.clear();
-        self.dirty = true;
-    }
-
     fn translate(&mut self, offset: [f64; 2]) {
         // A sample's trail point too: the churned band and the slick are stamped there.
         let sample = |s: &mut WakeSample| {
@@ -529,10 +479,6 @@ impl WakeFoam {
         };
         self.samples.iter_mut().for_each(sample);
         self.history.iter_mut().for_each(sample);
-        for impact in &mut self.impacts {
-            impact.x += offset[0];
-            impact.z += offset[1];
-        }
         if let Some(previous) = &mut self.previous {
             previous.x += offset[0];
             previous.z += offset[1];
@@ -548,8 +494,8 @@ impl WakeFoam {
     }
 
     /// Carries the trail into a scene laid on another chart (a theatre's re-lay), each value by its kind: its points
-    /// (where a sample was laid, its trail point, a splash's patch, the hull's last and head poses) through their places,
-    /// its directions (a sample's forward, a patch's right) through the two charts' Jacobians where they are held, and
+    /// (where a sample was laid, its trail point, the hull's last and head poses) through their places, its directions
+    /// (a sample's forward) through the two charts' Jacobians where they are held, and
     /// the hull's headings through the turn between the two grids there.
     fn relay(&mut self, relay: &dyn naval_render::relay::SceneRelay) {
         let sample = |s: &mut WakeSample| {
@@ -560,12 +506,6 @@ impl WakeFoam {
         };
         self.samples.iter_mut().for_each(sample);
         self.history.iter_mut().for_each(sample);
-        for impact in &mut self.impacts {
-            let at = [impact.x, 0.0, impact.z];
-            [impact.right_x, impact.right_z] =
-                relay.direction(at, [impact.right_x, impact.right_z]);
-            [impact.x, impact.z] = relay.point2([impact.x, impact.z]);
-        }
         let motion = |m: &mut Motion| {
             let at = [m.x, 0.0, m.z];
             m.heading = relay.heading(at, m.heading);
@@ -588,7 +528,6 @@ impl WakeFoam {
         self.slick_samples.clear();
         self.history.clear();
         self.first = 0;
-        self.impacts.clear();
         self.previous = None;
         self.head = None;
         self.slick_start = true;
@@ -609,51 +548,6 @@ impl WakeFoam {
         self.frame_slick(state);
         self.collector.begin(self.origin, self.slick_origin);
         self.painted = [EMPTY; 2];
-        let now = self.time;
-        let mut impacts = std::mem::take(&mut self.impact_room);
-        impacts.clear();
-        impacts.extend(self.impacts.iter().copied());
-        for &impact in &impacts {
-            let age = now - impact.born;
-            let scale = impact.scale;
-            // Where the column stood the sea boils white, then spreads into a wide patch of aerated water and foam that
-            // thins as it goes (the surface reads it as lace and pale water, never a cut outline).
-            let patch = (8.0 + 26.0 * (1.0 - (-age / 3.0).exp()) + 0.4 * age) * scale;
-            let patching = smooth(age / 0.3)
-                * (0.45 + 0.5 * (-age / 2.5).exp())
-                * (1.0 - smooth((age - 6.0) / (IMPACT_LIFETIME - 6.0)));
-            // The base surge pushes a brighter front of foam out ahead of it for the first few seconds.
-            let front = (10.0 + 30.0 * (1.0 - (-age / 2.5).exp())) * scale;
-            let fronting = smooth(age / 0.3) * 0.7 * (1.0 - smooth((age - 2.0) / 8.0));
-            let (rx, rz, aspect) = (impact.right_x, impact.right_z, impact.aspect);
-            self.stamp(
-                impact.x,
-                impact.z,
-                rx,
-                rz,
-                patch * aspect,
-                patch,
-                patching,
-                false,
-                0,
-                NO_BAND,
-                NO_START,
-            );
-            self.stamp(
-                impact.x,
-                impact.z,
-                rx,
-                rz,
-                front * aspect,
-                front,
-                fronting,
-                true,
-                0,
-                NO_BAND,
-                NO_START,
-            );
-        }
-        self.impact_room = impacts;
         self.churn();
         self.raster_version += 1;
     }
@@ -936,6 +830,9 @@ pub struct FleetTrails {
     oil_slots: Vec<usize>,
     oil_drawn: Vec<u64>,
     oil_dirty: bool,
+    /// The splashes' deposits ([`crate::splash_foam`]): the foam field lays them within its window and the surface
+    /// draws them beyond it, from the `Wake` uniform.
+    pub deposits: crate::splash_foam::SplashDeposits,
 }
 
 /// The oil's drift offset wraps at this (m), which a theatre's re-centres move too (the windrows stay on their water):
@@ -962,6 +859,7 @@ impl FleetTrails {
             oil_slots: Vec::new(),
             oil_drawn: Vec::new(),
             oil_dirty: false,
+            deposits: Default::default(),
         }
     }
 
@@ -1097,8 +995,9 @@ impl FleetTrails {
         }
     }
 
-    /// `ships` in slot order (the focus first); `splashes` are (x, z, caliber) of this frame's splashes and aircraft
-    /// crashes; `camera` the eye and the projection's vertical scale (`projectionMatrix[5]`) for the refresh rate.
+    /// `ships` in slot order (the focus first); `splashes` are (x, z, scale: [`crate::splash_foam::splash_scale`]) of
+    /// this frame's splashes and aircraft crashes; `camera` the eye and the projection's vertical scale
+    /// (`projectionMatrix[5]`) for the refresh rate.
     pub fn update(
         &mut self,
         ships: &[TrailShip<'_>],
@@ -1120,6 +1019,13 @@ impl FleetTrails {
                 });
             }
         }
+        self.deposits.update(
+            self.time,
+            dt.max(0.0),
+            self.oil_drift,
+            splashes,
+            camera.map(|(eye, _)| eye),
+        );
         self.rows.clear();
         self.reach = EMPTY;
         // Atlas slots are a drawing budget. Other hulls still sample their course for a future view.
@@ -1145,10 +1051,7 @@ impl FleetTrails {
             self.entries.iter_mut().zip(ships).enumerate()
         {
             foam.tuning = self.tuning;
-            for &(x, z, caliber) in splashes {
-                foam.splash(x, z, caliber);
-            }
-            let surface = (1.0 + ship.position[1] / 3.0).clamp(0.0, 1.0);
+            let surface = crate::ship_wake::surfaced(ship.position[1]);
             // Keep every emission sample, but refresh distant coverage at 5 Hz; magnification restores 20 Hz.
             let interval = match camera {
                 Some((eye, zoom)) => {
@@ -1223,12 +1126,6 @@ impl FleetTrails {
         self.place_oil(near);
     }
 
-    pub fn reset_impacts(&mut self) {
-        for (_, foam, ..) in &mut self.entries {
-            foam.reset_impacts();
-        }
-    }
-
     /// Takes `old`'s trails (a theatre scene's re-cut), carried by `shift` `[x, z]`: the old scene's origin less this
     /// one's (`naval_sim::earth::SceneShift::xz`), so each point `q` becomes `q + shift`.
     pub fn take_history_from(&mut self, old: &mut Self, shift: [f64; 2]) {
@@ -1245,6 +1142,8 @@ impl FleetTrails {
         self.oil_offset =
             [0, 1].map(|i| (old.oil_offset[i] + shift[i]).rem_euclid(OIL_OFFSET_WRAP));
         self.oil_drift = old.oil_drift;
+        self.deposits = std::mem::take(&mut old.deposits);
+        self.deposits.translate(shift);
         self.place_oil(None);
     }
 
@@ -1266,6 +1165,8 @@ impl FleetTrails {
         self.dirty = true;
         self.oil_offset = old.oil_offset;
         self.oil_drift = old.oil_drift;
+        self.deposits = std::mem::take(&mut old.deposits);
+        self.deposits.relay(relay);
         self.place_oil(None);
     }
 
@@ -1275,6 +1176,7 @@ impl FleetTrails {
         self.time = 0.0;
         self.dirty = true;
         self.oil_offset = [0.0; 2];
+        self.deposits.clear();
         self.place_oil(None);
     }
 }
@@ -1798,16 +1700,25 @@ mod tests {
     }
 
     #[test]
-    fn a_splash_rings_every_trail_alike() {
-        let mut a = WakeFoam::new(256, bismarck());
-        let mut b = WakeFoam::new(256, bismarck());
-        for foam in [&mut a, &mut b] {
-            foam.update(Motion::default(), 0.1, 0.05);
-            foam.splash(40.0, -20.0, 0.38);
-            foam.update(Motion::default(), 1.0, 0.05);
+    fn a_splash_lays_a_drifting_deposit_not_a_patch() {
+        let ship = TrailShip {
+            id: "a",
+            position: [0.0; 3],
+            heading: 0.0,
+            speed: 0.0,
+            hull: bismarck(),
+            reverse_speed: 0.0,
+            oil_leak_m3s: 0.0,
+        };
+        let mut trails = FleetTrails::new(256);
+        trails.oil_drift = [0.2, 0.0];
+        trails.update(&[ship], 0.05, &[(50.0, 20.0, 1.0)], None);
+        for _ in 0..20 {
+            trails.update(&[ship], 0.05, &[], None);
         }
-        assert_eq!(a.collector.stamps, b.collector.stamps);
-        assert_eq!(a.collector.stamps.iter().filter(|s| s.ring).count(), 1);
-        assert!(a.collector.stamps.iter().all(|s| s.across == NO_BAND));
+        // The deposit drifts with the surface; the trail paints nothing for it (a hull at rest paints none of her own).
+        assert_eq!(trails.deposits.list.len(), 1);
+        assert!((trails.deposits.list[0].x - 50.2).abs() < 1e-9);
+        assert!(trails.entries[0].1.collector.stamps.is_empty());
     }
 }

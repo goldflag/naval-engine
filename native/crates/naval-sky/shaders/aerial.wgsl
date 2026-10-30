@@ -65,3 +65,70 @@ fn aerial_over_sky(color: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
     let haze = aerial_layer(uv, 2u * u32(AERIAL_SLICES));
     return color * (1.0 - haze.a) + haze.rgb;
 }
+
+// ---- The towns' light at night ------------------------------------------------------------------------------------
+// After the volume and its dome slice the buffer holds the light the lit land sends up through the air
+// (`naval_sky::aerial::GLOW_OFFSET`, filled by naval-clouds' `glow_field.wgsl`): a header (the grid's frame, the lit
+// land's radiance), then at each point of a grid about the land's window (`GLOW_SIDE`² columns of `GLOW_LEVELS` heights)
+// the fluence (x) and the net flux (yzw, world axes) of that light per unit radiance of wholly lit land, the air between
+// the land and the point taken out. Raw f32 words, not half floats.
+
+// The first texel pair after the volume's layers and the dome's (AERIAL_COLUMNS × AERIAL_ROWS × (2 × 32 + 1)).
+const GLOW_FIRST: u32 = 66560u;
+// The header's 256 bytes in texel pairs.
+const GLOW_HEADER: u32 = 32u;
+const GLOW_SIDE: u32 = 80u;
+const GLOW_LEVELS: u32 = 9u;
+const GLOW_FLOOR_M: f32 = 31.25;
+
+fn glow_word(i: u32) -> vec4<f32> {
+    let a = aerial_texels[i];
+    let b = aerial_texels[i + 1u];
+    return vec4<f32>(bitcast<f32>(a.x), bitcast<f32>(a.y), bitcast<f32>(b.x), bitcast<f32>(b.y));
+}
+
+// The lit land's radiance (linear rgb) and, in w, 1 while the towns' light burns: 0 by day, at sea, on the Medium
+// setting and with the lights out, when nothing else here is read.
+fn glow_light() -> vec4<f32> {
+    return glow_word(GLOW_FIRST + 2u);
+}
+
+fn glow_texel(i: u32, j: u32, level: u32) -> vec4<f32> {
+    return glow_word(GLOW_FIRST + GLOW_HEADER + 2u * ((level * GLOW_SIDE + j) * GLOW_SIDE + i));
+}
+
+fn glow_level(at: vec2<f32>, level: u32) -> vec4<f32> {
+    let low = vec2<u32>(floor(at));
+    let high = min(low + 1u, vec2<u32>(GLOW_SIDE - 1u));
+    let f = at - floor(at);
+    let top = mix(glow_texel(low.x, low.y, level), glow_texel(high.x, low.y, level), f.x);
+    let bottom = mix(glow_texel(low.x, high.y, level), glow_texel(high.x, high.y, level), f.x);
+    return mix(top, bottom, f.y);
+}
+
+// The towns' light at world point `xz` (m), `height` m above the sea: its fluence (x) and net flux (yzw: world x, y up,
+// z) per unit radiance of wholly lit land, trilinear between the grid's points; nothing off the grid (fading over its
+// last column), and above its top level falling as the height's inverse square.
+fn glow_field(xz: vec2<f32>, height: f32) -> vec4<f32> {
+    let frame = glow_word(GLOW_FIRST);
+    if frame.z <= 0.0 {
+        return vec4<f32>(0.0);
+    }
+    let n = frame.w;
+    let at = (xz - frame.xy) / frame.z - 0.5;
+    let inside = min(min(at.x, at.y), min(n - 1.0 - at.x, n - 1.0 - at.y));
+    if inside <= -1.0 {
+        return vec4<f32>(0.0);
+    }
+    let c = clamp(at, vec2<f32>(0.0), vec2<f32>(n - 1.0));
+    let h = max(height, GLOW_FLOOR_M);
+    let k = min(log2(h / GLOW_FLOOR_M), f32(GLOW_LEVELS - 1u));
+    let low = u32(floor(k));
+    let high = min(low + 1u, GLOW_LEVELS - 1u);
+    var light = mix(glow_level(c, low), glow_level(c, high), k - floor(k));
+    let top = GLOW_FLOOR_M * exp2(f32(GLOW_LEVELS - 1u));
+    if h > top {
+        light *= (top / h) * (top / h);
+    }
+    return light * clamp(1.0 + inside, 0.0, 1.0);
+}

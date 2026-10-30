@@ -2,6 +2,7 @@
 //! them, drawn coarsely from latitude and longitude (a few kilometres off at most where a border runs through a town's
 //! hinterland, never through a town the tests name).
 
+use super::Period;
 use naval_conditions::{LandStyle, SurfaceStyle};
 
 /// The palette families buildings are coloured from, by where the land is ([`Region::at`]).
@@ -25,8 +26,8 @@ pub enum Region {
     /// The American West (California, Nevada, Arizona, Utah, New Mexico): light stucco under grey and brown asphalt
     /// shingles or flat gravel and tar; low single-storey ranch houses and two-storey houses, blocks only downtown.
     West,
-    /// Japan, Korea, Taiwan and eastern China: light walls under grey kawara and dark glazed tiles or grey, blue and
-    /// green sheet metal; small two-storey houses close together, flat concrete mid-rise blocks in the centres.
+    /// Japan, Korea and eastern China: light walls under grey kawara and dark glazed tiles or grey, blue and green sheet
+    /// metal; small two-storey houses close together, flat concrete mid-rise blocks in the centres.
     EastAsia,
     /// Iceland, the Faroes and Greenland: painted corrugated iron and boards under red, green, blue and black roofs.
     Iceland,
@@ -64,10 +65,16 @@ pub enum Region {
     /// The Marshalls, Kiribati, Nauru, Tuvalu, Tokelau and the Line and Phoenix Islands: an atoll's small houses of
     /// one storey under galvanised and rusted iron and pandanus thatch, concrete block, plywood and sheet walls.
     Atoll,
+    /// Taiwan, Penghu, Green Island, Orchid Island, Kinmen and Matsu: rows of narrow, deep townhouses (透天厝, 街屋) of
+    /// three to five storeys and walk-ups of four or five under flat concrete roofs, towers (大樓) of 12-25 storeys;
+    /// darker small ceramic tiles on the walls (grey, beige, salmon, brown) streaked by the rain, iron window cages (鐵窗),
+    /// sheet-metal rooftop sheds (頂樓加蓋) and steel water tanks. In a past period East Asia's ([`Region::in_period`]):
+    /// Japanese-ruled from 1895 to 1945.
+    Taiwan,
 }
 
 /// Every region, in [`Region::index`] order.
-pub const REGIONS: [Region; 20] = [
+pub const REGIONS: [Region; 21] = [
     Region::Nordic,
     Region::Temperate,
     Region::Tropical,
@@ -88,6 +95,7 @@ pub const REGIONS: [Region; 20] = [
     Region::Hawaii,
     Region::Micronesia,
     Region::Atoll,
+    Region::Taiwan,
 ];
 
 impl Region {
@@ -108,9 +116,9 @@ impl Region {
     /// Isles (English and Welsh, or Scottish, Irish and Manx), Iceland, the Nordic countries, the North Sea's brick
     /// country, the American West, Florida, Latin America (Mediterranean, as the Mediterranean's own shores and
     /// Turkey and Madeira), Hawaii, the rest of North America, Malta, Greece and Cyprus, North Africa (the Nile's
-    /// delta and valley apart), western and central Europe (temperate), Japan, Korea, Taiwan and eastern China, Arabia
-    /// and the Middle East (arid), Micronesia, the atolls east of it, the tropics (tropical, or arid with a dry
-    /// style).
+    /// delta and valley apart), western and central Europe (temperate), Taiwan with Kinmen and Matsu, Japan, Korea and
+    /// eastern China, Arabia and the Middle East (arid), Micronesia, the atolls east of it, the tropics (tropical, or
+    /// arid with a dry style).
     pub fn at(lat: f64, lon: f64, style: &SurfaceStyle) -> Self {
         let lon = (lon + 540.0).rem_euclid(360.0) - 180.0;
         let within = |a: f64, b: f64, v: f64| (a..=b).contains(&v);
@@ -201,7 +209,10 @@ impl Region {
         if within(45.5, 58.0, lat) && within(-11.0, 32.0, lon) {
             return Region::Temperate;
         }
-        // Japan (to Hokkaido and Okinawa), Korea, Taiwan and eastern China; not Russia's Primorye.
+        if taiwanese(lat, lon) {
+            return Region::Taiwan;
+        }
+        // Japan (to Hokkaido and Okinawa), Korea and eastern China; not Russia's Primorye.
         if within(21.8, 46.0, lat)
             && within(100.0, 146.0, lon)
             && !(lat > 42.4 && within(130.6, 139.2, lon))
@@ -243,6 +254,17 @@ impl Region {
             Region::Hawaii => 17,
             Region::Micronesia => 18,
             Region::Atoll => 19,
+            Region::Taiwan => 20,
+        }
+    }
+
+    /// The region a building of `period` is made in: Taiwan's past is East Asia's (Japanese-ruled from 1895 to 1945,
+    /// its towns' houses and shops under kawara as Japan's, no towers, sheds or tanks on the roofs), every other
+    /// region its own.
+    pub fn in_period(self, period: Period) -> Self {
+        match self {
+            Region::Taiwan if period.is_past() => Region::EastAsia,
+            region => region,
         }
     }
 }
@@ -470,6 +492,22 @@ pub fn mexican_border(lon: f64) -> f64 {
 
 /// Whether a place is the Marianas', Palau's or the Carolines' (north of 0.5 degrees, so not New Guinea's islands; east
 /// of 130.5, so not the Philippines' or the Moluccas'), Kosrae's among the Marshalls' longitudes, Wake's or Midway's.
+/// Taiwan, Penghu, Green Island and Orchid Island (21.8-25.4° N, 119.3-122.1° E, Fujian's coast and islands north of
+/// 24° N and west of 120.1° E left out: Nanri, Pingtan, Haitan and the Longgao peninsula; Wuqiu's islet with them),
+/// Kinmen with Lieyu (Xiamen's island west of 118.205° E and Dadeng north of 24.52° N left out) and Matsu (Nangan,
+/// Beigan and Gaodeng; Dongju and Xiju; Dongyin; the Huangqi peninsula west of 119.91° E left out). The land's lamps
+/// read it too (their LEDs, naval-landscape's `lamps::palette_at`).
+pub fn taiwanese(lat: f64, lon: f64) -> bool {
+    let within = |a: f64, b: f64, v: f64| (a..=b).contains(&v);
+    let island =
+        within(21.8, 25.4, lat) && within(119.3, 122.1, lon) && !(lat > 24.0 && lon < 120.1);
+    let kinmen = within(24.36, 24.52, lat) && within(118.205, 118.52, lon);
+    let matsu = (within(26.12, 26.31, lat) && within(119.91, 120.07, lon))
+        || (within(25.93, 26.0, lat) && within(119.92, 120.02, lon))
+        || (within(26.33, 26.4, lat) && within(120.45, 120.53, lon));
+    island || kinmen || matsu
+}
+
 fn micronesian(lat: f64, lon: f64) -> bool {
     let within = |a: f64, b: f64, v: f64| (a..=b).contains(&v);
     (within(0.5, 21.0, lat) && within(130.5, 160.5, lon))
@@ -961,7 +999,8 @@ mod tests {
                 "{lat} {lon}"
             );
         }
-        // East Asia: Tokyo, Kamakura, Yokosuka, Sapporo, Naha, Busan, Taipei, Shanghai; not Vladivostok.
+        // East Asia: Tokyo, Kamakura, Yokosuka, Sapporo, Naha, Busan, Shanghai; Fujian's coast and islands across the
+        // strait (Fuzhou, Xiamen, Nanri, Pingtan, Meizhou, Dadeng, Huangqi); Okinawa's Yonaguni; not Vladivostok.
         for (lat, lon) in [
             (35.68, 139.7),
             (35.32, 139.55),
@@ -969,8 +1008,16 @@ mod tests {
             (43.06, 141.35),
             (26.21, 127.68),
             (35.18, 129.08),
-            (25.03, 121.57),
             (31.23, 121.47),
+            (26.07, 119.3),
+            (24.48, 118.09),
+            (24.5, 118.18),
+            (25.21, 119.5),
+            (25.38, 119.79),
+            (25.08, 119.12),
+            (24.56, 118.33),
+            (26.33, 119.87),
+            (24.46, 122.99),
         ] {
             assert_eq!(
                 Region::at(lat, lon, &chalk),
@@ -979,5 +1026,46 @@ mod tests {
             );
         }
         assert_ne!(Region::at(43.12, 131.9, &chalk), Region::EastAsia);
+        // Taiwan: Taipei, Keelung, Taoyuan, Zhongli, Hsinchu, Taichung, Changhua's coast, Tainan, Kaohsiung, Kenting,
+        // Hualien, Taitung, Yilan; Makung and Penghu's north (Jibei), Green Island, Orchid Island; Kinmen's Jincheng and
+        // Lieyu; Matsu's Nangan, Beigan, Dongju and Dongyin.
+        for (lat, lon) in [
+            (25.04, 121.51),
+            (25.13, 121.74),
+            (24.99, 121.31),
+            (24.96, 121.22),
+            (24.8, 120.97),
+            (24.15, 120.67),
+            (24.08, 120.42),
+            (22.99, 120.2),
+            (22.62, 120.3),
+            (21.95, 120.8),
+            (23.98, 121.6),
+            (22.76, 121.15),
+            (24.76, 121.75),
+            (23.57, 119.58),
+            (23.73, 119.6),
+            (22.66, 121.49),
+            (22.05, 121.55),
+            (24.43, 118.32),
+            (24.43, 118.24),
+            (26.16, 119.95),
+            (26.22, 120.0),
+            (25.97, 119.97),
+            (26.37, 120.49),
+        ] {
+            assert_eq!(Region::at(lat, lon, &chalk), Region::Taiwan, "{lat} {lon}");
+        }
+        // Its past is East Asia's; every other region's its own.
+        assert_eq!(
+            Region::Taiwan.in_period(Period::Year(1942)),
+            Region::EastAsia
+        );
+        assert_eq!(Region::Taiwan.in_period(Period::Today), Region::Taiwan);
+        for region in REGIONS {
+            if region != Region::Taiwan {
+                assert_eq!(region.in_period(Period::Year(1942)), region);
+            }
+        }
     }
 }

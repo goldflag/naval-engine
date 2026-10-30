@@ -47,6 +47,12 @@ impl Grid {
                 street: 6.0,
                 lot: [9.0, 3.0],
             },
+            // Taiwan's blocks between narrow lanes (巷, 弄): rows of townhouses on lots 4-6 m wide and 18 m deep.
+            Region::Taiwan => Self {
+                block: [72.0, 36.0],
+                street: 6.0,
+                lot: [4.0, 2.0],
+            },
             // Florida's subdivisions: long blocks of 23 m (75 ft) lots.
             Region::Florida => Self {
                 block: [160.0, 80.0],
@@ -221,6 +227,8 @@ fn district(
                 }
                 Region::West => share > 0.92 && block_hash(1) < 0.12,
                 Region::EastAsia => share > 0.8 && block_hash(1) < (share - 0.6) * 1.5,
+                // Walk-ups (公寓) among the townhouses where the ground is thickest.
+                Region::Taiwan => share > 0.85 && block_hash(1) < (share - 0.7) * 1.2,
                 Region::Nordic
                 | Region::Temperate
                 | Region::Mediterranean
@@ -311,6 +319,9 @@ fn lot_building(
     region: Region,
 ) -> Option<Lot> {
     let [u, v] = frame;
+    if region == Region::Taiwan {
+        return Some(taiwanese(at, frame, row, size, dense, local, hash));
+    }
     // Terraces where the town thickens: in the American West a row of townhouses only where it is thick, in East Asia
     // a small apartment house.
     let terrace = match region {
@@ -341,9 +352,12 @@ fn lot_building(
             }
             // Four to seven: Athens' polykatoikia, Cairo's and Alexandria's blocks.
             Region::Aegean | Region::Nile => 4.0 + (hash(3) * 3.99).floor(),
-            Region::Nordic | Region::Temperate | Region::Mediterranean | Region::EastAsia => {
-                3.0 + (hash(3) * 3.99).floor()
-            }
+            // (Taiwan's lots are its own: `taiwanese`.)
+            Region::Nordic
+            | Region::Temperate
+            | Region::Mediterranean
+            | Region::EastAsia
+            | Region::Taiwan => 3.0 + (hash(3) * 3.99).floor(),
         };
         // East Asia's mid-rise blocks stand apart.
         let fill = if region == Region::EastAsia {
@@ -445,6 +459,51 @@ fn lot_building(
     })
 }
 
+/// Taiwan's lot: a townhouse (透天厝, 街屋) filling its narrow lot's width at the lane, deep in it, flat-roofed, of three
+/// to five storeys (four and five where the town is built over); in a dense core a walk-up (公寓) of four or five
+/// across its wider lot. No detached houses.
+fn taiwanese(
+    at: [f64; 2],
+    frame: [[f64; 2]; 2],
+    row: f64,
+    size: [f64; 2],
+    dense: bool,
+    local: f32,
+    hash: &dyn Fn(i64) -> f32,
+) -> Lot {
+    let [u, v] = frame;
+    let (kind, fill, deep, storeys) = if dense {
+        (
+            Kind::Block,
+            0.97,
+            size[1] * (0.75 + 0.2 * f64::from(hash(4))),
+            4.0 + (hash(3) * 1.99).floor(),
+        )
+    } else {
+        let storeys = if local > 0.6 {
+            4.0 + (hash(3) * 1.99).floor()
+        } else {
+            3.0 + (hash(3) * 1.99).floor()
+        };
+        (
+            Kind::Terrace,
+            0.97,
+            size[1] * (0.65 + 0.3 * f64::from(hash(4))),
+            storeys,
+        )
+    };
+    // At the lane: half a metre back at most.
+    let setback = 0.5 * f64::from(hash(7));
+    let toward = size[1] * 0.5 - setback - deep * 0.5;
+    Lot {
+        centre: [at[0] + v[0] * row * toward, at[1] + v[1] * row * toward],
+        axis: u,
+        half: [size[0] * fill * 0.5, deep * 0.5],
+        height: storeys * super::storey_height(kind) + 0.4,
+        kind,
+    }
+}
+
 /// Whether a lot's building stands on dry, gentle land.
 fn buildable(lot: &Lot, land: &dyn Land) -> bool {
     let corners = corners(lot);
@@ -479,12 +538,14 @@ fn footprint_of(lot: &Lot, corner: [f64; 2]) -> Footprint {
         height: Some(lot.height),
         kind: Some(lot.kind),
         colour: None,
+        part: None,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::buildings::storey_height;
 
     /// A town: built-up within 1.5 km of the theatre's (500, 500), denser toward its middle; flat land 10 m up, the sea
     /// west of x = -400.
@@ -579,6 +640,66 @@ mod tests {
             .filter(|f| f.kind == Some(Kind::Block))
             .count();
         assert!(blocks > 10, "{blocks} blocks");
+    }
+
+    #[test]
+    fn taiwans_lots_are_rows_of_narrow_deep_townhouses() {
+        let free = [false; 100];
+        let all = lots([0, 0], &Town, &free, &|_| Region::Taiwan);
+        let east = lots([0, 0], &Town, &free, &|_| Region::EastAsia);
+        assert!(
+            all.len() as f32 > east.len() as f32 * 1.5,
+            "{} {}",
+            all.len(),
+            east.len()
+        );
+        // No detached houses: townhouses, and a core's walk-ups.
+        assert!(
+            all.iter()
+                .all(|f| matches!(f.kind, Some(Kind::Terrace | Kind::Block)))
+        );
+        let rows: Vec<&Footprint> = all
+            .iter()
+            .filter(|f| f.kind == Some(Kind::Terrace))
+            .collect();
+        let walk_ups = all.len() - rows.len();
+        assert!(
+            rows.len() > 1000 && walk_ups > 10,
+            "{} rows, {walk_ups} walk-ups",
+            rows.len()
+        );
+        // Each 4-6 m wide at the lane and two to four times as deep; three to five storeys, four and five the most.
+        let storeys = |f: &Footprint| {
+            ((f.height.unwrap() - 0.4) / storey_height(Kind::Terrace)).round() as u8
+        };
+        let mut tall = 0;
+        for f in &rows {
+            let r = geometry::min_area_rect(&f.ring).unwrap();
+            let (wide, deep) = (
+                2.0 * r.half[0].min(r.half[1]),
+                2.0 * r.half[0].max(r.half[1]),
+            );
+            assert!((3.8..6.2).contains(&wide), "{wide}");
+            assert!((11.0..18.0).contains(&deep), "{deep}");
+            let s = storeys(f);
+            assert!((3..=5).contains(&s), "{s}");
+            tall += usize::from(s >= 4);
+        }
+        assert!(tall > rows.len() / 2, "{tall} of {}", rows.len());
+        // A row's houses stand side by side: most have a neighbour within a metre of their width.
+        let centre = |f: &Footprint| geometry::centroid(&f.ring);
+        let close = rows
+            .iter()
+            .take(300)
+            .filter(|f| {
+                let c = centre(f);
+                rows.iter().any(|g| {
+                    let d = geometry::distance(c, centre(g));
+                    d > 1.0 && d < 7.0
+                })
+            })
+            .count();
+        assert!(close > 250, "{close}");
     }
 
     #[test]

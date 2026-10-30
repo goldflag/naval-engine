@@ -732,6 +732,39 @@ fn a_strike_as_the_view_reaches_a_distant_hull_is_kept() {
     }
 }
 
+/// A charge going off in the sea (here a torpedo hit far from any field) leaves its white water, a deposit as wide as
+/// its bubble, whether or not a field is there to ring; a round's is its splash's, so its strike lays none.
+#[test]
+fn a_charge_leaves_white_water_wherever_it_goes_off() {
+    use naval_ocean::splash_foam::charge_scale;
+    use naval_ocean::wake::impulses::Strike;
+    let gpu = Gpu::headless().expect("a GPU");
+    let mut wake = ShipWake::new(&gpu.device, 256, 2.0);
+    let [ours, theirs] = two_hulls();
+    let mut hulls = [ours, theirs];
+    steam(&gpu, &mut wake, &mut hulls, "ours", 1.0);
+    let round = Strike::Round {
+        caliber_m: 0.38,
+        speed: 400.0,
+    };
+    let torpedo = Strike::Charge {
+        kg: 350.0,
+        depth: 4.0,
+    };
+    let (x, z) = (hulls[0].x + 9000.0, hulls[0].z);
+    wake.strike(x, z, &round);
+    assert!(wake.trails.deposits.list.is_empty());
+    wake.strike(x, z, &torpedo);
+    let deposits = &wake.trails.deposits.list;
+    assert_eq!(deposits.len(), 1);
+    assert_eq!([deposits[0].x, deposits[0].z], [x, z]);
+    assert!((deposits[0].scale - charge_scale(350.0, 4.0)).abs() < 1e-9);
+    assert!(
+        deposits[0].scale > 1.3,
+        "a warhead's white water is wider than a 38 cm round's"
+    );
+}
+
 /// A re-lay of `shift` metres turning the water by `turn` radians (clockwise), the same everywhere.
 struct Relaid {
     shift: [f64; 2],

@@ -122,7 +122,8 @@ pub fn strike_energy(strike: &Strike) -> (f64, bool) {
 
 /// A strike at world `x`, `z` as the impulse that lays it: its crater (or dome) sized by its energy, no narrower than
 /// `least` m, opening over √(R/g) (a quarter of the period of the waves it sheds, so they leave as from an instant
-/// strike while the grid sees a smooth rise), with white water over it. None for a strike with no energy.
+/// strike while the grid sees a smooth rise). Its white water is a deposit of its own (`crate::splash_foam`): a round's
+/// and an aircraft's laid by their splashes, a charge's by `ShipWake::strike`. None for a strike with no energy.
 pub fn strike_impulse(x: f64, z: f64, strike: &Strike, least: f64) -> Option<WakeImpulse> {
     let (energy, dome) = strike_energy(strike);
     if !(energy > 0.0 && energy.is_finite()) {
@@ -131,7 +132,6 @@ pub fn strike_impulse(x: f64, z: f64, strike: &Strike, least: f64) -> Option<Wak
     let (radius, depth) = crater_size(energy, least);
     Some(WakeImpulse {
         displacement: if dome { depth } else { -depth },
-        foam: STRUCK_FOAM,
         duration: (radius / GRAVITY).sqrt(),
         ..WakeImpulse::at(x, z, radius)
     })

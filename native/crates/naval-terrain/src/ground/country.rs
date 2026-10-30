@@ -39,7 +39,8 @@ impl Country {
             Region::American | Region::Florida => Country::East,
             Region::British | Region::Celtic => Country::Britain,
             Region::NorthSea | Region::Temperate => Country::Europe,
-            Region::EastAsia => Country::Japan,
+            // Taiwan's paddies and cane as Japan's paddies.
+            Region::EastAsia | Region::Taiwan => Country::Japan,
             Region::Tropical | Region::Hawaii | Region::Micronesia | Region::Atoll => {
                 Country::Tropics
             }
@@ -148,6 +149,7 @@ mod tests {
         assert_eq!(seen.len(), 8, "every country is some region's");
         assert_eq!(Country::of(Region::West), Country::West);
         assert_eq!(Country::of(Region::EastAsia), Country::Japan);
+        assert_eq!(Country::of(Region::Taiwan), Country::Japan);
         assert_eq!(Country::of(Region::Iceland), Country::Nordic);
     }
 

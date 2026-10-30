@@ -380,6 +380,9 @@ pub struct TerrainLayer {
     surface: crate::surface_textures::SurfaceTextures,
     /// Changes whenever the surface's textures or the window's maps do ([`TerrainLayer::surface_photo`]).
     surface_version: u64,
+    /// The window's lit map for the sky's light over the towns at night (`ground_glow`), made with its maps and
+    /// counted again under each rewrite of their cover.
+    town_glow: crate::night::TownGlow,
     /// The host's number for the marks it laid over the window's cover (`set_cover_marks`).
     cover_marks: u64,
     /// Map features on the ground: roads, railways and waterways as distance fields about the camera (`features`).
@@ -867,6 +870,9 @@ impl TreePart {
         }
     }
 }
+
+/// Cells a side of the window's lit map the sky takes at night (`TerrainLayer::ground_glow`).
+const GLOW_CELLS: u32 = 64;
 
 impl TerrainLayer {
     /// Prepares `field` for `scene` (its style, fog and where the chart stands) and builds the layer's GPU
@@ -1785,6 +1791,7 @@ impl TerrainLayer {
             group_parts,
             surface,
             surface_version: 0,
+            town_glow: Default::default(),
             cover_marks: 0,
             features,
             canopy,
@@ -2217,6 +2224,8 @@ impl TerrainLayer {
         self.trees_stale = true;
         self.forest_shade_stale();
         self.surface_version += 1;
+        self.town_glow
+            .set(maps.origin, maps.extent_m, classes, maps.size, GLOW_CELLS);
         Ok(())
     }
 
@@ -2234,6 +2243,31 @@ impl TerrainLayer {
         self.trees_stale = true;
         self.forest_shade_stale();
         self.surface_version += 1;
+        self.town_glow.clear();
+    }
+
+    /// The towns' light the sky takes at night (`naval_clouds::GameSky::set_ground_glow`, native/docs/terrain/night.md,
+    /// "The towns' light in the sky"): the window's lit map (its cover's built-up share in 64² cells, as the land's
+    /// glow beyond the pages burns) and that glow's radiance by the scenario's rule, the palette and the night. `None`
+    /// without surface maps, by day, on the Medium setting (no lamps), with the lights hidden or out (a blackout).
+    pub fn ground_glow(
+        &self,
+    ) -> Option<(
+        &naval_clouds::glow::GroundGlow,
+        naval_clouds::glow::GlowLight,
+    )> {
+        let map = self.town_glow.map()?;
+        let [dark, _, glow, _] = self.uniforms.night;
+        if dark * glow <= 0.0 {
+            return None;
+        }
+        Some((
+            map,
+            naval_clouds::glow::GlowLight {
+                offset: self.offset,
+                radiance: self.night_lights.glow_radiance(dark),
+            },
+        ))
     }
 
     /// Whether real buildings stand on this land (a buildings layer drawn with it, `crate::buildings`), from the next
@@ -2317,8 +2351,10 @@ impl TerrainLayer {
     /// its slot holds it): the host's marks of a past period's ground laid again (native/docs/terrain/period.md, "The
     /// period's
     /// ground"), without handing in the maps or the tile again. The trees are placed again and the forest's shade baked
-    /// again about it. Needs no renderer context, so the frame loop can call it.
+    /// again about it; a window's rewrite counts the sky's lit map again over it (`ground_glow`: a chunk marked the
+    /// past's country lights the air no more). Needs no renderer context, so the frame loop can call it.
     pub fn queue_cover_patch(&mut self, patch: crate::CoverPatch) {
+        self.town_glow.patch(&patch);
         self.surface.queue_patch(patch);
     }
 

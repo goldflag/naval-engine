@@ -343,7 +343,7 @@ impl MeshBuilder {
     /// One of a building's extras, at its level of detail (heights over its mean ground; walls from below its lowest).
     pub(crate) fn extra(&mut self, b: &Building, e: &Extra, lod: Lod) {
         let g = b.ground[1];
-        let bottom = b.ground[0] - super::mesh::SINK_M;
+        let bottom = super::mesh::foot_of(b);
         let full = lod == Lod::Full;
         match *e {
             Extra::Tower {
@@ -898,6 +898,7 @@ mod tests {
             roof: Roof::Flat,
             ground: [2.0, 3.0, 4.0],
             height: 10.0,
+            base: 0.0,
             storeys: 3,
             storey_m: 3.0,
             wall: 1,

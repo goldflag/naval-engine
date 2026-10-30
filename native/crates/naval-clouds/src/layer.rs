@@ -1443,7 +1443,8 @@ impl CloudLayer {
     }
 
     /// The air in front of the clouds changed (the aerial perspective's haze, which the march takes at the clouds'
-    /// front): a held or paused picture that had converged marches again from its history until it converges on it.
+    /// front), or the towns' light on their bases (`crate::glow`): a held or paused picture that had converged marches
+    /// again from its history until it converges on it.
     pub fn air_changed(&mut self) {
         self.held_updates = 0;
         self.still_updates = 0;

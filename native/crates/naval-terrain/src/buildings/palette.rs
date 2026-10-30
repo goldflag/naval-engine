@@ -48,10 +48,15 @@ const MALTA_FLAT_ROOFS: &[u8] = &[SCREED, 14, SCREED, 10, 24, SCREED, 15, SCREED
 /// North Africa's flat roofs: limewash and white membranes, limestone screed, pale concrete.
 const AFRICA_FLAT_ROOFS: &[u8] = &[15, 24, SCREED, 14, 24, 10, SCREED, 15, 9];
 
+/// Taiwan's flat roofs: grey concrete, green-grey waterproofing, dark felt, gravel, brown and red-brown heat tiles
+/// (隔熱磚).
+const TAIWAN_FLAT_ROOFS: &[u8] = &[14, 14, 27, 13, 3, 14, 27, 9, 14, 11, 23, 3];
+
 /// A region's flat roofs.
 pub(super) fn flat_roofs(region: Region) -> &'static [u8] {
     use Region::*;
     match region {
+        Taiwan => TAIWAN_FLAT_ROOFS,
         Mediterranean | Aegean | Arid | Hawaii | Micronesia | Atoll => PALE_FLAT_ROOFS,
         Malta => MALTA_FLAT_ROOFS,
         NorthAfrica => AFRICA_FLAT_ROOFS,
@@ -61,6 +66,17 @@ pub(super) fn flat_roofs(region: Region) -> &'static [u8] {
 }
 /// Grey kawara (ibushi) tile: the colour cube's (102, 102, 102).
 pub const KAWARA: u8 = CUBE_FIRST + 2 * 36 + 2 * 6 + 2;
+/// Walls: Taiwan's darker facade tiles from the colour cube: grey (153, 153, 153), dark grey (102, 102, 102), tan
+/// (204, 153, 102), dun (153, 153, 102), olive (102, 102, 51), brown (153, 102, 51), mauve (153, 102, 102) and rose
+/// (204, 153, 153).
+pub const TILE_GREY: u8 = CUBE_FIRST + 3 * 36 + 3 * 6 + 3;
+pub const TILE_DARK: u8 = CUBE_FIRST + 2 * 36 + 2 * 6 + 2;
+pub const TILE_TAN: u8 = CUBE_FIRST + 4 * 36 + 3 * 6 + 2;
+pub const TILE_DUN: u8 = CUBE_FIRST + 3 * 36 + 3 * 6 + 2;
+pub const TILE_OLIVE: u8 = CUBE_FIRST + 2 * 36 + 2 * 6 + 1;
+pub const TILE_BROWN: u8 = CUBE_FIRST + 3 * 36 + 2 * 6 + 1;
+pub const TILE_MAUVE: u8 = CUBE_FIRST + 3 * 36 + 2 * 6 + 2;
+pub const TILE_ROSE: u8 = CUBE_FIRST + 4 * 36 + 3 * 6 + 3;
 
 /// The walls' and roof's palette entries for a building of `kind` in `region` (`pitched` whether its roof slopes), by
 /// two hashes; in a past `period` from [`past_colours`].
@@ -73,7 +89,7 @@ pub(super) fn colours(
     b: f32,
 ) -> (u8, u8) {
     if period.is_past() {
-        return past_colours(region, kind, pitched, a, b);
+        return past_colours(region.in_period(period), kind, pitched, a, b);
     }
     use Region::*;
     let (walls, roofs): (&[u8], &[u8]) = match kind {
@@ -106,6 +122,15 @@ pub(super) fn colours(
             Arid => (&[15, 1, 0, 13, 2, 31], &[14, 15, 9, 10]),
             West => (&[0, 1, 13, 15, 22, 31, 2, 19, 20, 18], &[18, 20, 0]),
             EastAsia => (&[2, 0, 13, 1, 22, 31, 21, 15, 2, 3], &[KAWARA, 26, 31]),
+            // Taiwan's walk-ups and towers in small tiles: greys, beige, tan, salmon and brown, a white one now and
+            // then.
+            Taiwan => (
+                &[
+                    3, TILE_GREY, 30, 15, 22, TILE_TAN, 16, TILE_DUN, TILE_DARK, 2, 5, TILE_GREY,
+                    3, TILE_ROSE, 13, TILE_MAUVE,
+                ],
+                &[6, 7, 29, 15],
+            ),
             // Brick mansion blocks and council flats, concrete, render.
             British => (&[4, 5, 2, 0, 1, 3, 6, 4, 30, 5], &[2, 25, 26, 23]),
             // Sandstone and harled tenements under slate.
@@ -141,6 +166,8 @@ pub(super) fn colours(
             West => (&[13, 0, 18, 1, 31], &[0, 18, 20, 16]),
             // Temples and shrines: dark timber and white plaster under kawara and dark glazed tile, a copper roof.
             EastAsia => (&[12, 13, 0, 12, 30], &[KAWARA, 26, 12, 21, KAWARA]),
+            // A temple's red walls and pillars under orange and green glazed tile, a church's white or brick.
+            Taiwan => (&[4, 4, 16, 13, 30, 4, 1], &[16, 0, 16, 5, 1, 16, 30]),
             British => (&[30, 31, 30, 4, RED_SANDSTONE, 5], &[2, 22, 25, 2, 21, 23]),
             Celtic => (&[30, RED_SANDSTONE, 31, HARL, 0], &[2, 25, 22, 2]),
             // Brick Gothic under copper, slate, red and black tile.
@@ -197,6 +224,16 @@ pub(super) fn colours(
             EastAsia => (
                 &[0, 1, 2, 13, 21, 22, 27, 31, 15, 0, 13, 12],
                 &[KAWARA, KAWARA, 26, 12, 25, KAWARA, 22, 7, 6, 5, 26, 27, 6],
+            ),
+            // Taiwan's townhouses in small tiles, darker than Japan's walls: greys, beige, tan, salmon and brown
+            // (brick-red tile now and then), a white or cream one; the few pitched roofs blue, grey and rusted sheet,
+            // red clay tile and kawara.
+            Taiwan => (
+                &[
+                    TILE_GREY, 3, 30, TILE_DUN, TILE_TAN, 16, 22, 15, TILE_BROWN, 5, TILE_DARK,
+                    TILE_MAUVE, 3, TILE_GREY, 4, TILE_ROSE, 2, 30, TILE_OLIVE, 13,
+                ],
+                &[6, 7, 8, 29, 1, 0, 6, 27, KAWARA, 7, 15, 8],
             ),
             // Red and brown brick (yellow stock, white and cream render, stone now and then) under slate, two roofs in
             // three, and brown, red-brown and grey concrete tile.
@@ -347,7 +384,7 @@ fn past_colours(region: Region, kind: Kind, pitched: bool, a: f32, b: f32) -> (u
             // Downtown Los Angeles' brick, terracotta and limestone.
             West => (&[0, 1, 15, 31, 19, 20, 18, 4, 5, 30], &[0, 18, 20, 16]),
             // Western masonry downtown: brick, stone and render.
-            EastAsia => (&[4, 5, 30, 31, 1, 0, 4, 31], &[KAWARA, 26, 2, IBUSHI]),
+            EastAsia | Taiwan => (&[4, 5, 30, 31, 1, 0, 4, 31], &[KAWARA, 26, 2, IBUSHI]),
             British => (&[4, 5, HARL, 1, 6, 4, 30, 5, 4, 31], &[2, 25, 2, 23]),
             Celtic => (
                 &[HARL, 30, RED_SANDSTONE, 0, 31, HARL, 1, 30, RED_SANDSTONE],
@@ -370,7 +407,7 @@ fn past_colours(region: Region, kind: Kind, pitched: bool, a: f32, b: f32) -> (u
             Atoll => (&[0, 1, 15, 13, 12], &[7, 8, 29, 4]),
         },
         // Churches stood then as now; a Japanese temple's boards charred or dark.
-        Kind::Church if region == EastAsia => {
+        Kind::Church if matches!(region, EastAsia | Taiwan) => {
             (&[12, 13, CHARRED, 12, 30], &[KAWARA, 26, 12, 21, KAWARA])
         }
         Kind::Church => {
@@ -425,7 +462,7 @@ fn past_colours(region: Region, kind: Kind, pitched: bool, a: f32, b: f32) -> (u
             ),
             // Charred and dark-stained boards and white shikkui plaster under kawara, smoked and weathered grey, some
             // glazed black; a poorer house's rusted tin.
-            EastAsia => (
+            EastAsia | Taiwan => (
                 &[CHARRED, 12, CHARRED, 13, 12, 15, CHARRED, 0, 12, 19, 13],
                 &[
                     IBUSHI, KAWARA, IBUSHI, GLAZED, IBUSHI, 26, KAWARA, IBUSHI, 8, IBUSHI, GLAZED,
@@ -518,6 +555,7 @@ pub(super) fn detail_share(region: Region, kind: Kind) -> f32 {
             Nordic | Iceland => 0.0,
             West => 0.15,
             EastAsia => 0.05,
+            Taiwan => 0.05,
             // Shutters are rare in Britain, Holland and Denmark.
             British | Celtic => 0.03,
             NorthSea => 0.08,
@@ -542,6 +580,8 @@ pub(super) fn detail_share(region: Region, kind: Kind) -> f32 {
             West => 0.35,
             // A Japanese block's balconies, floor over floor.
             EastAsia => 0.85,
+            // A walk-up's or a tower's balconies, often caged.
+            Taiwan => 0.6,
             British => 0.3,
             Celtic => 0.2,
             NorthSea => 0.45,
@@ -576,6 +616,7 @@ pub(super) struct RoofRules {
 /// In a past `period` ([`past_roof_rules`]): Micronesia's and Hawaii's houses under iron, not concrete, more of
 /// Europe's low blocks under tile and slate, and many of the Pacific's and Japan's under iron and kawara.
 pub(super) fn roof_rules(region: Region, kind: Kind, period: Period) -> RoofRules {
+    let region = region.in_period(period);
     let rules = todays_roof_rules(region, kind);
     if period.is_past() {
         past_roof_rules(region, rules)
@@ -601,7 +642,7 @@ fn past_roof_rules(region: Region, rules: RoofRules) -> RoofRules {
         // A colonial store's or bungalow's hipped iron; Japan's two- and three-storey shops and inns under kawara.
         Tropical => 0.65,
         Atoll => 0.5,
-        EastAsia => 0.45,
+        EastAsia | Taiwan => 0.45,
         Micronesia => 0.4,
         Hawaii => 0.35,
         _ => rules.block,
@@ -631,6 +672,8 @@ fn todays_roof_rules(region: Region, kind: Kind) -> RoofRules {
         (Micronesia, _) => 0.65,
         (Hawaii, _) => 0.1,
         (Atoll, _) => 0.1,
+        // Taiwan's concrete townhouses and walk-ups nearly all flat; sheet over a few.
+        (Taiwan, _) => 0.95,
         _ => 0.0,
     };
     let block = match region {
@@ -646,7 +689,7 @@ fn todays_roof_rules(region: Region, kind: Kind) -> RoofRules {
         NorthSea => 0.35,
         Aegean | Hawaii => 0.05,
         NorthAfrica => 0.03,
-        Tropical | Arid | EastAsia | Malta | Nile | Micronesia | Atoll => 0.0,
+        Tropical | Arid | EastAsia | Taiwan | Malta | Nile | Micronesia | Atoll => 0.0,
     };
     let pitch = match (region, kind) {
         (_, Kind::Block) => [18.0, 8.0],
@@ -659,7 +702,7 @@ fn todays_roof_rules(region: Region, kind: Kind) -> RoofRules {
         (West, _) => [17.0, 10.0],
         (Florida, _) => [18.0, 8.0],
         // Kawara at about 4 sun in 10, sheet metal lower.
-        (EastAsia, _) => [16.0, 12.0],
+        (EastAsia | Taiwan, _) => [16.0, 12.0],
         // A Victorian terrace's 30-44 degrees, Scotland's steeper slate, Holland's and Denmark's steep tile.
         (British, _) => [30.0, 14.0],
         (Celtic, _) => [35.0, 12.0],
@@ -682,6 +725,7 @@ fn todays_roof_rules(region: Region, kind: Kind) -> RoofRules {
         Arid => 0.5,
         West => 0.55,
         EastAsia => 0.5,
+        Taiwan => 0.35,
         British => 0.3,
         Celtic => 0.15,
         NorthSea => 0.25,
@@ -730,7 +774,8 @@ mod tests {
             h ^= u64::from(b);
             h = h.wrapping_mul(0x0000_0100_0000_01b3);
         };
-        for region in REGIONS {
+        // Every region's as it was before Taiwan's own (2026-10-29).
+        for region in REGIONS.into_iter().filter(|r| *r != Region::Taiwan) {
             for kind in KINDS {
                 for pitched in [false, true] {
                     for i in 0..37 {
@@ -832,6 +877,107 @@ mod tests {
         assert_eq!(
             roof_rules(Region::Micronesia, Kind::House, Period::Today).flat,
             0.65
+        );
+    }
+
+    #[test]
+    fn taiwans_palettes_are_darker_tiles_under_flat_concrete() {
+        let share = |v: &[(u8, u8)], f: &dyn Fn(u8, u8) -> bool| {
+            v.iter().filter(|(w, r)| f(*w, *r)).count() as f32 / v.len() as f32
+        };
+        let tiles = [
+            2, 3, 15, 16, 22, 30, 4, 5, TILE_GREY, TILE_DARK, TILE_TAN, TILE_DUN, TILE_OLIVE,
+            TILE_BROWN, TILE_MAUVE, TILE_ROSE,
+        ];
+        // `buildings.wgsl`'s `WALLS` (0-31) and the colour cube.
+        const WALLS: [[u8; 3]; 32] = [
+            [206, 202, 190],
+            [200, 186, 156],
+            [168, 166, 158],
+            [142, 141, 136],
+            [146, 78, 60],
+            [116, 80, 64],
+            [190, 164, 116],
+            [148, 166, 180],
+            [154, 174, 138],
+            [192, 158, 148],
+            [204, 168, 96],
+            [160, 165, 168],
+            [96, 72, 56],
+            [216, 216, 210],
+            [88, 98, 108],
+            [190, 174, 142],
+            [200, 140, 104],
+            [214, 184, 112],
+            [222, 218, 206],
+            [210, 182, 136],
+            [214, 180, 150],
+            [178, 180, 176],
+            [196, 184, 160],
+            [128, 142, 152],
+            [128, 44, 36],
+            [74, 104, 140],
+            [88, 120, 96],
+            [196, 190, 170],
+            [70, 92, 112],
+            [78, 104, 100],
+            [150, 144, 132],
+            [196, 188, 166],
+        ];
+        let luma = |w: u8| -> f32 {
+            let rgb = if w < CUBE_FIRST {
+                WALLS[usize::from(w)]
+            } else if w < EXTRA_FIRST {
+                let i = w - CUBE_FIRST;
+                [i / 36 * 51, i / 6 % 6 * 51, i % 6 * 51]
+            } else {
+                [200, 200, 200]
+            };
+            0.2126 * f32::from(rgb[0]) + 0.7152 * f32::from(rgb[1]) + 0.0722 * f32::from(rgb[2])
+        };
+        let mean = |v: &[(u8, u8)]| v.iter().map(|(w, _)| luma(*w)).sum::<f32>() / v.len() as f32;
+        for kind in [Kind::House, Kind::Terrace, Kind::Block, Kind::Tower] {
+            let now = choices(Region::Taiwan, kind, Period::Today, false);
+            // The tiles' greys, beige, tan, salmon and brown on four in five; spread over many, none a fifth.
+            assert!(share(&now, &|w, _| tiles.contains(&w)) > 0.8, "{kind:?}");
+            let mut seen = std::collections::HashMap::new();
+            for (w, _) in &now {
+                *seen.entry(*w).or_insert(0usize) += 1;
+            }
+            assert!(seen.len() >= 10, "{kind:?} {}", seen.len());
+            assert!(
+                seen.values().all(|n| *n < now.len() / 5),
+                "{kind:?} {seen:?}"
+            );
+            // Darker than Japan's walls.
+            let japan = choices(Region::EastAsia, kind, Period::Today, false);
+            assert!(
+                mean(&now) + 15.0 < mean(&japan),
+                "{kind:?} {} {}",
+                mean(&now),
+                mean(&japan)
+            );
+            // Flat roofs mostly grey concrete and green-grey waterproofing, a heat tile's red now and then, no
+            // membranes.
+            assert!(share(&now, &|_, r| matches!(r, 14 | 27)) > 0.45, "{kind:?}");
+            assert!(share(&now, &|_, r| r == 23) < 0.12, "{kind:?}");
+            assert_eq!(share(&now, &|_, r| matches!(r, 10 | 24)), 0.0, "{kind:?}");
+            assert!(
+                roof_rules(Region::Taiwan, kind, Period::Today).flat >= 0.95 || kind != Kind::House
+            );
+            // Its past is Japan's.
+            assert_eq!(
+                choices(Region::Taiwan, kind, Period::Year(1942), true),
+                choices(Region::EastAsia, kind, Period::Year(1942), true)
+            );
+        }
+        assert_eq!(
+            roof_rules(Region::Taiwan, Kind::Block, Period::Today).block,
+            0.0
+        );
+        assert_eq!(
+            roof_rules(Region::Taiwan, Kind::House, Period::Year(1942)).flat,
+            roof_rules(Region::EastAsia, Kind::House, Period::Year(1942)).flat
         );
     }
 

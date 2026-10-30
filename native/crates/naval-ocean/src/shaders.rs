@@ -72,6 +72,10 @@ pub const WAKE_FIELD: Entry = Entry {
     path: "naval-ocean/shaders/wake_field.wgsl",
     source: include_str!("../shaders/wake_field.wgsl"),
 };
+pub const FOAM_SIM: Entry = Entry {
+    path: "naval-ocean/shaders/foam_sim.wgsl",
+    source: include_str!("../shaders/foam_sim.wgsl"),
+};
 pub const RAIN_HEIGHTS: Entry = Entry {
     path: "naval-ocean/shaders/rain_heights.wgsl",
     source: include_str!("../shaders/rain_heights.wgsl"),
@@ -88,7 +92,7 @@ pub const SPINDRIFT: Entry = Entry {
 /// Every file of the ocean's own that its pipelines are built from, with its path on disk (hot reload), for the
 /// renderer's library: the modules in dependency order, then the entries. The stand-in environment's fill and the
 /// backdrop (tools only) are not among them, nor the clouds' and the sky's modules ([`EXTERNAL_FILES`]).
-pub const FILES: [naval_render::ShaderFile; 31] = [
+pub const FILES: [naval_render::ShaderFile; 32] = [
     naval_render::shader_file!("shaders/water_properties.wgsl"),
     naval_render::shader_file!("shaders/pcg.wgsl"),
     naval_render::shader_file!("shaders/complex.wgsl"),
@@ -118,6 +122,7 @@ pub const FILES: [naval_render::ShaderFile; 31] = [
     naval_render::shader_file!("shaders/surface.wgsl"),
     naval_render::shader_file!("shaders/stamps.wgsl"),
     naval_render::shader_file!("shaders/wake_field.wgsl"),
+    naval_render::shader_file!("shaders/foam_sim.wgsl"),
     naval_render::shader_file!("shaders/spindrift.wgsl"),
     naval_render::shader_file!("shaders/reflection_tiles.wgsl"),
 ];
@@ -200,6 +205,7 @@ mod tests {
             ENVIRONMENT_FILL,
             BACKDROP,
             WAKE_FIELD,
+            FOAM_SIM,
             STAMPS,
             UNDERWATER_PROBE,
             HULL_HEIGHTS,

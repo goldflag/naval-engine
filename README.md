@@ -7,7 +7,7 @@ they stand on (latitude and longitude, the sun's and the moon's places) and the 
 and coastline data into land. Ships from any glTF file float on that sea with their wakes and smoke. None of it needs the game's simulation;
 `engine-example` is a window that draws them all.
 
-Exported from the game at <!-- exported-commit -->`01c6c45aad682b2aa98bb2d745505e78c0b33aa3`.
+Exported from the game at <!-- exported-commit -->`f02c2bf92a18cf57b03d025519055731224cc27f`.
 
 ## Where changes go
 
@@ -32,7 +32,7 @@ This repository is an export. The crates live in the game's repository, and chan
 | `naval-osm` | OpenStreetMap vector tiles: the MVT decoder, typed layers and web-mercator tile math |
 | `naval-overture` | Overture Maps' infrastructure (GeoParquet): power lines, towers and masts over a box |
 | `naval-land-bake` | The bake's host and the `naval-land-bake` command: makes a land release and bakes its squares into a store, fetching the elevation tiles over the network ([its README](native/crates/naval-land-bake/README.md)) |
-| `naval-landscape` | The real world's look on the land, fetched from open sources, cached on disk and made on worker threads: Sentinel-2 colour and land cover (NAIP in the United States), OpenStreetMap's roads, railways and waters, finer relief, tree canopy, the horizon's land, and the buildings, ports, bridges, airfields, bases and power lines on it |
+| `naval-landscape` | The real world's look on the land, fetched from open sources, cached on disk and made on worker threads: Sentinel-2 colour and land cover (NAIP in the United States), OpenStreetMap's roads, railways and waters, finer relief, tree canopy, the horizon's land, and the buildings, ports, bridges, airfields, bases and power lines on it; `naval_landscape::buildings::set_clear_areas` leaves ground clear for landmarks the host draws itself (native/docs/terrain/buildings.md) |
 | `naval-vessel` | Any glTF/GLB ship lit by the scene (sun, sky light, shadows, haze, night, navigation lamps), from a `<model>.vessel.json` setup giving its length, axes, waterline, funnels and lamps; `naval-vessel inspect <file.glb> --write` starts one ([native/docs/vessel.md](native/docs/vessel.md)) |
 | `naval-afloat` | A hull riding the drawn sea (heave, pitch and roll from the ocean's own waves) and what it stirs: its wake, bow waves, bow spray and funnel smoke ([native/docs/afloat.md](native/docs/afloat.md)) |
 | `naval-globe` | The round Earth seen from space: an orthographic globe with the world chart's land, coasts, reefs, depth bands and graticule, drawn on the GPU |

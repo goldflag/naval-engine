@@ -2,6 +2,26 @@
 
 Index: [README.md](README.md). Each subject page measures its own feature's cost.
 
+## The foam field
+
+The foam ships and splashes leave ([foam.md](foam.md)) runs as compute before the water pass: each 30 Hz step is one
+compute pass of two dispatches over the field (an advect and a settle, 1,024² cells on High and Ultra, 512² on Medium,
+none on Low), at most three steps a frame. Each pass is timed by the renderer core's GPU timer as `ocean foam step`
+(beside `ocean wake step`). A cell the window takes in also reads the trails' tiles and the splashes once. In the water
+pass a pixel within the field's window reads four of its texels and the clump field in place of the drawn foam. Its
+memory: 24 MB on High (two state layers and a scratch layer, `Rgba16Float`), 6 MB on Medium.
+
+Each 8 × 8 workgroup first marks the splashes whose reach overlaps its cells (one splash an invocation, as bits in
+workgroup memory) and its cells loop over those alone, in order, so the field is the same bit for bit: the surge in both
+passes, the deposits and a cell taken in. Measured 2026-10-29 (Apple M5 Pro, High, 2560 × 1440, the Bismarck at 27 kn,
+chase camera, frames stepped at 60 fps): a step runs at 30 Hz, on every other frame. With no splashes (her guns off, a
+still Fletcher 20 km off) a step took 0.71 ms at least, 0.73 at p10 and 0.91 median. Under shelling (two Clevelands, an
+Atlanta and two Fletchers 9 km off, 8 to 18 splashes landing in the window at a time) it took 0.83, 0.87 and 0.92 ms;
+with every cell testing every splash (twice for the surges) 1.2 at p10 and 1.6 median, the two shaders swapped by hot
+reload between rounds in one client. With no splashes the culled shader ran 0.1 ms slower at p10 in that A/B (0.84
+against 0.74, medians alike). No other game client ran, but other worktrees' GPU tests and stills shared the GPU in
+bursts, so the min and p10 are the steady figures; a few timer samples near 0 ms are left out.
+
 ## The water pass on High
 
 Measured with `bun native/tools/water-cost.ts` (a duel held still, five views, the ocean on and off) and an A/B of

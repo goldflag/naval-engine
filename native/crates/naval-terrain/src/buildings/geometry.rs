@@ -356,6 +356,23 @@ pub fn ring_distance(ring: &[[f32; 2]], p: [f32; 2]) -> f32 {
         .fold(f32::INFINITY, f32::min)
 }
 
+/// Whether rings `a` and `b` (either way round) overlap: an edge of one crosses an edge of the other, or one holds a
+/// point of the other (wholly within it).
+pub fn overlaps(a: &[[f32; 2]], b: &[[f32; 2]]) -> bool {
+    if a.len() < 3 || b.len() < 3 {
+        return false;
+    }
+    let crosses = |p: [f32; 2], q: [f32; 2], r: [f32; 2], s: [f32; 2]| {
+        side(p, q, r) * side(p, q, s) < 0.0 && side(r, s, p) * side(r, s, q) < 0.0
+    };
+    a.iter().any(|p| contains(b, *p))
+        || b.iter().any(|p| contains(a, *p))
+        || (0..a.len()).any(|i| {
+            let (p, q) = (a[i], a[(i + 1) % a.len()]);
+            (0..b.len()).any(|j| crosses(p, q, b[j], b[(j + 1) % b.len()]))
+        })
+}
+
 /// Which side of the edge `a`-`b` of a counter-clockwise convex polygon `p` lies on: positive inside.
 fn side(a: [f32; 2], b: [f32; 2], p: [f32; 2]) -> f32 {
     (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])

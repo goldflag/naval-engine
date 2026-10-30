@@ -141,7 +141,7 @@ pub fn build_far(input: &FarInput) -> ChunkMesh {
     let index = input.index;
     let corner = [f64::from(index[0]) * CHUNK_M, f64::from(index[1]) * CHUNK_M];
     let mut mesh = ChunkMesh {
-        region: input.chunk_region.index(),
+        region: input.chunk_region.in_period(input.period).index(),
         period: input.period,
         ..ChunkMesh::default()
     };
@@ -221,6 +221,8 @@ fn core_storeys(region: Region, t: f32) -> f32 {
         Region::Nordic | Region::Temperate | Region::Mediterranean | Region::EastAsia => {
             3.0 + (t * 3.99).floor()
         }
+        // Taiwan's walk-ups of four and five.
+        Region::Taiwan => 4.0 + (t * 1.99).floor(),
     }
 }
 
@@ -235,6 +237,7 @@ fn dense_block(region: Region, share: f32, t: f32) -> bool {
         Region::American | Region::Florida | Region::Hawaii => share > 0.85 && t < 0.35,
         Region::West => share > 0.92 && t < 0.12,
         Region::EastAsia => share > 0.8 && t < (share - 0.6) * 1.5,
+        Region::Taiwan => share > 0.85 && t < (share - 0.7) * 1.2,
         Region::Nordic
         | Region::Temperate
         | Region::Mediterranean
@@ -251,6 +254,36 @@ fn dense_block(region: Region, share: f32, t: f32) -> bool {
 /// What stands along a run of lots: its kind, its storeys, the share of a lot's width its buildings fill, their depth
 /// (a share of the lot's) and their setback from the street (m); by the region's and the infill's rules.
 fn run_building(region: Region, dense: bool, local: f32, hash: &dyn Fn(i64) -> f32) -> RunBuilding {
+    // Taiwan's rows of townhouses filling their lots at the lane, deep in them, of three to five storeys (four and five
+    // where the town is built over), a core's walk-ups of four and five (`infill::taiwanese`).
+    if region == Region::Taiwan {
+        let (kind, storeys, depth) = if dense {
+            (
+                Kind::Block,
+                core_storeys(region, hash(3)),
+                0.75 + 0.2 * f64::from(hash(4)),
+            )
+        } else if local > 0.6 {
+            (
+                Kind::Terrace,
+                4.0 + (hash(3) * 1.99).floor(),
+                0.65 + 0.3 * f64::from(hash(4)),
+            )
+        } else {
+            (
+                Kind::Terrace,
+                3.0 + (hash(3) * 1.99).floor(),
+                0.65 + 0.3 * f64::from(hash(4)),
+            )
+        };
+        return RunBuilding {
+            kind,
+            storeys,
+            fill: 0.97,
+            depth,
+            setback: 0.25,
+        };
+    }
     let terrace = match region {
         Region::West => local > 0.8 && hash(5) < 0.2,
         Region::EastAsia => local > 0.6 && hash(5) < 0.3,
@@ -498,10 +531,15 @@ fn district(
                 }));
         }
     }
+    // A block's mass over its runs stands where they may (its middle on ground that stood, outside the host's areas).
     blocks.extend(
         groups
             .values()
-            .filter_map(|runs| block_mass(runs, centre, [u, v], corner)),
+            .filter_map(|runs| block_mass(runs, centre, [u, v], corner))
+            .filter(|m| {
+                let [x, z] = m.at();
+                (input.stood)([corner[0] + f64::from(x), corner[1] + f64::from(z)])
+            }),
     );
 }
 
@@ -677,7 +715,9 @@ fn run(input: &FarInput, r: Run) -> Option<RunMass> {
     let mut eaves = storeys * storey_m;
     // The roof: pitched as the region's houses and terraces are (a core's low block hipped as its blocks are), its rise
     // from the region's pitch over half the depth.
-    let rules = roof_rules(r.region, b.kind, input.period);
+    // Its look in the period: a past Taiwan's East Asia's (`Region::in_period`), its lots its own.
+    let look = r.region.in_period(input.period);
+    let rules = roof_rules(look, b.kind, input.period);
     let pitched = match b.kind {
         Kind::Block => storeys <= 6.0 && hash(9) < rules.block,
         _ => hash(9) >= rules.flat,
@@ -702,7 +742,7 @@ fn run(input: &FarInput, r: Run) -> Option<RunMass> {
         eaves *= scale;
         rise *= scale;
     }
-    let (wall, roof) = colours(r.region, b.kind, input.period, pitched, hash(11), hash(12));
+    let (wall, roof) = colours(look, b.kind, input.period, pitched, hash(11), hash(12));
     let local_x = (centre[0] - r.corner[0]) as f32;
     let local_z = (centre[1] - r.corner[1]) as f32;
     let foot = low - SINK_M;

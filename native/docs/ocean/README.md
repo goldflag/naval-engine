@@ -3,7 +3,7 @@
 | Question | Page |
 | --- | --- |
 | How the waves are made: the spectrum, the swell the hulls ride, gusts, tiling | [waves.md](waves.md) |
-| Whitecaps, foam, gale streaks, rain, spindrift and the spray haze | [foam.md](foam.md) |
+| Whitecaps, foam, the foam wakes and splashes leave (the foam field), gale streaks, rain, spindrift and the spray haze | [foam.md](foam.md) |
 | How the sea is lit: the sky, reflections, glitter, light through the waves, shadows, lamps at night | [light.md](light.md) |
 | The water mesh: the clipmap, the view's standoff, magnified views | [mesh.md](mesh.md) |
 | Coasts, surf, the sea under time compression, regional water colour | [coasts.md](coasts.md) |
@@ -44,6 +44,7 @@ Paths are in `native/crates/naval-ocean`.
 | `src/shore.rs`, `src/optics.rs`, `shaders/water_properties.wgsl` | The coast's fetch and surf; geographic water ([coasts.md](coasts.md)) |
 | `src/oil.rs`, `shaders/oil.wgsl` | Oil slicks ([oil.md](oil.md)) |
 | `src/ship_wake.rs`, `src/wake/`, `src/trail.rs`, `src/stamps.rs`, `src/torpedo_tracks.rs`, `shaders/wake_field.wgsl`, `stamps.wgsl`, `wake.wgsl` | The wakes ([wakes.md](wakes.md)) |
+| `src/foam_sim.rs`, `src/splash_foam.rs`, `shaders/foam_sim.wgsl` | The foam field and the splashes' deposits ([foam.md](foam.md)) |
 | `src/bow_waves.rs`, `src/hull_foam.rs`, `src/hull_profile.rs`, `src/hull_slice.rs` | Bow and stern waves, hull contact foam and shelter, waterline profiles sliced from the models ([bow-waves.md](bow-waves.md)) |
 | `src/hull_heights.rs`, `src/sea_read.rs`, `src/underwater.rs`, `src/caustics.rs` and their shaders | The sea read beside the surface (the hulls' wet band, the underwater probe), the underwater view, caustics ([sea-sky.md](../sea-sky.md)) |
 | `src/environment.rs`, `shaders/environment_fill.wgsl`, `src/backdrop.rs`, `shaders/backdrop.wgsl` | The sky's environment as the sea binds it ([light.md](light.md)); `StandInSky` for the stills |

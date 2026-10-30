@@ -13,6 +13,7 @@ pub mod bolt;
 pub mod cascades;
 pub mod detail_noise;
 pub mod game_sky;
+pub mod glow;
 mod gpu;
 pub mod key_light;
 pub mod layer;

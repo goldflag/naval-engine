@@ -7,7 +7,7 @@ no third-party requests at runtime.
 | Runtime asset | Source | Artist | Ground covered by one repeat |
 | --- | --- | --- | --- |
 | rock-color.jpg | [Aerial Rocks 02](https://polyhaven.com/a/aerial_rocks_02), 1K diffuse | Rob Tuytel | 12–190 m by surface |
-| ground-color.jpg | [Aerial Grass Rock](https://polyhaven.com/a/aerial_grass_rock), 1K diffuse | Rob Tuytel | 15 m |
+| ground-color.jpg | [Grass Ground](https://polyhaven.com/a/grass_ground), 1K diffuse | Charlotte Baglioni | 15 m and 3.7 m |
 | sand-color.jpg | [Aerial Beach 01](https://polyhaven.com/a/aerial_beach_01), 1K diffuse | Rob Tuytel | 30 m |
 | snow-color.jpg | [Snow Field Aerial](https://polyhaven.com/a/snow_field_aerial), 1K colour | Rob Tuytel | 80 m |
 
@@ -26,10 +26,10 @@ colours it chooses itself.
 
 | Material | Source (Poly Haven, CC0) | Author | Ground the source covers | One repeat in the game | Written at |
 | --- | --- | --- | --- | --- | --- |
-| grass | [Aerial Grass Rock](https://polyhaven.com/a/aerial_grass_rock) | Rob Tuytel | 15 m | 12 m | 1024² |
-| dry-grass | [Aerial Ground Rock](https://polyhaven.com/a/aerial_ground_rock) | Rob Tuytel | 20 m | 16 m | 1024² |
+| grass | [Grass Ground](https://polyhaven.com/a/grass_ground) | Charlotte Baglioni | 2.5 m | 6 m | 512² |
+| dry-grass | [Withered Grass](https://polyhaven.com/a/withered_grass) | Charlotte Baglioni | 2 m | 6 m | 512² |
 | soil | [Farm Soil](https://polyhaven.com/a/farm_soil) | Amal Kumar | 2 m | 6 m | 512² |
-| scrub | [Coast Sand Rocks 02](https://polyhaven.com/a/coast_sand_rocks_02) | Rob Tuytel | 15 m | 15 m | 1024² |
+| scrub | [Sparse Grass](https://polyhaven.com/a/sparse_grass) | Amal Kumar | 2 m | 6 m | 512² |
 | dry-scrub | [Aerial Rocks 01](https://polyhaven.com/a/aerial_rocks_01) | Rob Tuytel | 80 m | 30 m | 1024² |
 | forest | [Leaves Forest Ground](https://polyhaven.com/a/leaves_forest_ground) | Dario Barresi, Dimitrios Savva | 1.26 m | 2 m | 1024² |
 | rock | [Aerial Rocks 02](https://polyhaven.com/a/aerial_rocks_02) | Rob Tuytel | 50 m | 24 m | 1024² |
