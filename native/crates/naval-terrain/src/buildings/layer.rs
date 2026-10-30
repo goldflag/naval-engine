@@ -187,13 +187,18 @@ pub fn hours_after_dusk(sun: Vec3, pole: Vec3) -> f32 {
 /// Added to a chunk translation's w (its region) when it is drawn in a past period (`buildings.wgsl` reads bit 5).
 pub const PAST_BIT: u8 = 32;
 /// A chunk translation's w over this is its fade (`buildings.wgsl`'s `fade_hidden`): bit 0 whether it fades out, the
-/// rest the share (in 255ths) hidden fading in or gone fading out.
+/// rest the share (in 255ths) hidden fading in or gone fading out (nine bits).
 pub const FADE_UNIT: u32 = 64;
+/// Added to a far chunk's translation's w ([`Lod::Far`]): its towers' boxes sink into the ground over the far level's
+/// last stretch as its masses do (`buildings.wgsl`'s `vs_building`, bit 15), about the translation's y, their lowest
+/// foot.
+pub const FAR_BIT: u32 = 1 << 15;
 
 /// A chunk translation's w: its region, plus [`PAST_BIT`] when `past`, plus its `fade` ([`fade_code`]) over
-/// [`FADE_UNIT`]. A whole number under 2^24, exact in an f32.
-fn translation_w(region: u8, past: bool, fade: u32) -> f32 {
-    f32::from(region + if past { PAST_BIT } else { 0 }) + (fade * FADE_UNIT) as f32
+/// [`FADE_UNIT`], plus [`FAR_BIT`] when `far`. A whole number under 2^24, exact in an f32.
+fn translation_w(region: u8, past: bool, fade: u32, far: bool) -> f32 {
+    f32::from(region + if past { PAST_BIT } else { 0 })
+        + (fade * FADE_UNIT + if far { FAR_BIT } else { 0 }) as f32
 }
 
 /// A chunk's fade at `t` (0-1) of the way through it: fading in, the share still hidden; fading out, the share gone
@@ -282,6 +287,10 @@ pub struct BuildingCounts {
     pub masses: usize,
     pub drawn_far_chunks: usize,
     pub drawn_masses: usize,
+    /// The far chunks' towers' triangles uploaded, and those drawn last frame (in `triangles` and `drawn_triangles`
+    /// too).
+    pub far_triangles: usize,
+    pub drawn_far_triangles: usize,
     pub fading: usize,
 }
 
@@ -329,6 +338,8 @@ pub struct BuildingsLayer {
     camera: Option<[f64; 3]>,
     /// The share of the lit rooms left unshaded (`set_windows`).
     windows: f32,
+    /// The share of the shop signs' light let out (`set_signs`).
+    signs: f32,
     /// The hours since dusk by the sun (`set_sun`, [`hours_after_dusk`]): how many lamps still burn.
     night_hours: f32,
     /// Each chunk's obstruction lights (`night::beacons_of`, chunk-local), and a count of their changes.
@@ -870,6 +881,7 @@ impl BuildingsLayer {
             view_sides: Vec::new(),
             camera: None,
             windows: 1.0,
+            signs: 1.0,
             night_hours: EVENING_HOURS,
             beacons: HashMap::new(),
             beacons_version: 0,
@@ -1041,6 +1053,7 @@ impl BuildingsLayer {
             if chunk.lod == Lod::Far {
                 c.far_chunks += 1;
                 c.masses += chunk.mass_count as usize;
+                c.far_triangles += chunk.index_count as usize / 3;
             }
         }
         for (chunk, _) in self.fading_out.values() {
@@ -1054,6 +1067,8 @@ impl BuildingsLayer {
                 if self.far_shown() {
                     c.drawn_far_chunks += 1;
                     c.drawn_masses += self.mass_range(chunk).len();
+                    c.drawn_far_triangles += chunk.index_count as usize / 3;
+                    c.drawn_triangles += chunk.index_count as usize / 3;
                 }
             } else {
                 c.drawn_chunks += 1;
@@ -1235,6 +1250,12 @@ impl BuildingsLayer {
         self.windows = share.clamp(0.0, 1.0);
     }
 
+    /// The share of Taiwan's shop signs' light a scenario's rule lets out, 0-1 (`night::LightScales::signs`: dimmed
+    /// under a dimout, out under a blackout; `buildings.wgsl`'s `sign_surface`).
+    pub fn set_signs(&mut self, share: f32) {
+        self.signs = share.clamp(0.0, 1.0);
+    }
+
     /// Toward the sun and the celestial pole (world: x east, y up, z south), whichever body lights the scene: the lamps
     /// in the windows go out as the night wears on (`buildings.wgsl`'s `evening_share`).
     pub fn set_sun(&mut self, sun: Vec3, pole: Vec3) {
@@ -1266,7 +1287,15 @@ impl BuildingsLayer {
     /// Its corner in the world, and its region (w; plus [`PAST_BIT`] in a past period, plus its `fade`).
     fn translation(&self, chunk: &GpuChunk, fade: u32) -> [f32; 4] {
         let t = self.corner(chunk);
-        [t.x, t.y, t.z, translation_w(chunk.region, chunk.past, fade)]
+        let far = chunk.lod == Lod::Far;
+        // A far chunk's y: its towers' lowest foot, which they sink to (`vs_building`); `vs_far` reads x and z alone.
+        let y = if far { chunk.min[1] } else { t.y };
+        [
+            t.x,
+            y,
+            t.z,
+            translation_w(chunk.region, chunk.past, fade, far),
+        ]
     }
 
     /// Its corner in the world.
@@ -1483,7 +1512,7 @@ impl SceneLayer for BuildingsLayer {
         let far_shown = self.far_shown();
         let shown = |c: &GpuChunk| {
             if c.lod == Lod::Far {
-                far_shown && c.masses.is_some()
+                far_shown && c.draws()
             } else {
                 c.buffers.is_some()
             }
@@ -1520,6 +1549,7 @@ impl SceneLayer for BuildingsLayer {
         let fog = &self.fog;
         let u = &mut self.uniforms;
         u.fill_sky[3] = if self.cloud_bound { 1.0 } else { 0.0 };
+        u.fill_ground[3] = self.signs;
         u.fog_color = [fog.color[0], fog.color[1], fog.color[2], fog.power];
         u.fog = [fog.start, fog.end, fog.sky_blend_distance, 1.0];
         u.params = [
@@ -1540,7 +1570,8 @@ impl SceneLayer for BuildingsLayer {
         pass.set_bind_group(1, &self.group, &[]);
         pass.set_bind_group(2, &self.environment, &[]);
         pass.set_bind_group(3, &self.cloud_group, &[]);
-        // Whole and boxed chunks, nearest first; then those fading (in over a level, and the levels fading out).
+        // Whole and boxed chunks and the far chunks' towers, nearest first; then those fading (in over a level, and the
+        // levels fading out).
         let drawn = self.visible.iter().filter_map(|i| self.chunks.get(i));
         let fading_out = self
             .visible_out
@@ -1549,13 +1580,13 @@ impl SceneLayer for BuildingsLayer {
         let mut set = None;
         for (fading, chunk) in drawn
             .clone()
-            .filter(|c| c.lod != Lod::Far && c.fading_in.is_none())
+            .filter(|c| c.buffers.is_some() && c.fading_in.is_none())
             .map(|c| (false, c))
             .chain(
                 drawn
                     .clone()
-                    .filter(|c| c.lod != Lod::Far && c.fading_in.is_some())
-                    .chain(fading_out.clone().filter(|c| c.lod != Lod::Far))
+                    .filter(|c| c.buffers.is_some() && c.fading_in.is_some())
+                    .chain(fading_out.clone().filter(|c| c.buffers.is_some()))
                     .map(|c| (true, c)),
             )
         {
@@ -1652,7 +1683,8 @@ impl SceneLayer for BuildingsLayer {
         // casters it knows, and buildings stand within the land's heights.
         let mut first = true;
         for chunk in self.chunks.values() {
-            if chunk.buffers.is_none() {
+            // The far level casts nothing (its towers neither: their translation's y is their foot, `translation`).
+            if chunk.buffers.is_none() || chunk.lod == Lod::Far {
                 continue;
             }
             let (lo, hi) = self.bounds(chunk);
@@ -1819,24 +1851,34 @@ mod tests {
         // Today's w is the region alone, as before the period; a past period's sets bit 5 (`buildings.wgsl`).
         for region in super::super::region::REGIONS {
             let r = region.index();
-            assert_eq!(translation_w(r, false, 0), f32::from(r));
-            let packed = (translation_w(r, true, 0) + 0.5) as u32;
+            assert_eq!(translation_w(r, false, 0, false), f32::from(r));
+            let packed = (translation_w(r, true, 0, false) + 0.5) as u32;
             assert_eq!((packed & 31, packed >> 5), (u32::from(r), 1));
-            // A fade rides over both, the largest exact in an f32.
+            // A fade rides over both and a far chunk's bit over it, the largest exact in an f32.
             for fade in [1, fade_code(false, 0.0), fade_code(true, 1.0)] {
                 for past in [false, true] {
-                    let packed = (translation_w(r, past, fade) + 0.5) as u32;
-                    assert_eq!(
-                        (packed & 31, (packed >> 5) & 1, packed >> 6),
-                        (u32::from(r), u32::from(past), fade)
-                    );
+                    for far in [false, true] {
+                        let packed = (translation_w(r, past, fade, far) + 0.5) as u32;
+                        assert_eq!(
+                            (
+                                packed & 31,
+                                (packed >> 5) & 1,
+                                (packed >> 6) & 511,
+                                packed >> 15
+                            ),
+                            (u32::from(r), u32::from(past), fade, u32::from(far))
+                        );
+                    }
                 }
             }
         }
+        assert!(fade_code(true, 1.0) < 512, "the fade's nine bits");
+        assert_eq!(FAR_BIT, FADE_UNIT << 9);
         let shader = include_str!("../../shaders/buildings.wgsl");
         assert!(shader.contains("out.region = packed & 31u;"));
         assert!(shader.contains("out.past = (packed >> 5u) & 1u;"));
-        assert!(shader.contains("out.fade = packed >> 6u;"));
+        assert!(shader.contains("out.fade = (packed >> 6u) & 511u;"));
+        assert!(shader.contains("let far = (packed >> 15u) & 1u;"));
         assert_eq!(FADE_UNIT, 64);
     }
 

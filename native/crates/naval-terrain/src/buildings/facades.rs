@@ -1302,12 +1302,34 @@ fn window_px(w: Window, u: f32, v: f32) -> Px {
             c.rect(0.18, 0.28, 0.82, 0.66, alu);
             c.rect(0.195, 0.295, 0.495, 0.645, GLASS);
             c.rect(0.505, 0.295, 0.805, 0.645, GLASS);
-            // The cage before it: its frame, close upright bars and two rails, its floor standing out over a sill,
-            // and the sheet hood over it.
+            // The cage before it: its frame, close upright bars and three rails, a pressed-sheet band along its foot
+            // and a scrolled one under its head, its floor standing out over a sill, and the sheet hood over it. Bars,
+            // bands and frame cover about half the cage, so that far off, where a window is its mean, a cage still
+            // reads as a pale box over a dark pane rather than as the pane.
             let bar = accent(0.5, 0.12);
-            c.frame(0.14, 0.2, 0.86, 0.73, 0.014, bar);
-            c.bars_up(0.14, 0.2, 0.86, 0.73, 13, 0.007, bar);
-            c.bars_across(0.14, 0.2, 0.86, 0.73, 2, 0.007, bar);
+            c.frame(0.14, 0.2, 0.86, 0.73, 0.02, bar);
+            c.bars_up(0.14, 0.2, 0.86, 0.73, 15, 0.012, bar);
+            c.bars_across(0.14, 0.2, 0.86, 0.73, 3, 0.01, bar);
+            c.rect(
+                0.14,
+                0.2,
+                0.86,
+                0.29,
+                Px {
+                    height: 0.11,
+                    ..bar
+                },
+            );
+            c.rect(
+                0.14,
+                0.655,
+                0.86,
+                0.7,
+                Px {
+                    height: 0.11,
+                    ..bar
+                },
+            );
             c.rect(
                 0.13,
                 0.715,

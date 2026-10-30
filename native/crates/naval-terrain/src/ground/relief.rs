@@ -527,6 +527,22 @@ pub struct ReliefHeights {
 }
 
 impl ReliefHeights {
+    /// A snapshot of `pages` on `grid` (each in its layer, a later one in the same layer in an earlier's place), with no
+    /// land layer: a test's, a tool's.
+    pub fn of_pages(
+        grid: ReliefGrid,
+        pages: impl IntoIterator<Item = ([i32; 2], Arc<ReliefPage>)>,
+    ) -> Self {
+        let mut held = vec![None; (grid.slots * grid.slots) as usize];
+        for (index, page) in pages {
+            held[grid.layer(index) as usize] = Some((index, page));
+        }
+        Self {
+            grid: Some(grid),
+            held,
+        }
+    }
+
     fn page(&self, grid: ReliefGrid, index: [i32; 2]) -> Option<&ReliefPage> {
         match self.held.get(grid.layer(index) as usize) {
             Some(Some((k, page))) if *k == index => Some(page),

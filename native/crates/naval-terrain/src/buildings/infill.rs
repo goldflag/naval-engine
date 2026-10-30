@@ -10,7 +10,10 @@
 //!   houses of one or two storeys on 14 m lots where the town thins out, terraces and small blocks where it thickens,
 //!   blocks of four to seven storeys filling their lots in a dense core.
 //! - **Where.** Only on land (heights above 1 m), not on slopes steeper than [`MAX_SLOPE`], and never in a 100 m cell
-//!   of the chunk holding any footprint of the source (`occupied`): where the source has a town, the town is its.
+//!   of the chunk holding any footprint of the source ([`Held`]): where the source has a town, the town is its. In a
+//!   region whose source is a sparse map ([`fills_between`]: Taiwan's, where Microsoft has no footprints and OSM maps
+//!   a town's towers, schools and markets but few of its townhouses) a held cell its buildings cover little of is
+//!   filled too, between them: every lot's building there keeps [`CLEAR_M`] from every building of the source.
 //! - **Deterministic**: every choice is a hash of the lot's place in the theatre, so the same lot gets the same building
 //!   whichever window or chunk asks.
 
@@ -108,6 +111,209 @@ pub fn occupied(footprints: &[Footprint]) -> [bool; 100] {
     cells
 }
 
+/// How far a lot keeps from each of the source's buildings where the infill fills between them (m,
+/// [`fills_between`]).
+pub const CLEAR_M: f32 = 1.0;
+
+/// The share of a held 100 m cell the source's buildings may cover for the infill still to fill it between them, lot
+/// by lot, every lot there (held cell or not) clear of them by [`CLEAR_M`] ([`Held`]); 0 where a held cell is the
+/// source's alone (and a lot is tested by its cell alone, as before). Taiwan's: Microsoft has no footprints there and OSM
+/// maps a town's towers, schools, markets and stations but few of its townhouses (Taoyuan's station district: nine
+/// in ten of its built-up cells held, most under a fifth covered), where a block of townhouses covers half its ground
+/// and more.
+pub fn fills_between(region: Region) -> f32 {
+    match region {
+        Region::Taiwan => 0.35,
+        _ => 0.0,
+    }
+}
+
+/// Whether a region's lots keep their buildings off the land its roads take (`grounds::RoadLand`: each road's and
+/// railway's drawn strip along the whole building, a tertiary road's or wider's pavement past it, the median between
+/// paired one-way carriageways, the footways and pedestrian streets the map draws); elsewhere a lot is left out only
+/// where a road's strip reaches the circle about its middle (`MapTags::on_road`). Taiwan's: its lots, filled between a
+/// sparse map's buildings ([`fills_between`]) along its wide avenues, are 4-6 m by 12-17 m turned to their district's
+/// heading, whose ends reached a carriageway's stroke past that circle; and its main roads are mapped as two or four
+/// one-way carriageways with medians between them, their rows standing 7-8 m and more from a carriageway's middle line
+/// (its stroke 4.5 m wide each side).
+pub fn keeps_off_road_land(region: Region) -> bool {
+    region == Region::Taiwan
+}
+
+/// The most any region fills a held cell to ([`fills_between`]).
+const MOST_BETWEEN: f32 = 0.35;
+
+/// How far past its chunk a lot's building (and its [`CLEAR_M`]) can reach (m): its middle in the chunk, at most half
+/// a block's depth off it. A building of the source reaching that near the chunk is kept clear of, however far off its
+/// middle lies.
+pub const REACH_M: f32 = 30.0;
+
+/// A chunk's side (m), as the rings are laid.
+const CHUNK: f32 = CHUNK_M as f32;
+
+/// The samples along a chunk's side its cover is counted on (2 m apart, 50 to a 100 m cell): a cell's share is the
+/// samples the source's buildings hold, so rings that overlap (an outline its parts draw and its part on the ground, a
+/// footprint and an outline over it) count once.
+const SAMPLES: usize = 500;
+
+/// What the source holds of a chunk: the 100 m cells holding a footprint of it ([`occupied`]), the share of each its
+/// buildings cover, and their rings (chunk-local), so a lot laid between them keeps clear of them
+/// ([`fills_between`]).
+#[derive(Clone, Debug)]
+pub struct Held<'a> {
+    cells: [bool; 100],
+    covered: [f32; 100],
+    rings: Vec<&'a [[f32; 2]]>,
+    /// The rings whose boxes (out by [`CLEAR_M`]) touch each cell.
+    by_cell: Vec<Vec<u32>>,
+}
+
+impl Default for Held<'_> {
+    /// Nothing held: the infill on all the built-up cover.
+    fn default() -> Self {
+        Self {
+            cells: [false; 100],
+            covered: [0.0; 100],
+            rings: Vec::new(),
+            by_cell: vec![Vec::new(); 100],
+        }
+    }
+}
+
+impl<'a> Held<'a> {
+    /// The chunk's own footprints (`footprints`, chunk-local) and more rings of the source's buildings (`about`:
+    /// those whose middles lie in a neighbouring chunk but which may reach into this one, an outline its parts draw).
+    /// Only the footprints hold a cell, as before; all are kept clear of and counted in a cell's cover, as their union
+    /// ([`SAMPLES`]). A part above the ground (OSM's `min_height`) is left to its building's outline below it.
+    pub fn new(
+        footprints: &'a [Footprint],
+        about: impl IntoIterator<Item = &'a [[f32; 2]]>,
+    ) -> Self {
+        let mut held = Self {
+            cells: occupied(footprints),
+            ..Self::default()
+        };
+        held.rings = footprints
+            .iter()
+            .filter(|f| !f.raised())
+            .map(|f| f.ring.as_slice())
+            .chain(about)
+            .filter(|r| r.len() >= 3)
+            .collect();
+        let side = 100.0f32;
+        // The samples any of the rings holds, row by row (z), each row in words of 64 (x).
+        let step = CHUNK / SAMPLES as f32;
+        let words = SAMPLES.div_ceil(64);
+        let mut taken = vec![0u64; SAMPLES * words];
+        // The first sample at or past `v` (m), along either side.
+        let first = |v: f32| (v / step - 0.5).ceil().clamp(0.0, SAMPLES as f32) as usize;
+        let mut xs: Vec<f32> = Vec::new();
+        for (k, ring) in held.rings.iter().enumerate() {
+            let b = bounds(ring);
+            let lo = |v: f32| ((v - CLEAR_M) / side).floor().clamp(0.0, 9.0) as usize;
+            let hi = |v: f32| ((v + CLEAR_M) / side).floor().clamp(0.0, 9.0) as usize;
+            // A lot's building reaches no more than [`REACH_M`] past its chunk.
+            if b[2] < -REACH_M
+                || b[3] < -REACH_M
+                || b[0] > CHUNK + REACH_M
+                || b[1] > CHUNK + REACH_M
+            {
+                continue;
+            }
+            for j in lo(b[1])..=hi(b[3]) {
+                for i in lo(b[0])..=hi(b[2]) {
+                    held.by_cell[j * 10 + i].push(k as u32);
+                }
+            }
+            // Its samples in the chunk: each row's spans between its edges' crossings (even-odd, as
+            // `geometry::contains`).
+            for row in first(b[1])..first(b[3]) {
+                let z = (row as f32 + 0.5) * step;
+                xs.clear();
+                let mut a = ring[ring.len() - 1];
+                for &p in ring.iter() {
+                    if (p[1] > z) != (a[1] > z) {
+                        xs.push(p[0] + (z - p[1]) * (a[0] - p[0]) / (a[1] - p[1]));
+                    }
+                    a = p;
+                }
+                xs.sort_by(f32::total_cmp);
+                for &[from, to] in xs.as_chunks::<2>().0 {
+                    for c in first(from)..first(to) {
+                        taken[row * words + c / 64] |= 1 << (c % 64);
+                    }
+                }
+            }
+        }
+        // Each cell's share: the samples taken in it.
+        let per = SAMPLES / 10;
+        for row in 0..SAMPLES {
+            for w in 0..words {
+                let mut bits = taken[row * words + w];
+                while bits != 0 {
+                    let c = w * 64 + bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    held.covered[row / per * 10 + c / per] += 1.0;
+                }
+            }
+        }
+        let whole = (per * per) as f32;
+        for share in &mut held.covered {
+            *share /= whole;
+        }
+        held
+    }
+
+    /// The chunk's own footprints alone.
+    pub fn of(footprints: &'a [Footprint]) -> Self {
+        Self::new(footprints, std::iter::empty())
+    }
+
+    /// Whether cell `cell` (row by row, 0-99) holds a footprint of the source.
+    pub fn holds(&self, cell: usize) -> bool {
+        self.cells[cell]
+    }
+
+    /// The share of cell `cell` the source's buildings cover, 0-1.
+    pub fn covered(&self, cell: usize) -> f32 {
+        self.covered[cell].min(1.0)
+    }
+
+    /// Whether `ring` (chunk-local) overlaps no building of the source.
+    fn clear(&self, ring: &[[f32; 2]]) -> bool {
+        let b = bounds(ring);
+        let cell = |v: f32| (v / 100.0).floor().clamp(0.0, 9.0) as usize;
+        for j in cell(b[1])..=cell(b[3]) {
+            for i in cell(b[0])..=cell(b[2]) {
+                for &k in &self.by_cell[j * 10 + i] {
+                    let r = self.rings[k as usize];
+                    let rb = bounds(r);
+                    if rb[0] > b[2] || rb[2] < b[0] || rb[1] > b[3] || rb[3] < b[1] {
+                        continue;
+                    }
+                    if geometry::overlaps(ring, r) {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+}
+
+/// A ring's box: its least x and z, then its most.
+fn bounds(ring: &[[f32; 2]]) -> [f32; 4] {
+    ring.iter()
+        .fold([f32::MAX, f32::MAX, f32::MIN, f32::MIN], |b, p| {
+            [
+                b[0].min(p[0]),
+                b[1].min(p[1]),
+                b[2].max(p[0]),
+                b[3].max(p[1]),
+            ]
+        })
+}
+
 /// A lot's building: its footprint (theatre metres, counter-clockwise in (x, z)), height and kind.
 struct Lot {
     centre: [f64; 2],
@@ -118,12 +324,13 @@ struct Lot {
 }
 
 /// The infill's buildings in chunk `index` (chunk-local footprints with their heights and kinds), leaving the 100 m
-/// cells `occupied` marks; `region` the region at a theatre point (x, z m), asked of each district's middle so a
+/// cells the source holds (`held`; in a region that fills between a sparse map's buildings, those it covers much of:
+/// [`fills_between`]); `region` the region at a theatre point (x, z m), asked of each district's middle so a
 /// district's streets and lots are the same from either chunk it spans.
 pub fn lots(
     index: [i32; 2],
     land: &dyn Land,
-    occupied: &[bool; 100],
+    held: &Held,
     region: &dyn Fn([f64; 2]) -> Region,
 ) -> Vec<Footprint> {
     let corner = [f64::from(index[0]) * CHUNK_M, f64::from(index[1]) * CHUNK_M];
@@ -131,7 +338,7 @@ pub fn lots(
     let mut any = false;
     for j in 0..10 {
         for i in 0..10 {
-            if occupied[j * 10 + i] {
+            if held.holds(j * 10 + i) && held.covered(j * 10 + i) >= MOST_BETWEEN {
                 continue;
             }
             let p = [
@@ -158,7 +365,7 @@ pub fn lots(
     ];
     for dz in d0[1]..=d1[1] {
         for dx in d0[0]..=d1[0] {
-            district(dx, dz, corner, land, occupied, region, &mut out);
+            district(dx, dz, corner, land, held, region, &mut out);
         }
     }
     out
@@ -170,7 +377,7 @@ fn district(
     dz: i64,
     corner: [f64; 2],
     land: &dyn Land,
-    occupied: &[bool; 100],
+    held: &Held,
     region: &dyn Fn([f64; 2]) -> Region,
     out: &mut Vec<Footprint>,
 ) {
@@ -183,6 +390,7 @@ fn district(
     let v = [-s, c];
     // The grid's offset within the district, so neighbouring districts' streets do not line up.
     let grid = Grid::of(region);
+    let between = fills_between(region);
     let shift = [
         f64::from(hash01(dx, dz, 102)) * grid.block[0],
         f64::from(hash01(dx, dz, 103)) * grid.block[1],
@@ -266,7 +474,9 @@ fn district(
                         ((at[0] - corner[0]) / 100.0) as usize,
                         ((at[1] - corner[1]) / 100.0) as usize,
                     );
-                    if occupied[cj.min(9) * 10 + ci.min(9)] {
+                    // A cell the source holds: left to it, or (a sparse map's) filled between its buildings.
+                    let cell = cj.min(9) * 10 + ci.min(9);
+                    if held.holds(cell) && held.covered(cell) >= between {
                         continue;
                     }
                     let lot_hash = |n: i64| {
@@ -297,6 +507,8 @@ fn district(
                         (lo[0]..lo[0] + DISTRICT_M).contains(&p[0])
                             && (lo[1]..lo[1] + DISTRICT_M).contains(&p[1])
                     }) && buildable(&lot, land)
+                        && (between == 0.0
+                            || held.clear(&ring_of(&lot, corner, f64::from(CLEAR_M))))
                     {
                         out.push(footprint_of(&lot, corner));
                     }
@@ -527,11 +739,25 @@ fn corners(lot: &Lot) -> [[f64; 2]; 4] {
     [at(-l, -s), at(l, -s), at(l, s), at(-l, s)]
 }
 
-fn footprint_of(lot: &Lot, corner: [f64; 2]) -> Footprint {
-    let ring: Vec<[f32; 2]> = corners(lot)
+/// A lot's building's ring, chunk-local, out by `out` metres all round.
+fn ring_of(lot: &Lot, corner: [f64; 2], out: f64) -> Vec<[f32; 2]> {
+    let a = lot.axis;
+    let n = [-a[1], a[0]];
+    let [l, s] = [lot.half[0] + out, lot.half[1] + out];
+    let c = lot.centre;
+    [(-l, -s), (l, -s), (l, s), (-l, s)]
         .iter()
-        .map(|p| [(p[0] - corner[0]) as f32, (p[1] - corner[1]) as f32])
-        .collect();
+        .map(|&(x, y)| {
+            [
+                (c[0] + a[0] * x + n[0] * y - corner[0]) as f32,
+                (c[1] + a[1] * x + n[1] * y - corner[1]) as f32,
+            ]
+        })
+        .collect()
+}
+
+fn footprint_of(lot: &Lot, corner: [f64; 2]) -> Footprint {
+    let ring = ring_of(lot, corner, 0.0);
     debug_assert!(geometry::signed_area(&ring) > 0.0);
     Footprint {
         ring,
@@ -570,7 +796,7 @@ mod tests {
 
     #[test]
     fn lots_are_deterministic_and_keep_off_the_sea_and_the_sources_towns() {
-        let free = [false; 100];
+        let free = Held::default();
         let a = lots([0, 0], &Town, &free, &|_| Region::Temperate);
         let b = lots([0, 0], &Town, &free, &|_| Region::Temperate);
         assert!(a.len() > 300, "{} lots", a.len());
@@ -593,8 +819,19 @@ mod tests {
         }
         // A chunk at sea: none. A cell the source holds: none there.
         assert!(lots([-2, 0], &Town, &free, &|_| Region::Temperate).is_empty());
-        let mut held = [false; 100];
-        held[5 * 10 + 5] = true;
+        let house = [Footprint {
+            ring: vec![
+                [540.0, 540.0],
+                [552.0, 540.0],
+                [552.0, 550.0],
+                [540.0, 550.0],
+            ],
+            height: None,
+            kind: None,
+            colour: None,
+            part: None,
+        }];
+        let held = Held::of(&house);
         let c = lots([0, 0], &Town, &held, &|_| Region::Temperate);
         assert!(c.iter().all(|f| {
             let m = geometry::centroid(&f.ring);
@@ -609,7 +846,7 @@ mod tests {
 
     #[test]
     fn suburbs_follow_the_region() {
-        let free = [false; 100];
+        let free = Held::default();
         let houses = |region: Region| -> Vec<Footprint> {
             lots([0, 0], &Town, &free, &|_| region)
                 .into_iter()
@@ -644,7 +881,7 @@ mod tests {
 
     #[test]
     fn taiwans_lots_are_rows_of_narrow_deep_townhouses() {
-        let free = [false; 100];
+        let free = Held::default();
         let all = lots([0, 0], &Town, &free, &|_| Region::Taiwan);
         let east = lots([0, 0], &Town, &free, &|_| Region::EastAsia);
         assert!(
@@ -703,10 +940,146 @@ mod tests {
     }
 
     #[test]
+    fn a_sparse_maps_held_cells_are_filled_between_its_buildings_in_taiwan_alone() {
+        let square = |x: f32, z: f32, side: f32| Footprint {
+            ring: vec![[x, z], [x + side, z], [x + side, z + side], [x, z + side]],
+            height: None,
+            kind: None,
+            colour: None,
+            part: None,
+        };
+        // A town as OSM maps Taoyuan's: one 20 m building in every 100 m cell (4% of it), and one cell (5, 5) built
+        // over by a 70 m block (49%).
+        let mut mapped: Vec<Footprint> = (0..100)
+            .filter(|k| *k != 55)
+            .map(|k| {
+                square(
+                    (k % 10) as f32 * 100.0 + 40.0,
+                    (k / 10) as f32 * 100.0 + 40.0,
+                    20.0,
+                )
+            })
+            .collect();
+        mapped.push(square(515.0, 515.0, 70.0));
+        // A neighbour's building reaching in across the chunk's west edge.
+        let about = [
+            [-30.0f32, 300.0],
+            [12.0, 300.0],
+            [12.0, 340.0],
+            [-30.0, 340.0],
+        ];
+        let held = Held::new(&mapped, [about.as_slice()]);
+        assert!((0..100).all(|c| held.holds(c)));
+        assert!((held.covered(0) - 0.04).abs() < 1e-3, "{}", held.covered(0));
+        assert!(
+            (held.covered(55) - 0.49).abs() < 1e-3,
+            "{}",
+            held.covered(55)
+        );
+        // Its share cut to each cell it reaches: 12 by 40 m of the neighbour's in cell (0, 3), with that cell's own.
+        assert!(
+            (held.covered(30) - (0.04 + 0.048)).abs() < 1e-3,
+            "{}",
+            held.covered(30)
+        );
+        // Elsewhere a held cell is the source's alone: nothing laid.
+        for region in [Region::Temperate, Region::EastAsia, Region::West] {
+            assert!(
+                lots([0, 0], &Town, &held, &|_| region).is_empty(),
+                "{region:?}"
+            );
+        }
+        // Taiwan's lots fill between the mapped buildings, nearly as many as on the open cover, none within a metre of
+        // one, none in the cell the block covers half of.
+        let free = lots([0, 0], &Town, &Held::default(), &|_| Region::Taiwan);
+        let between = lots([0, 0], &Town, &held, &|_| Region::Taiwan);
+        assert!(
+            between.len() as f32 > free.len() as f32 * 0.8 && between.len() < free.len(),
+            "{} of {}",
+            between.len(),
+            free.len()
+        );
+        let rings: Vec<&[[f32; 2]]> = mapped
+            .iter()
+            .map(|f| f.ring.as_slice())
+            .chain([about.as_slice()])
+            .collect();
+        for lot in &between {
+            for r in &rings {
+                assert!(!geometry::overlaps(&lot.ring, r));
+                let gap = lot
+                    .ring
+                    .iter()
+                    .map(|p| geometry::ring_distance(r, *p))
+                    .chain(r.iter().map(|p| geometry::ring_distance(&lot.ring, *p)))
+                    .fold(f32::INFINITY, f32::min);
+                assert!(gap > CLEAR_M * 0.99, "{gap}");
+            }
+            // A lot is the cell's its middle lies in, its building up to 9 m off that toward its lane.
+            let m = geometry::centroid(&lot.ring);
+            assert!(!((510.0..590.0).contains(&m[0]) && (510.0..590.0).contains(&m[1])));
+        }
+        // The same lots wherever they stand clear: a lot laid between is one the open cover lays too.
+        assert!(between.iter().all(|f| free.contains(f)));
+    }
+
+    #[test]
+    fn an_outline_its_parts_draw_and_its_part_on_the_ground_count_once() {
+        // A 40 by 50 m building OSM maps as an outline its parts draw (`hide_3d`) and one part on the ground the same:
+        // a fifth of cell (5, 5), not two fifths, so Taiwan's lots are laid about it there.
+        let ring = vec![
+            [520.0f32, 520.0],
+            [560.0, 520.0],
+            [560.0, 570.0],
+            [520.0, 570.0],
+        ];
+        let part = [Footprint {
+            ring: ring.clone(),
+            height: Some(9.0),
+            kind: None,
+            colour: None,
+            part: Some(crate::buildings::Part {
+                base: 0.0,
+                middle: [540.0, 545.0],
+            }),
+        }];
+        let held = Held::new(&part, [ring.as_slice()]);
+        assert!(held.holds(55));
+        assert!(
+            (held.covered(55) - 0.2).abs() < 1e-3,
+            "{}",
+            held.covered(55)
+        );
+        // A footprint half over another: their union, three tenths.
+        let beside = [Footprint {
+            ring: vec![
+                [540.0, 520.0],
+                [580.0, 520.0],
+                [580.0, 570.0],
+                [540.0, 570.0],
+            ],
+            ..part[0].clone()
+        }];
+        let both = Held::new(&beside, [ring.as_slice()]);
+        assert!(
+            (both.covered(55) - 0.3).abs() < 1e-3,
+            "{}",
+            both.covered(55)
+        );
+        let laid = lots([0, 0], &Town, &held, &|_| Region::Taiwan);
+        let in_cell = |f: &Footprint| {
+            let m = geometry::centroid(&f.ring);
+            (500.0..600.0).contains(&m[0]) && (500.0..600.0).contains(&m[1])
+        };
+        assert!(laid.iter().filter(|f| in_cell(f)).count() > 5);
+        assert!(laid.iter().all(|f| !geometry::overlaps(&f.ring, &ring)));
+    }
+
+    #[test]
     fn districts_across_a_regions_edge_are_one_layout() {
         // The American West north of z = 1000, the Mediterranean south of it: the chunks either side of the line agree
         // on the districts that cross it, so no two buildings overlap.
-        let free = [false; 100];
+        let free = Held::default();
         let region = |p: [f64; 2]| {
             if p[1] < 1000.0 {
                 Region::West

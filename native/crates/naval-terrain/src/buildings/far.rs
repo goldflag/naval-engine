@@ -19,6 +19,10 @@
 //!   shader picks each block's by its own (`vs_far`).
 //! - **Each 24 bytes** ([`Mass`]), a few hundred to a chunk (an instance each of one gabled box, `buildings.wgsl`'s
 //!   `vs_far`): a fully built-up chunk about 19-27 KB.
+//! - **The towers.** A mapped building standing [`TOWER_M`] or more (OSM's measured height, its parts stacked as they
+//!   are mapped: [`FarTowers`]) stands as itself, the boxes' own mesh of it ([`Lod::Box`], `build_chunk`), so a
+//!   city's skyline carries on past the boxes and a tower is the same on both sides of the crossover; no mass stands
+//!   on its footprint, and a block's mass that would stand over one keeps its runs, flat, in its place.
 //!
 //! Every choice hashes the run's place in the theatre, so a chunk made again holds the same masses.
 
@@ -28,10 +32,13 @@ use half::f16;
 
 use super::clutter::ShapeVertex;
 use super::infill::{self, BUILT_UP, DISTRICT_M, Grid, MAX_SLOPE};
-use super::mesh::{ChunkMesh, SINK_M};
+use super::mesh::{ChunkInput, ChunkMesh, SINK_M, build_chunk};
 use super::palette::{colours, roof_rules};
-use super::thinning::period_storeys;
-use super::{CHUNK_M, Kind, Period, Region, hash01, storey_height};
+use super::tags::MapTags;
+use super::thinning::{Thinning, period_storeys};
+use super::{
+    CHUNK_M, ChunkKey, Footprint, Kind, Lod, Period, Region, geometry, hash01, storey_height,
+};
 
 /// A run of lots one mass stands for, about this long (m): two or three houses, a terrace's stretch, one or two of a
 /// core's blocks.
@@ -47,6 +54,13 @@ pub const MOST_RUNS_KM2: f64 = 1000.0;
 /// A block's mass stands over a group of blocks about this long along their street and deep across it (m): one block
 /// in most towns, two by two of East Asia's small ones.
 pub const GROUP_M: [f64; 2] = [150.0, 90.0];
+
+/// A mapped building this tall or taller (m, to its top) stands in the far level as itself ([`FarTowers`]): just over
+/// the tallest the masses and the infill stand (a dense core's rare tower of 18 storeys, 56 m), so what stands taller
+/// is a tower the masses could not have drawn; aviation's lit obstruction (about 200 ft, `night::beacons_of`), so a far
+/// tower carries its lights at night. Taipei's far ring (10-30 km from Taipei 101) holds 108 chunks with towers, 710
+/// buildings and parts (their lower parts with them), 12,000 triangles: 0.7 MB on the GPU, 30 KB a chunk at most.
+pub const TOWER_M: f32 = 60.0;
 
 /// One mass, 24 bytes (`buildings.wgsl`'s `FarIn`): a gabled box (flat when its rise is 0) along its street.
 #[repr(C)]
@@ -134,9 +148,80 @@ pub struct FarInput<'a> {
     pub period: Period,
     /// The most a mass stands in a past period (m, `thinning::height_cap` of the chunk's place).
     pub cap_m: f32,
+    /// The map's buildings about the chunk, its towers among them (none: masses alone).
+    pub towers: Option<FarTowers<'a>>,
 }
 
-/// The chunk's masses as a mesh: no vertices, its [`ChunkMesh::masses`], its bounds and region.
+/// The map's measured buildings about a far chunk ([`FarInput::towers`]): those standing [`TOWER_M`] or more
+/// ([`towers`]) stand as their boxes.
+pub struct FarTowers<'a> {
+    /// Those whose middles lie in the chunk, OSM's outlines with their parts (`tags::merge_outlines`).
+    pub footprints: &'a [Footprint],
+    /// Those whose middles lie about it (within the map's reach), as their own footprints: no mass of the chunk's
+    /// stands under one.
+    pub about: &'a [Footprint],
+    /// The map about the chunk: the towers' land (an office's on commercial land) and the areas the host draws itself
+    /// (`MapTags::cleared`).
+    pub tags: &'a MapTags,
+    /// The ground at a chunk-local point (m above the sea), as the near levels' meshes stand on it.
+    pub ground: &'a dyn Fn([f32; 2]) -> f32,
+    /// In a past period, the place's cap and the listed buildings ([`Thinning::cap_for`], [`Thinning::later`]); the
+    /// ground that stood is [`FarInput::stood`]'s.
+    pub thinning: Option<&'a Thinning>,
+}
+
+/// Which of `t`'s footprints, the chunk's own and those about it, stand as towers in the far level (chunk `index`, under
+/// `input`'s period and ground): those of a building any of whose parts (a whole footprint its own building) stands
+/// [`TOWER_M`] or more on ground that stood and outside the host's areas; in a past period at most its place's cap (or
+/// what one of `thinning::TALL` on it stood), none built after it. All of a building's parts or none, as the near levels
+/// keep them, judged by the whole building on both sides of the chunk's edge (its parts share their building's middle,
+/// [`Part::middle`](super::Part::middle)): a podium here under a shaft whose own middle lies in the next chunk stands
+/// with it, as their boxes did.
+pub fn towers(input: &FarInput, t: &FarTowers) -> [Vec<bool>; 2] {
+    let corner = [
+        f64::from(input.index[0]) * CHUNK_M,
+        f64::from(input.index[1]) * CHUNK_M,
+    ];
+    let thin = t.thinning.filter(|_| input.period.is_past());
+    let middle = |f: &Footprint| {
+        f.part
+            .map_or_else(|| geometry::centroid(&f.ring), |p| p.middle)
+    };
+    let tall: Vec<[f32; 2]> = t
+        .footprints
+        .iter()
+        .chain(t.about)
+        .filter(|f| f.ring.len() >= 3)
+        .filter_map(|f| {
+            let c = middle(f);
+            let mut height = f.height?;
+            if t.tags.cleared_at(c)
+                || !(input.stood)([corner[0] + f64::from(c[0]), corner[1] + f64::from(c[1])])
+            {
+                return None;
+            }
+            if let Some(th) = thin {
+                if th.later(&f.ring) || th.later_at(c) {
+                    return None;
+                }
+                height = height.min(th.cap_for(&f.ring));
+            }
+            (height >= TOWER_M).then_some(c)
+        })
+        .collect();
+    [t.footprints, t.about].map(|footprints| {
+        footprints
+            .iter()
+            .map(|f| f.ring.len() >= 3 && tall.contains(&middle(f)))
+            .collect()
+    })
+}
+
+/// A tower's footprint where no mass stands: its box (min x, min z, max x, max z) and ring, chunk-local.
+type Kept = ([f32; 4], Vec<[f32; 2]>);
+
+/// The chunk's masses as a mesh: its [`ChunkMesh::masses`], its towers' boxes (its vertices: [`FarTowers`]), its bounds
+/// and region.
 pub fn build_far(input: &FarInput) -> ChunkMesh {
     let index = input.index;
     let corner = [f64::from(index[0]) * CHUNK_M, f64::from(index[1]) * CHUNK_M];
@@ -145,7 +230,47 @@ pub fn build_far(input: &FarInput) -> ChunkMesh {
         period: input.period,
         ..ChunkMesh::default()
     };
-    // A quick look: no built-up land anywhere about the chunk, nothing to do.
+    // The towers: the chunk's own as the boxes make them, and theirs about it, where no mass stands.
+    let mut kept: Vec<Kept> = Vec::new();
+    let mut boxes = None;
+    if let Some(t) = &input.towers {
+        let [own_towers, about_towers] = towers(input, t);
+        let own: Vec<Footprint> = t
+            .footprints
+            .iter()
+            .zip(own_towers)
+            .filter(|(_, tower)| *tower)
+            .map(|(f, _)| f.clone())
+            .collect();
+        let about = t
+            .about
+            .iter()
+            .zip(about_towers)
+            .filter(|(_, tower)| *tower)
+            .map(|(f, _)| f);
+        kept = own
+            .iter()
+            .chain(about)
+            .map(|f| (box_of(&f.ring), f.ring.clone()))
+            .collect();
+        if !own.is_empty() {
+            let made = build_chunk(&ChunkInput {
+                key: ChunkKey {
+                    index,
+                    lod: Lod::Box,
+                },
+                footprints: &own,
+                infill: &[],
+                tags: t.tags,
+                ground: t.ground,
+                region: input.chunk_region,
+                period: input.period,
+                thinning: t.thinning,
+            });
+            boxes = (!made.indices.is_empty()).then_some(made);
+        }
+    }
+    // A quick look: no built-up land anywhere about the chunk, no masses.
     let any = (0..5).any(|j| {
         (0..5).any(|i| {
             let p = [
@@ -156,6 +281,7 @@ pub fn build_far(input: &FarInput) -> ChunkMesh {
         })
     });
     if !any {
+        with_towers(&mut mesh, boxes);
         return mesh;
     }
     let d0 = [
@@ -169,14 +295,84 @@ pub fn build_far(input: &FarInput) -> ChunkMesh {
     let mut blocks = Vec::new();
     for dz in d0[1]..=d1[1] {
         for dx in d0[0]..=d1[0] {
-            district(input, dx, dz, corner, &mut mesh.masses, &mut blocks);
+            district(input, &kept, dx, dz, corner, &mut mesh.masses, &mut blocks);
         }
     }
     mesh.far_runs = mesh.masses.len() as u32;
     mesh.buildings = mesh.far_runs;
     mesh.masses.extend(blocks);
     bounds(&mut mesh);
+    with_towers(&mut mesh, boxes);
     mesh
+}
+
+/// The towers' boxes into the far chunk's mesh: their vertices, their buildings counted, the bounds over both.
+fn with_towers(mesh: &mut ChunkMesh, boxes: Option<ChunkMesh>) {
+    let Some(boxes) = boxes else {
+        return;
+    };
+    if mesh.masses.is_empty() {
+        mesh.min = boxes.min;
+        mesh.max = boxes.max;
+    } else {
+        for k in 0..3 {
+            mesh.min[k] = mesh.min[k].min(boxes.min[k]);
+            mesh.max[k] = mesh.max[k].max(boxes.max[k]);
+        }
+    }
+    mesh.buildings += boxes.buildings;
+    mesh.vertices = boxes.vertices;
+    mesh.indices = boxes.indices;
+}
+
+/// A ring's box: min x, min z, max x, max z.
+fn box_of(ring: &[[f32; 2]]) -> [f32; 4] {
+    ring.iter().fold(
+        [
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+        ],
+        |b, p| {
+            [
+                b[0].min(p[0]),
+                b[1].min(p[1]),
+                b[2].max(p[0]),
+                b[3].max(p[1]),
+            ]
+        },
+    )
+}
+
+/// Whether the rectangle `corners` (chunk-local, in order about it) meets one of the towers' footprints `kept`: their
+/// edges cross ([`geometry::overlaps`]: a mass across a slim tower, neither's corner in the other), one holds the
+/// other's corner, or the footprint holds the rectangle's middle.
+fn on_tower(kept: &[Kept], corners: &[[f32; 2]; 4]) -> bool {
+    if kept.is_empty() {
+        return false;
+    }
+    let b = box_of(corners);
+    let middle = [
+        corners.iter().map(|c| c[0]).sum::<f32>() * 0.25,
+        corners.iter().map(|c| c[1]).sum::<f32>() * 0.25,
+    ];
+    kept.iter().any(|(k, ring)| {
+        k[0] <= b[2]
+            && k[2] >= b[0]
+            && k[1] <= b[3]
+            && k[3] >= b[1]
+            && (geometry::contains(ring, middle) || geometry::overlaps(ring, corners))
+    })
+}
+
+/// A mass's corners (chunk-local), in order about it.
+fn corners_of(m: &Mass) -> [[f32; 2]; 4] {
+    let [x, z] = m.at();
+    let [along, across] = m.size();
+    let (s, c) = m.heading().sin_cos();
+    let (a, b) = (along * 0.5, across * 0.5);
+    [[-a, -b], [a, -b], [a, b], [-a, b]].map(|[u, v]| [x + u * c - v * s, z + u * s + v * c])
 }
 
 /// The chunk-local bounds of its masses.
@@ -423,6 +619,7 @@ pub const FLAT_INDICES: u32 = 36;
 
 fn district(
     input: &FarInput,
+    kept: &[Kept],
     dx: i64,
     dz: i64,
     corner: [f64; 2],
@@ -500,6 +697,7 @@ fn district(
                     let k1 = (k0 + per_run).min(per_row);
                     made.extend(run(
                         input,
+                        kept,
                         Run {
                             lots: [k0, k1],
                             lot_w,
@@ -531,11 +729,19 @@ fn district(
                 }));
         }
     }
-    // A block's mass over its runs stands where they may (its middle on ground that stood, outside the host's areas).
+    // A block's mass over its runs stands where they may (its middle on ground that stood, outside the host's areas);
+    // one that would stand over a tower is its runs, each flat in its place (none stood on the tower).
+    let frame = [u, v];
     blocks.extend(
         groups
             .values()
-            .filter_map(|runs| block_mass(runs, centre, [u, v], corner))
+            .flat_map(|runs| match block_mass(runs, centre, frame, corner) {
+                Some(m) if on_tower(kept, &corners_of(&m)) => runs
+                    .iter()
+                    .filter_map(|r| block_mass(std::slice::from_ref(r), centre, frame, corner))
+                    .collect(),
+                m => Vec::from_iter(m),
+            })
             .filter(|m| {
                 let [x, z] = m.at();
                 (input.stood)([corner[0] + f64::from(x), corner[1] + f64::from(z)])
@@ -625,7 +831,7 @@ struct Run {
     seed: u8,
 }
 
-fn run(input: &FarInput, r: Run) -> Option<RunMass> {
+fn run(input: &FarInput, standing: &[Kept], r: Run) -> Option<RunMass> {
     let land = input.land;
     let [u, v] = r.frame;
     let at_lot = |k: f64| {
@@ -700,6 +906,16 @@ fn run(input: &FarInput, r: Run) -> Option<RunMass> {
         middle[0] + v[0] * r.row * toward,
         middle[1] + v[1] * r.row * toward,
     ];
+    // None on a tower's footprint: the tower stands there.
+    let corners = [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]].map(|[a, b]: [f64; 2]| {
+        [
+            (centre[0] + u[0] * along * a + v[0] * deep * b - r.corner[0]) as f32,
+            (centre[1] + u[1] * along * a + v[1] * deep * b - r.corner[1]) as f32,
+        ]
+    });
+    if on_tower(standing, &corners) {
+        return None;
+    }
     // On dry, gentle land: the ground under its ends and middle.
     let ends = [-0.5, 0.0, 0.5].map(|t: f64| {
         let p = [centre[0] + u[0] * along * t, centre[1] + u[1] * along * t];
@@ -772,6 +988,7 @@ fn run(input: &FarInput, r: Run) -> Option<RunMass> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::Part;
     use super::*;
 
     /// A synthetic land: built up where `built` says (a theatre point), the ground 10 m up but where `sea` says.
@@ -829,6 +1046,7 @@ mod tests {
             chunk_region: region,
             period,
             cap_m: 25.0,
+            towers: None,
         })
     }
 
@@ -1175,5 +1393,335 @@ mod tests {
         };
         assert!(share_pitched(Region::NorthSea) > 0.5);
         assert!(share_pitched(Region::Nile) < 0.1);
+    }
+
+    /// A square footprint of side `side` (m) about chunk-local `at`, `height` tall.
+    fn square(at: [f32; 2], side: f32, height: Option<f32>) -> Footprint {
+        let h = side * 0.5;
+        Footprint {
+            ring: vec![
+                [at[0] - h, at[1] - h],
+                [at[0] + h, at[1] - h],
+                [at[0] + h, at[1] + h],
+                [at[0] - h, at[1] + h],
+            ],
+            height,
+            ..Footprint::default()
+        }
+    }
+
+    /// A built-up chunk's masses with `footprints` mapped in it (and `about` it), in `period` under `thinning`, on
+    /// ground that stood where `stood` says.
+    fn towered(
+        footprints: &[Footprint],
+        about: &[Footprint],
+        tags: &MapTags,
+        period: Period,
+        thinning: Option<&Thinning>,
+        stood: &dyn Fn([f64; 2]) -> bool,
+    ) -> ChunkMesh {
+        let land = Synthetic {
+            built: &|_| true,
+            sea: &|_| false,
+        };
+        build_far(&FarInput {
+            index: [4, 7],
+            land: &land,
+            stood,
+            region: &|_| Region::Taiwan,
+            chunk_region: Region::Taiwan,
+            period,
+            cap_m: 31.0,
+            towers: Some(FarTowers {
+                footprints,
+                about,
+                tags,
+                ground: &|_| 10.0,
+                thinning,
+            }),
+        })
+    }
+
+    /// The highest of a mesh's vertices within `r` m of chunk-local `at` (none: no vertex there).
+    fn top_near(mesh: &ChunkMesh, at: [f32; 2], r: f32) -> Option<f32> {
+        mesh.vertices
+            .iter()
+            .filter(|v| (v.position[0] - at[0]).hypot(v.position[2] - at[1]) < r)
+            .map(|v| v.position[1])
+            .reduce(f32::max)
+    }
+
+    /// Whether any of the mesh's masses (runs or blocks) meets `ring`.
+    fn a_mass_on(mesh: &ChunkMesh, ring: &[[f32; 2]]) -> bool {
+        let kept = [(box_of(ring), ring.to_vec())];
+        mesh.masses.iter().any(|m| on_tower(&kept, &corners_of(m)))
+    }
+
+    /// A past period's thinning that keeps everything, at Taiwan's cap.
+    fn keeping(cap: f32) -> Thinning {
+        let w = 3 * super::super::thinning::CELLS;
+        Thinning::new(&vec![1.0; w * w], vec![0.0; 100], cap)
+    }
+
+    #[test]
+    fn a_mapped_tower_stands_in_its_far_chunk_at_its_height_and_no_mass_on_it() {
+        let tags = MapTags::default();
+        let tower = square([500.0, 500.0], 40.0, Some(300.0));
+        let low = square([200.0, 700.0], 30.0, Some(45.0));
+        let estimated = square([700.0, 200.0], 30.0, None);
+        let plain = towered(&[], &[], &tags, Period::Today, None, &|_| true);
+        let mesh = towered(
+            &[tower.clone(), low.clone(), estimated.clone()],
+            &[],
+            &tags,
+            Period::Today,
+            None,
+            &|_| true,
+        );
+        // The tower its box at its height on its ground (10 m), the lower and the estimated left to the masses.
+        let top = top_near(&mesh, [500.0, 500.0], 30.0).expect("the tower");
+        assert!((top - 310.0).abs() < 1.0, "{top}");
+        assert!(top_near(&mesh, [200.0, 700.0], 25.0).is_none());
+        assert!(top_near(&mesh, [700.0, 200.0], 25.0).is_none());
+        assert!(mesh.max[1] >= top - 0.01 && mesh.min[1] <= 10.0);
+        assert_eq!(mesh.buildings, mesh.far_runs + 1);
+        // No mass (run or block) on the tower; the masses elsewhere as they were.
+        assert!(a_mass_on(&plain, &tower.ring));
+        assert!(!a_mass_on(&mesh, &tower.ring));
+        assert!(a_mass_on(&mesh, &low.ring));
+        let gone = plain.masses.len() as i64 - mesh.masses.len() as i64;
+        assert!((-40..40).contains(&gone), "{gone}");
+        // A tower about the chunk (its middle in a neighbour's) keeps the chunk's masses off it too, and is not drawn.
+        let edge = square([1005.0, 500.0], 70.0, Some(200.0));
+        let beside = towered(
+            &[],
+            std::slice::from_ref(&edge),
+            &tags,
+            Period::Today,
+            None,
+            &|_| true,
+        );
+        assert!(beside.vertices.is_empty());
+        assert!(a_mass_on(&plain, &edge.ring) && !a_mass_on(&beside, &edge.ring));
+    }
+
+    #[test]
+    fn a_towers_parts_stand_together_as_mapped() {
+        let tags = MapTags::default();
+        let middle = [500.0, 500.0];
+        let part = |side: f32, base: f32, height: f32| Footprint {
+            part: Some(Part { base, middle }),
+            ..square(middle, side, Some(height))
+        };
+        // A podium of 40 m under a shaft from 40 to 250 m: both stand (the podium below the threshold, its tower's).
+        let mesh = towered(
+            &[part(60.0, 0.0, 40.0), part(30.0, 40.0, 250.0)],
+            &[],
+            &tags,
+            Period::Today,
+            None,
+            &|_| true,
+        );
+        let podium = mesh
+            .vertices
+            .iter()
+            .filter(|v| (v.position[0] - 500.0).abs() > 20.0)
+            .map(|v| v.position[1])
+            .reduce(f32::max);
+        assert!(podium.is_some_and(|y| (y - 50.0).abs() < 1.0), "{podium:?}");
+        assert!(top_near(&mesh, middle, 25.0).is_some_and(|y| (y - 260.0).abs() < 1.0));
+        // Two low parts alone: masses there.
+        let low = towered(
+            &[part(60.0, 0.0, 30.0), part(30.0, 30.0, 50.0)],
+            &[],
+            &tags,
+            Period::Today,
+            None,
+            &|_| true,
+        );
+        assert!(low.vertices.is_empty());
+    }
+
+    #[test]
+    fn a_towers_parts_across_a_chunks_edge_stand_together() {
+        let tags = MapTags::default();
+        // A podium of 40 m whose middle lies in the chunk, under a shaft to 160 m whose own middle lies in the next
+        // (beyond x = 1,000): one building, one middle.
+        let middle = [995.0, 500.0];
+        let part = |at: [f32; 2], side: f32, base: f32, height: f32| Footprint {
+            part: Some(Part { base, middle }),
+            ..square(at, side, Some(height))
+        };
+        let podium = part([975.0, 500.0], 50.0, 0.0, 40.0);
+        let shaft = part([1010.0, 500.0], 30.0, 40.0, 160.0);
+        let mesh = towered(
+            std::slice::from_ref(&podium),
+            std::slice::from_ref(&shaft),
+            &tags,
+            Period::Today,
+            None,
+            &|_| true,
+        );
+        // The podium stands here at its own height, the shaft's mesh the next chunk's; no mass on either.
+        let top = mesh.vertices.iter().map(|v| v.position[1]).reduce(f32::max);
+        assert!(top.is_some_and(|y| (y - 50.0).abs() < 1.0), "{top:?}");
+        assert!(mesh.vertices.iter().all(|v| v.position[0] < 1001.0));
+        assert!(!a_mass_on(&mesh, &podium.ring) && !a_mass_on(&mesh, &shaft.ring));
+        // A low building across the edge: the masses' still.
+        let low = towered(
+            std::slice::from_ref(&podium),
+            std::slice::from_ref(&Footprint {
+                height: Some(50.0),
+                ..shaft.clone()
+            }),
+            &tags,
+            Period::Today,
+            None,
+            &|_| true,
+        );
+        assert!(low.vertices.is_empty());
+    }
+
+    #[test]
+    fn a_mass_across_a_slim_tower_stands_on_it() {
+        let rect =
+            |x: [f32; 2], z: [f32; 2]| [[x[0], z[0]], [x[1], z[0]], [x[1], z[1]], [x[0], z[1]]];
+        // Their edges cross, neither's corner in the other and the mass's middle off the tower.
+        let tower = rect([515.0, 525.0], [470.0, 530.0]).to_vec();
+        let kept = [(box_of(&tower), tower)];
+        assert!(on_tower(&kept, &rect([470.0, 530.0], [490.0, 510.0])));
+        // Beside it, or within the one box but not the other's ring: none.
+        assert!(!on_tower(&kept, &rect([470.0, 512.0], [490.0, 510.0])));
+        let ell = vec![
+            [0.0, 0.0],
+            [100.0, 0.0],
+            [100.0, 20.0],
+            [20.0, 20.0],
+            [20.0, 100.0],
+            [0.0, 100.0],
+        ];
+        let kept = [(box_of(&ell), ell)];
+        assert!(!on_tower(&kept, &rect([40.0, 90.0], [40.0, 90.0])));
+        assert!(on_tower(&kept, &rect([10.0, 90.0], [40.0, 50.0])));
+    }
+
+    #[test]
+    fn a_far_tower_keeps_the_period_and_the_hosts_areas() {
+        let tower = square([500.0, 500.0], 40.0, Some(300.0));
+        let tags = MapTags::default();
+        let past = Period::Year(1942);
+        // Taiwan's 31 m in 1942: no tower, the masses stand capped over its ground.
+        let thin = keeping(31.0);
+        let capped = towered(
+            std::slice::from_ref(&tower),
+            &[],
+            &tags,
+            past,
+            Some(&thin),
+            &|_| true,
+        );
+        assert!(capped.vertices.is_empty());
+        assert!(a_mass_on(&capped, &tower.ring));
+        // One that stood taller (`thinning::TALL`) stands at what it stood, as the boxes stand it.
+        let mut tall = keeping(31.0);
+        tall.tall.push(([500.0, 500.0], 65.0));
+        let slim = square([500.0, 500.0], 30.0, Some(65.0));
+        let listed = towered(
+            std::slice::from_ref(&slim),
+            &[],
+            &tags,
+            past,
+            Some(&tall),
+            &|_| true,
+        );
+        let top = top_near(&listed, [500.0, 500.0], 25.0).expect("the listed tower");
+        assert!((top - 75.0).abs() < 1.0, "{top}");
+        assert!(!a_mass_on(&listed, &slim.ring));
+        let boxes = build_chunk(&ChunkInput {
+            key: ChunkKey {
+                index: [4, 7],
+                lod: Lod::Box,
+            },
+            footprints: std::slice::from_ref(&slim),
+            infill: &[],
+            tags: &tags,
+            ground: &|_| 10.0,
+            region: Region::Taiwan,
+            period: past,
+            thinning: Some(&tall),
+        });
+        assert_eq!(listed.vertices, boxes.vertices);
+        // Built after the period (`thinning::LATER`), or on ground that did not stand: none.
+        let mut later = keeping(320.0);
+        later.later.push([500.0, 500.0]);
+        assert!(
+            towered(
+                std::slice::from_ref(&tower),
+                &[],
+                &tags,
+                past,
+                Some(&later),
+                &|_| true
+            )
+            .vertices
+            .is_empty()
+        );
+        let not_stood = |p: [f64; 2]| (p[0] - 4500.0).hypot(p[1] - 7500.0) > 100.0;
+        assert!(
+            towered(
+                std::slice::from_ref(&tower),
+                &[],
+                &tags,
+                past,
+                Some(&keeping(320.0)),
+                &not_stood
+            )
+            .vertices
+            .is_empty()
+        );
+        // New York's cap keeps it whole.
+        let whole = towered(
+            std::slice::from_ref(&tower),
+            &[],
+            &tags,
+            past,
+            Some(&keeping(320.0)),
+            &|_| true,
+        );
+        assert!(top_near(&whole, [500.0, 500.0], 30.0).is_some_and(|y| (y - 310.0).abs() < 1.0));
+        // Today, an area the host draws itself: no tower there.
+        let cleared = MapTags {
+            cleared: vec![square([500.0, 500.0], 120.0, None).ring],
+            ..MapTags::default()
+        };
+        let in_area = |p: [f64; 2]| (p[0] - 4500.0).abs() > 60.0 || (p[1] - 7500.0).abs() > 60.0;
+        let mesh = towered(
+            std::slice::from_ref(&tower),
+            &[],
+            &cleared,
+            Period::Today,
+            None,
+            &in_area,
+        );
+        assert!(mesh.vertices.is_empty());
+        let inner = square([500.0, 500.0], 60.0, None).ring;
+        let kept = [(box_of(&inner), inner)];
+        assert!(!runs(&mesh).iter().any(|m| on_tower(&kept, &corners_of(m))));
+    }
+
+    #[test]
+    fn a_far_chunk_with_towers_is_made_the_same_twice() {
+        let tags = MapTags::default();
+        let footprints = [
+            square([500.0, 500.0], 40.0, Some(300.0)),
+            square([300.0, 600.0], 35.0, Some(120.0)),
+        ];
+        let a = towered(&footprints, &[], &tags, Period::Today, None, &|_| true);
+        let b = towered(&footprints, &[], &tags, Period::Today, None, &|_| true);
+        assert!(!a.vertices.is_empty());
+        assert_eq!(a.masses, b.masses);
+        assert_eq!(a.vertices, b.vertices);
+        assert_eq!(a.indices, b.indices);
+        assert_eq!((a.min, a.max, a.far_runs), (b.min, b.max, b.far_runs));
     }
 }

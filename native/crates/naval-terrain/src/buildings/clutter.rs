@@ -19,6 +19,9 @@ pub const CLUTTER_M: f32 = 1500.0;
 /// What stands about a building on the ground and its small parts ([`Shape::Near`]: walls, fences and hedges, steps,
 /// downpipes) are drawn only in chunks within this distance of the camera (m).
 pub const NEAR_M: f32 = 800.0;
+/// Taiwan's wall air conditioners ([`Shape::Unit`]) are drawn within this distance of the camera (m), each judged at its
+/// foot.
+pub const UNIT_M: f32 = 500.0;
 
 /// One piece: an instance of a [`Shape`], 36 bytes (`buildings.wgsl`'s `ClutterIn`).
 #[repr(C)]
@@ -47,12 +50,18 @@ pub enum Shape {
     Tower = 1,
     /// A box as [`Shape::Box`], small or low: drawn only in chunks within [`NEAR_M`].
     Near = 2,
+    /// A shop's sign (Taiwan's, [`super::street`]): a closed box (its underside seen from the street), its faces
+    /// drawn as a board with its marks, lit at night.
+    Sign = 3,
+    /// A wall air conditioner (Taiwan's, [`super::street`]): a closed box with its fan's grille, drawn within
+    /// [`UNIT_M`].
+    Unit = 4,
 }
 
-pub const SHAPES: usize = 3;
+pub const SHAPES: usize = 5;
 
 /// How far from the camera a chunk's pieces of each shape are drawn (m).
-pub const SHAPE_REACH: [f32; SHAPES] = [CLUTTER_M, CLUTTER_M, NEAR_M];
+pub const SHAPE_REACH: [f32; SHAPES] = [CLUTTER_M, CLUTTER_M, NEAR_M, CLUTTER_M, UNIT_M];
 
 /// A shape's vertex, 16 bytes: its position, and its normal (snorm8) with w 127 on a top (the roof's colour) and 0 on
 /// a side.
@@ -123,6 +132,18 @@ impl Shaper {
             top,
         );
     }
+
+    /// A box as [`Shaper::cuboid`] with its underside too.
+    fn closed(&mut self, lo: [f32; 3], hi: [f32; 3]) {
+        self.cuboid(lo, hi, false);
+        let [x0, y0, z0] = lo;
+        let [x1, _, z1] = hi;
+        self.quad(
+            [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]],
+            [0.0, -1.0, 0.0],
+            false,
+        );
+    }
 }
 
 /// The shapes' mesh.
@@ -183,6 +204,11 @@ pub fn shape_mesh() -> ShapeMesh {
     }
     ranges[Shape::Tower as usize] = (start, s.indices.len() as u32 - start);
     ranges[Shape::Near as usize] = ranges[Shape::Box as usize];
+    // The signs' and air conditioners' closed box.
+    let start = s.indices.len() as u32;
+    s.closed([-0.5, 0.0, -0.5], [0.5, 1.0, 0.5]);
+    ranges[Shape::Sign as usize] = (start, s.indices.len() as u32 - start);
+    ranges[Shape::Unit as usize] = ranges[Shape::Sign as usize];
     ShapeMesh {
         vertices: s.vertices,
         indices: s.indices,

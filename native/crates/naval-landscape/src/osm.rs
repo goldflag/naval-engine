@@ -878,6 +878,55 @@ pub fn load(geo: LatLon, ids: &[TileId]) -> Result<Area, FetchError> {
     }
 }
 
+/// Tile `id`'s bytes in the cache on disk: `Some(Some(bytes))` (empty for an empty tile), `Some(None)` where the
+/// server has none, `None` when not fetched (for a reader of its own, the far level's towers: `buildings::towers`).
+pub fn cached(id: TileId) -> Option<Option<Vec<u8>>> {
+    store().cache.read(id)
+}
+
+/// Throws away tile `id`'s bytes in the cache on disk (bytes that will not decode, for a reader of its own): fetched
+/// again when next asked for, as the map's own reader does with one ([`decode_all`]).
+pub fn discard(id: TileId) {
+    let _ = std::fs::remove_file(store().cache.tile_path(id));
+}
+
+/// Fetches into the cache those of `ids` it does not hold, [`FETCHERS`] at a time, on the caller's thread (decoding
+/// nothing): how many were fetched. With the tiles off, none; offline (lately), the failure.
+pub fn fetch_missing(ids: &[TileId]) -> Result<usize, FetchError> {
+    let s = store();
+    let list: Vec<TileId> = ids
+        .iter()
+        .copied()
+        .filter(|&id| !s.cache.holds(id))
+        .collect();
+    if list.is_empty() || !enabled() {
+        return Ok(0);
+    }
+    if surface::offline() {
+        return Err(FetchError::Offline("tried lately".into()));
+    }
+    match fetch_all(&s.cache, &list) {
+        Ok(n) => {
+            lock().fetched += n;
+            Ok(n)
+        }
+        Err((n, e)) => {
+            lock().fetched += n;
+            if matches!(e, FetchError::Offline(_)) {
+                surface::mark_offline();
+            }
+            log_once(
+                match e {
+                    FetchError::Offline(_) => "offline",
+                    FetchError::Server(_) => "server",
+                },
+                &format!("{e}; the land is drawn without them"),
+            );
+            Err(e)
+        }
+    }
+}
+
 /// Fetches every tile of `list` into the cache, [`FETCHERS`] at a time; the first failure ends it (what arrived stays
 /// cached). How many were fetched, with the failure.
 fn fetch_all(cache: &Cache, list: &[TileId]) -> Result<usize, (usize, FetchError)> {

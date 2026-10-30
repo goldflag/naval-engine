@@ -16,7 +16,8 @@ use super::far::Mass;
 use super::geometry::{self, signed_area2};
 use super::grounds::{self, Footings, Roads};
 use super::parcels;
-use super::tags::{Landmark, LandmarkKind, MapTags, Pier, PoiKind, Quay, Usage};
+use super::street::{self, Arcade};
+use super::tags::{Landmark, LandmarkKind, MapTags, PART_BASE_M, Pier, PoiKind, Quay, Usage};
 use super::thinning::{self, Thinning};
 use super::{
     Building, ChunkKey, DensityGrid, Extra, Footprint, Kind, Lod, Period, Region, Roof, hash01,
@@ -318,6 +319,34 @@ pub fn build_chunk(input: &ChunkInput) -> ChunkMesh {
     let roads = Roads::new(&tags.roads);
     let mut footings = Footings::default();
     let mut yards: Vec<(Building, usize)> = Vec::new();
+    // Taiwan's homes (today), for their signs and air conditioners once every building stands; every footprint's
+    // outline, for the ground before an arcade's frontage.
+    let mut streets: Vec<(Building, usize, Option<Arcade>)> = Vec::new();
+    let sources = (lod == Lod::Full && region == Region::Taiwan).then(|| {
+        let mut s = Footings::default();
+        for f in &all {
+            s.add(&f.ring);
+        }
+        s
+    });
+    // OSM's outlines about the chunk, standing in their own chunks, on the ground or drawn by their parts (as the
+    // infill reads them, `MapTags::outlines_reaching`): a neighbour across the chunk's edge, which the ground before an
+    // arcade and a wall's signs and air conditioners keep clear of too. Microsoft's footprints and the infill's lots
+    // beyond the chunk are not read.
+    let beyond = sources.as_ref().map(|_| {
+        let mut s = Footings::default();
+        for o in tags.outlines_about.iter().chain(&tags.outlines_reaching) {
+            if o.ring.len() >= 3 && (o.hide_3d || o.min_height < PART_BASE_M) {
+                s.add(&o.ring);
+            }
+        }
+        s
+    });
+    let beside = |p: [f32; 2]| {
+        beyond
+            .as_ref()
+            .is_some_and(|s| s.blocked(p, 0.0, usize::MAX))
+    };
     // The buildings drawn by OSM's parts built after the period, by their middles (`Part::middle`): all of one goes
     // where any of its parts is listed, as its whole footprint went.
     let later_parts: Vec<[f32; 2]> = thin.map_or_else(Vec::new, |t| {
@@ -406,6 +435,32 @@ pub fn build_chunk(input: &ChunkInput) -> ChunkMesh {
         } else {
             Vec::new()
         };
+        // Taiwan's arcades along its main roads (today, whole chunks): where a neighbour's walkway does not run on into
+        // this piece's, this piece's wall closes its end.
+        let arcades: Vec<Option<Arcade>> = pieces
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                // The ground before it clear of every other footprint and piece.
+                let clear = |q: [f32; 2]| {
+                    !sources.as_ref().is_some_and(|s| s.blocked(q, 0.0, k))
+                        && !beside(q)
+                        && !(cut
+                            && pieces
+                                .iter()
+                                .enumerate()
+                                .any(|(j, o)| j != i && geometry::contains(&o.ring, q)))
+                };
+                (lod == Lod::Full)
+                    .then(|| street::arcade_of(p, region, &roads, ground, &clear))
+                    .flatten()
+            })
+            .collect();
+        let mut steps = if arcades.iter().any(Option::is_some) {
+            arcade_parties(&mut parties, &arcades)
+        } else {
+            Vec::new()
+        };
         for (i, building) in pieces.into_iter().enumerate() {
             if lod == Lod::Full {
                 // Each piece faces the road nearest its own middle.
@@ -421,16 +476,27 @@ pub fn build_chunk(input: &ChunkInput) -> ChunkMesh {
                 });
             }
             mesh.set_party(parties.get_mut(i).map(std::mem::take).unwrap_or_default());
+            mesh.set_arcade(arcades[i]);
+            mesh.set_steps(steps.get_mut(i).map(std::mem::take).unwrap_or_default());
             mesh.building(&building, lod);
             mesh.front = None;
             mesh.party.clear();
-            // A raised part's ground is its building's: no footing, no yard of its own.
+            mesh.arcade = None;
+            mesh.steps.clear();
+            // A raised part's ground is its building's: no footing, no yard of its own (nor one before an arcade).
             if lod == Lod::Full && building.base <= 0.0 {
                 let me = footings.add(&building.ring);
-                if matches!(
-                    building.kind,
-                    Kind::House | Kind::Terrace | Kind::Block | Kind::Tower
-                ) {
+                if region == Region::Taiwan
+                    && matches!(building.kind, Kind::Terrace | Kind::Block | Kind::Tower)
+                {
+                    streets.push((building.clone(), me, arcades[i]));
+                }
+                if arcades[i].is_none()
+                    && matches!(
+                        building.kind,
+                        Kind::House | Kind::Terrace | Kind::Block | Kind::Tower
+                    )
+                {
                     yards.push((building, me));
                 }
             }
@@ -447,6 +513,34 @@ pub fn build_chunk(input: &ChunkInput) -> ChunkMesh {
             &roads,
             &footings,
             ground,
+            &mut mesh.mesh.clutter,
+        );
+    }
+    // Taiwan's shop signs on the arcades' and the streets' fronts, and its walls' air conditioners (not on a wall
+    // against a neighbour's, the chunk's or one beyond its edge).
+    for (b, me, arcade) in &streets {
+        let open = |p: [f32; 2]| !footings.blocked(p, 0.0, *me) && !beside(p);
+        let front = arcade
+            .map(|a| street::Frontage {
+                edge: a.edge,
+                half: a.half,
+            })
+            .or_else(|| {
+                street::frontage(
+                    b,
+                    &roads,
+                    [street::STREET_HALF_M, street::MAIN_HALF_M[1]],
+                    street::STREET_SETBACK_M,
+                    &open,
+                )
+            });
+        let signed =
+            front.filter(|f| street::signs(b, arcade.as_ref(), *f, &open, &mut mesh.mesh.clutter));
+        street::units(
+            b,
+            &roads,
+            signed.map(|f| f.edge),
+            &open,
             &mut mesh.mesh.clutter,
         );
     }
@@ -587,6 +681,11 @@ pub struct MeshBuilder {
     front: Option<[f32; 2]>,
     /// The next building's walls against its neighbours' (a block's pieces, `parcels`): drawn only above theirs.
     party: Vec<Party>,
+    /// The next building's arcade (Taiwan's, [`street::arcade_of`]): its ground storey set back behind columns.
+    arcade: Option<Arcade>,
+    /// The next building's walls under a neighbour's walkway running on from its own under a higher ceiling (a row
+    /// stepping up a slope, [`arcade_parties`]): drawn from its own ceiling up to theirs (`Party::top`).
+    steps: Vec<Party>,
 }
 
 /// A stretch of a building's wall against a neighbour's (a block's pieces back to back, `parcels`): from `from` to `to`
@@ -597,10 +696,84 @@ pub(crate) struct Party {
     pub from: [f32; 2],
     pub to: [f32; 2],
     pub top: f32,
+    /// The neighbour's number among the pieces.
+    pub of: usize,
+}
+
+impl Party {
+    /// This stretch but where it runs under `arcade`'s walkway (a neighbour's whose walkway this building's does not
+    /// run on from): there the neighbour's ground storey stands back, and this wall closes the walkway's end.
+    pub(crate) fn outside(self, arcade: &Arcade) -> Option<Party> {
+        self.side(arcade, false)
+    }
+
+    /// What of this stretch runs under `arcade`'s walkway.
+    pub(crate) fn under(self, arcade: &Arcade) -> Option<Party> {
+        self.side(arcade, true)
+    }
+
+    fn side(self, arcade: &Arcade, under: bool) -> Option<Party> {
+        let (s0, s1) = (arcade.ahead(self.from), arcade.ahead(self.to));
+        match (s0 > 0.01, s1 > 0.01) {
+            (from, to) if from == to => (from == under).then_some(self),
+            (ahead_from, _) => {
+                let t = s0 / (s0 - s1);
+                let cut = [
+                    self.from[0] + (self.to[0] - self.from[0]) * t,
+                    self.from[1] + (self.to[1] - self.from[1]) * t,
+                ];
+                Some(if ahead_from == under {
+                    Party { to: cut, ..self }
+                } else {
+                    Party { from: cut, ..self }
+                })
+            }
+        }
+    }
+}
+
+/// One footprint's pieces' walls against each other's (`parties`, [`MeshBuilder::parties`]) over their arcades
+/// (`arcades`, by piece): where a neighbour's walkway does not run on into a piece's, the piece's wall stands down to the
+/// ground there and closes the walkway's end ([`Party::outside`]); where it runs on under a higher ceiling, the stretch
+/// under it is each piece's step ([`MeshBuilder::set_steps`]: its wall from its own ceiling up to theirs, `Party::top`),
+/// else a slot between the two ceilings opens into the lower piece.
+pub(crate) fn arcade_parties(
+    parties: &mut [Vec<Party>],
+    arcades: &[Option<Arcade>],
+) -> Vec<Vec<Party>> {
+    let mut steps = vec![Vec::new(); parties.len()];
+    for (i, list) in parties.iter_mut().enumerate() {
+        *list = std::mem::take(list)
+            .into_iter()
+            .filter_map(|p| {
+                let Some(theirs) = &arcades[p.of] else {
+                    return Some(p);
+                };
+                match &arcades[i] {
+                    Some(mine) if mine.runs_on(theirs) => {
+                        if theirs.top > mine.top + 0.01
+                            && let Some(under) = p.under(theirs)
+                        {
+                            steps[i].push(Party {
+                                top: theirs.top,
+                                ..under
+                            });
+                        }
+                        Some(p)
+                    }
+                    _ => p.outside(theirs),
+                }
+            })
+            .collect();
+    }
+    steps
 }
 
 /// How far (m) an edge may lie off its neighbour's and still be one wall with it.
 const PARTY_M: f32 = 0.05;
+
+/// An arcade's floor: the walls' grey concrete entry.
+const ARCADE_FLOOR: u8 = 3;
 
 /// A wall's facade: its storeys counted from `ground`, `rows` of windows, bays about `bay` wide, in `style`.
 struct Wall {
@@ -774,6 +947,142 @@ impl MeshBuilder {
         }
     }
 
+    /// The walls of `b` (its outline `ring`, from `bottom` to `top`) over `arcade`: the floors above on the whole outline
+    /// from the walkway's ceiling, the ground storey on the outline behind the walkway (its back wall's shops and
+    /// shutters under it), the ceiling and the raised floor over the walkway with the floor's kerb, and the columns
+    /// along the frontage. The walkway's surfaces carry window rows of `-1 - rows` (`buildings.wgsl`'s
+    /// `STREET_ARCADE`: shaded as under cover).
+    fn arcade_walls(
+        &mut self,
+        b: &Building,
+        ring: &[[f32; 2]],
+        bottom: f32,
+        top: f32,
+        arcade: &Arcade,
+    ) {
+        let behind = arcade.cut(ring, false);
+        let front = arcade.cut(ring, true);
+        if behind.len() < 3 || front.len() < 3 {
+            self.walls(b, ring, bottom, top, PART_WALL);
+            return;
+        }
+        self.walls(b, ring, arcade.top, top, PART_WALL);
+        let rows = b.storeys.min(126) as i8;
+        let style = Self::style(b, PART_WALL);
+        let wall = Wall {
+            ground: b.ground[1],
+            storey_m: b.storey_m,
+            rows,
+            bay: b.bay,
+            style,
+        };
+        let under = Wall {
+            rows: -1 - rows,
+            ..wall
+        };
+        let n = behind.len();
+        for i in 0..n {
+            let (p, q) = (behind[i], behind[(i + 1) % n]);
+            let w = if arcade.on_back(p, q) { &under } else { &wall };
+            for (along, lo) in self.wall_spans(p, q, bottom, arcade.top) {
+                self.wall_span(p, q, along, lo, arcade.top, w);
+            }
+        }
+        // The ceiling in the walls' colour, the floor in concrete tiles with its kerb down to the street.
+        let ceiling = Self::style(b, PART_GABLE);
+        let paving = style_of(
+            ARCADE_FLOOR,
+            b.roof_colour,
+            b.seed,
+            b.kind,
+            PART_GABLE,
+            false,
+        );
+        self.level(&front, arcade.top, false, ceiling, -1);
+        self.level(&front, arcade.floor, true, paving, -1);
+        let kerb = Wall {
+            rows: -1,
+            style: paving,
+            ..wall
+        };
+        let m = front.len();
+        for i in 0..m {
+            let (p, q) = (front[i], front[(i + 1) % m]);
+            if !arcade.on_back(p, q) {
+                self.wall_span(p, q, [0.0, 1.0], bottom, arcade.floor, &kerb);
+            }
+        }
+        // The columns, flush with the frontage, standing on the floor under the ceiling.
+        let (a, c) = (arcade.a, arcade.c);
+        let len = geometry::distance(a, c);
+        let d = [(c[0] - a[0]) / len, (c[1] - a[1]) / len];
+        let o = arcade.out;
+        let (at, wide) = arcade.columns();
+        let deep = 0.5;
+        let column = Wall {
+            rows: 0,
+            style: ceiling,
+            ..wall
+        };
+        for t in at {
+            let p = |s: f32, off: f32| [a[0] + d[0] * s - o[0] * off, a[1] + d[1] * s - o[1] * off];
+            // Counter-clockwise, held to the walkway: a tapered footprint's end slants in behind the frontage, and
+            // would leave its end column standing in the neighbour's.
+            let corners = [
+                p(t + 0.5 * wide, 0.0),
+                p(t + 0.5 * wide, deep),
+                p(t - 0.5 * wide, deep),
+                p(t - 0.5 * wide, 0.0),
+            ];
+            let held = geometry::clip_polygon(&front, &corners);
+            // Each side from one corner to the next faces out of the column.
+            let k = held.len();
+            for i in 0..k {
+                let (u, v) = (held[i], held[(i + 1) % k]);
+                self.wall_span(u, v, [0.0, 1.0], arcade.floor, arcade.top, &column);
+            }
+        }
+        // Where a neighbour's walkway runs on from this one under a higher ceiling, this wall closes the step.
+        let step = Wall {
+            rows: -1,
+            style: ceiling,
+            ..wall
+        };
+        for s in std::mem::take(&mut self.steps) {
+            self.wall_span(s.from, s.to, [0.0, 1.0], arcade.top, s.top, &step);
+        }
+    }
+
+    /// A level face over `ring` (counter-clockwise) at `y`, facing up or down, plain: `rows` its window rows' byte.
+    fn level(&mut self, ring: &[[f32; 2]], y: f32, up: bool, style: [u8; 4], rows: i8) {
+        let first = self.mesh.vertices.len() as u32;
+        let c = geometry::centroid(ring);
+        let n = if up {
+            [0.0, 1.0, 0.0]
+        } else {
+            [0.0, -1.0, 0.0]
+        };
+        for p in ring {
+            self.push_vertex([p[0], y, p[1]], n, [p[0] - c[0], p[1] - c[1]], rows, style);
+        }
+        for t in geometry::triangulate(ring) {
+            let t = if up { [t[0], t[2], t[1]] } else { t };
+            self.mesh
+                .indices
+                .extend_from_slice(&[first + t[0], first + t[1], first + t[2]]);
+        }
+    }
+
+    /// Hands the next building its arcade ([`street::arcade_of`]); taken once it is built.
+    pub(crate) fn set_arcade(&mut self, arcade: Option<Arcade>) {
+        self.arcade = arcade;
+    }
+
+    /// Hands the next building's arcade the steps up to its neighbours' ceilings ([`arcade_parties`]); taken with it.
+    pub(crate) fn set_steps(&mut self, steps: Vec<Party>) {
+        self.steps = steps;
+    }
+
     /// The stretches of the wall from `a` to `c` (as fractions along it) and each one's foot: `bottom`, or the top of
     /// the neighbour's walls it stands against ([`Party`]); none where the neighbour stands as high as `top`.
     fn wall_spans(&self, a: [f32; 2], c: [f32; 2], bottom: f32, top: f32) -> Vec<([f32; 2], f32)> {
@@ -929,6 +1238,7 @@ impl MeshBuilder {
                             from: [a[0] + d[0] * lo, a[1] + d[1] * lo],
                             to: [a[0] + d[0] * hi, a[1] + d[1] * hi],
                             top: tops[j],
+                            of: j,
                         });
                     }
                 }
@@ -1526,7 +1836,11 @@ impl MeshBuilder {
                         dormers_of(b, region, depth, long, rise)
                     };
                     let top = self.wall_top(b, lod);
-                    self.walls(b, ring, bottom, top, PART_WALL);
+                    if let Some(arcade) = self.arcade.take() {
+                        self.arcade_walls(b, ring, bottom, top, &arcade);
+                    } else {
+                        self.walls(b, ring, bottom, top, PART_WALL);
+                    }
                     if b.base > 0.0 {
                         self.soffit(b, ring, bottom);
                     }
@@ -1713,9 +2027,9 @@ mod tests {
         let mut m = MeshBuilder::default();
         let parties = m.parties(&pieces, Lod::Full);
         // Each against the other along x = 10, up to the other's walls' top: the low one's 11 m, the tall one's 17.
-        let party = |from: [f32; 2], to: [f32; 2], top: f32| Party { from, to, top };
-        assert_eq!(parties[0], [party([10.0, 0.0], [10.0, 10.0], 11.0)]);
-        assert_eq!(parties[1], [party([10.0, 10.0], [10.0, 0.0], 17.0)]);
+        let party = |from: [f32; 2], to: [f32; 2], top: f32, of: usize| Party { from, to, top, of };
+        assert_eq!(parties[0], [party([10.0, 0.0], [10.0, 10.0], 11.0, 1)]);
+        assert_eq!(parties[1], [party([10.0, 10.0], [10.0, 0.0], 17.0, 0)]);
         for (b, party) in pieces.iter().zip(parties) {
             m.set_party(party);
             m.building(b, Lod::Full);

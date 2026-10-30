@@ -7,7 +7,7 @@ they stand on (latitude and longitude, the sun's and the moon's places) and the 
 and coastline data into land. Ships from any glTF file float on that sea with their wakes and smoke. None of it needs the game's simulation;
 `engine-example` is a window that draws them all.
 
-Exported from the game at <!-- exported-commit -->`3209e5ce14202054f0048313ef3bb3fd61174488`.
+Exported from the game at <!-- exported-commit -->`d5ba4acf4761ada58735e21aa7443565c81a300b`.
 
 ## Where changes go
 

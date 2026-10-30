@@ -16,7 +16,8 @@
 //!   there is drawn, the rest is infill.
 //! - **Chunks** of 1 km on the theatre's metres ([`naval_terrain::buildings::CHUNK_M`]): the frame loop's [`Feed`] asks
 //!   for those within the layer's range of the camera, whole within its full-detail distance, boxes beyond, the far
-//!   level's masses past the boxes (`make_far`, from the window's cover alone), nearest first; one worker thread
+//!   level's masses past the boxes (`make_far`, from the window's cover, and its mapped towers from the map's tiles:
+//!   [`towers`]), nearest first; one worker thread
 //!   (`theatre-buildings`) fetches, parses, projects, plans and meshes them, and keeps the made
 //!   meshes ([`MADE_BYTES`]); the feed hands each to the layer, which uploads a few megabytes a frame. No scene rebuild:
 //!   the layer is in the scene from its build, empty until its chunks arrive.
@@ -48,7 +49,7 @@ use naval_terrain::buildings::tags::{
 };
 use naval_terrain::buildings::{
     BuildingSettings, BuildingsLayer, CHUNK_M, ChunkKey, ChunkMesh, Footprint, Lod, Period, Region,
-    build_chunk, chunk_corner, chunk_of, far, geometry, infill, thinning,
+    build_chunk, chunk_corner, chunk_of, far, geometry, grounds, infill, thinning,
 };
 
 use super::near::WindowHeights;
@@ -60,6 +61,9 @@ pub mod split;
 
 #[path = "buildings_period.rs"]
 pub mod period;
+
+#[path = "buildings_towers.rs"]
+pub mod towers;
 
 /// The dataset's index: the README's current one first, then the older host's.
 pub const INDEX_URLS: [&str; 2] = [
@@ -298,6 +302,20 @@ fn far_override() -> Option<f32> {
     *FAR.get_or_init(|| {
         let v = std::env::var("NAVAL_BUILDINGS_FAR").ok()?;
         far_range(&v)
+    })
+}
+
+/// Whether the far level stands its mapped towers ([`towers`]): unless `NAVAL_BUILDINGS_TOWERS` is `off` (or `0`), to
+/// measure them and to see the far level as it was without them.
+fn towers_on() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        !std::env::var("NAVAL_BUILDINGS_TOWERS").is_ok_and(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "off" | "0" | "false"
+            )
+        })
     })
 }
 
@@ -819,16 +837,23 @@ impl Context {
         }
     }
 
-    /// The relief's pages under chunk `chunk`, by [`naval_terrain::ReliefHeights::signature`] (0 for a far chunk, which
-    /// stands on the window's heights).
+    /// The relief's pages under chunk `chunk`, by [`naval_terrain::ReliefHeights::signature`] (0 without the relief): a
+    /// whole or boxed chunk's, and a far chunk's towers' (their boxes' footing, [`Context::footing`]; its masses stand
+    /// on the window's heights, so a far chunk without towers is marked by none, [`Made::relief`]).
     fn relief_under(&self, chunk: ChunkKey) -> u64 {
-        let Some(relief) = self.relief.as_ref().filter(|_| chunk.lod != Lod::Far) else {
+        let Some(relief) = self.relief.as_ref() else {
             return 0;
         };
         let c = chunk_corner(chunk.index);
         let o = self.ground.origin();
         let lo = [c[0] - o[0], c[1] - o[1]];
         relief.signature(Some((lo, [lo[0] + CHUNK_M, lo[1] + CHUNK_M])))
+    }
+
+    /// What chunk `chunk`'s `mesh` is marked by of the relief ([`Made::relief`]): the pages under it, but none for a far
+    /// chunk without towers, whose masses stand on the window's heights alone.
+    fn relief_mark(&self, chunk: ChunkKey, mesh: &ChunkMesh) -> Option<u64> {
+        (chunk.lod != Lod::Far || !mesh.indices.is_empty()).then(|| self.relief_under(chunk))
     }
 
     /// The palettes of chunk `index`: its middle's place's.
@@ -1047,18 +1072,22 @@ struct Made {
     epoch: u64,
     /// A far chunk's: the period ground's version it was made after (`period_land::version`); 0 otherwise.
     answered: u64,
-    /// The relief's pages it was made on ([`Context::relief_under`]).
-    relief: u64,
+    /// The relief's pages it was made on ([`Context::relief_under`]); none for a far chunk without towers, which stands
+    /// on the window's heights alone.
+    relief: Option<u64>,
     /// The areas the host draws itself over it when it was begun ([`Clearing::signature`]).
     cleared: u64,
+    /// A far chunk's: the towers' tiles fetched before it was begun ([`towers::epoch`]).
+    towers: Option<u64>,
 }
 
 impl Made {
-    /// Whether to make it again: made without something it wanted, and a big file has been split since or it was made a
-    /// while ago (not while the split it waits for runs).
+    /// Whether to make it again: made without something it wanted, and a big file has been split since, a far chunk's
+    /// towers' tiles have come in since, or it was made a while ago (not while the split it waits for runs).
     fn stale(&self) -> bool {
         !self.complete
             && (self.epoch != split_epoch()
+                || self.towers.is_some_and(|e| e != towers::epoch())
                 || (self.at.elapsed() >= RETRY_AFTER && !(self.awaiting && splitting())))
     }
 
@@ -1088,24 +1117,30 @@ impl Made {
         Evicted {
             relief: self.relief,
             cleared: self.cleared,
+            towers: self.towers.filter(|_| !self.complete),
         }
     }
 }
 
-/// What a mesh evicted from the cache was made on: the relief's pages ([`Made::relief`]) and the areas the host draws
-/// itself over it ([`Made::cleared`]).
+/// What a mesh evicted from the cache was made on: the relief's pages ([`Made::relief`]), the areas the host draws
+/// itself over it ([`Made::cleared`]) and, for a far chunk made without some of what it wanted, the towers' tiles
+/// fetched before ([`Made::towers`]).
 #[derive(Clone, Copy)]
 struct Evicted {
-    relief: u64,
+    relief: Option<u64>,
     cleared: u64,
+    towers: Option<u64>,
 }
 
 impl Evicted {
     /// Whether chunk `chunk`, still drawn, is to be made again: the relief under it, or the areas over it, changed
-    /// since it was made.
+    /// since it was made, or the towers' tiles it lacked have come in since (a drawn far chunk evicted before its
+    /// tower's tile landed is not left without it until the minute's retry).
     fn stale_for(&self, context: &Context, chunk: ChunkKey) -> bool {
-        self.relief != context.relief_under(chunk)
+        self.relief
+            .is_some_and(|r| r != context.relief_under(chunk))
             || self.cleared != clearing().signature(context.geo, chunk.index)
+            || self.towers.is_some_and(|e| e != towers::epoch())
     }
 }
 
@@ -1363,6 +1398,7 @@ fn work() {
         };
         let started = Instant::now();
         let epoch = split_epoch();
+        let towers_epoch = far.then(towers::epoch);
         // The areas the host draws itself as the batch is begun, the meshes made and marked by them alike: one handed
         // meanwhile makes its chunks again.
         let cleared = clearing();
@@ -1400,6 +1436,7 @@ fn work() {
                         state.incomplete.insert(k, (Instant::now(), epoch));
                     }
                     let bytes = mesh.bytes();
+                    let relief = context.relief_mark(chunk, &mesh);
                     let made = Made {
                         mesh,
                         complete,
@@ -1407,8 +1444,9 @@ fn work() {
                         awaiting: done.awaiting,
                         epoch,
                         answered,
-                        relief: context.relief_under(chunk),
+                        relief,
                         cleared: cleared.signature(context.geo, chunk.index),
+                        towers: towers_epoch,
                     };
                     state.evicted.remove(&k);
                     if let Some(old) = state.made.insert(k, made) {
@@ -2070,16 +2108,33 @@ fn make_under(
     ))
 }
 
-/// Makes a batch of far chunks over `context` (a few threads): each its town's masses from the window's maps alone
-/// (`naval_terrain::buildings::far`), nothing fetched. In a past period only on the ground that stood
-/// (`period_land`'s answers: the buildings' thinning where it ran, the cover's estimate beyond); a chunk whose ground is
-/// not known yet, or that the window's maps do not wholly cover, is made again a minute later.
+/// Makes a batch of far chunks over `context` (a few threads): each its town's masses from the window's maps
+/// (`naval_terrain::buildings::far`) and its mapped towers from the map's tiles on disk ([`towers`], those not there
+/// fetched behind). In a past period only on the ground that stood (`period_land`'s answers: the buildings' thinning
+/// where it ran, the cover's estimate beyond); a chunk whose ground is not known yet, or that the window's maps do not
+/// wholly cover, is made again a minute later, one made without some of its towers' tiles once they come in.
 fn make_far(
     context: &Context,
     batch: &[ChunkKey],
     cleared: &Clearing,
 ) -> Vec<(ChunkKey, Arc<ChunkMesh>, Done)> {
     let answers = super::period_land::answers(context.geo, context.period);
+    // The towers' tiles under the batch's chunks with land, read (or asked for) once for them all.
+    let wanted: Vec<Vec<TileId>> = batch
+        .iter()
+        .map(|c| {
+            if towers_on() && osm::enabled() && context.ground.has_land(c.index) {
+                osm_tiles_of(context.geo, *c, context.period)
+            } else {
+                Vec::new()
+            }
+        })
+        .collect();
+    let mut ids: Vec<TileId> = wanted.iter().flatten().copied().collect();
+    ids.sort_by_key(|t| (t.z, t.x, t.y));
+    ids.dedup();
+    let (held, _) = towers::load(context.geo, &ids);
+    let tiles: HashMap<TileId, Arc<OsmTile>> = held.into_iter().map(|t| (t.id, t)).collect();
     let threads = std::thread::available_parallelism()
         .map_or(2, |n| n.get())
         .clamp(1, 4);
@@ -2088,13 +2143,21 @@ fn make_far(
     std::thread::scope(|scope| {
         let handles: Vec<_> = batch
             .chunks(per)
-            .map(|part| {
+            .enumerate()
+            .map(|(n, part)| {
                 let answers = answers.as_deref();
+                let (tiles, wanted) = (&tiles, &wanted);
                 scope.spawn(move || {
                     qos.apply();
                     part.iter()
-                        .map(|&chunk| {
-                            let (mesh, done) = far_mesh(context, answers, chunk, cleared);
+                        .enumerate()
+                        .map(|(k, &chunk)| {
+                            let ids = &wanted[n * per + k];
+                            let have: Vec<Arc<OsmTile>> =
+                                ids.iter().filter_map(|id| tiles.get(id).cloned()).collect();
+                            let (mesh, mut done) =
+                                far_mesh(context, answers, chunk, cleared, &have);
+                            done.tiles &= have.len() == ids.len();
                             (chunk, Arc::new(mesh), done)
                         })
                         .collect::<Vec<_>>()
@@ -2108,12 +2171,14 @@ fn make_far(
     })
 }
 
-/// One far chunk's masses ([`make_far`]) under the areas `cleared`, and whether all it wanted was had.
+/// One far chunk's masses and towers ([`make_far`]; its towers from `tiles`, [`towers::load`]'s) under the areas
+/// `cleared`, and whether all it wanted was had.
 fn far_mesh(
     context: &Context,
     answers: Option<&super::period_land::Answers>,
     chunk: ChunkKey,
     cleared: &Clearing,
+    tiles: &[Arc<OsmTile>],
 ) -> (ChunkMesh, Done) {
     let mut done = Done {
         tiles: true,
@@ -2151,6 +2216,24 @@ fn far_mesh(
         context.geo,
         [corner[0] + CHUNK_M * 0.5, corner[1] + CHUNK_M * 0.5],
     );
+    // The mapped towers: OSM's outlines with their parts as the near levels merge them (no footprint of Microsoft's
+    // read here), on the ground as drawn, under the period's cap and the host's areas.
+    let mut tags = tags_for(context.geo, chunk.index, tiles);
+    tags.landmarks.clear();
+    tags.cleared = cleared.clone();
+    let mut footprints = Vec::new();
+    tags::merge_outlines(&mut footprints, &tags.outlines, &tags.outlines_about);
+    super::bases::clear(context, chunk.index, &mut footprints);
+    // Those about it likewise, with their parts and their buildings' middles (the chunk's own outlines read for them):
+    // a podium here under a shaft whose middle lies in the next chunk stands with it (`far::towers`).
+    let mut about = Vec::new();
+    tags::merge_outlines(&mut about, &tags.outlines_about, &tags.outlines);
+    super::bases::clear(context, chunk.index, &mut about);
+    let footing = |p: [f32; 2]| {
+        context.footing([corner[0] + f64::from(p[0]), corner[1] + f64::from(p[1])]) as f32
+    };
+    let thin = towers::year_of(context.period)
+        .map(|year| towers::thinning(context.geo, chunk.index, region, year));
     let mesh = far::build_far(&far::FarInput {
         index: chunk.index,
         land: &land,
@@ -2159,12 +2242,42 @@ fn far_mesh(
         chunk_region: region,
         period: context.period,
         cap_m: thinning::height_cap(region, middle.lat, middle.lon),
+        towers: (!footprints.is_empty() || !about.is_empty()).then_some(far::FarTowers {
+            footprints: &footprints,
+            about: &about,
+            tags: &tags,
+            ground: &footing,
+            thinning: thin.as_ref(),
+        }),
     });
     (mesh, done)
 }
 
+/// Leaves out the infill's `lots` on open land or on the map's roads: in a region whose lots keep off all the land its
+/// roads take (`infill::keeps_off_road_land`, Taiwan's) each lot whose building reaches a road's stroke, a main road's
+/// pavement or median, or a path; elsewhere each lot a road runs through the middle of (`MapTags::on_road`).
+fn off_roads(lots: &mut Vec<Footprint>, tags: &MapTags, region: Region) {
+    let road_land = infill::keeps_off_road_land(region)
+        .then(|| grounds::RoadLand::new(&tags.roads, &tags.paths));
+    if tags.zones.is_empty() && tags.roads.is_empty() && road_land.is_none() {
+        return;
+    }
+    lots.retain(|f| {
+        let on_road = match &road_land {
+            Some(land) => land.takes(&f.ring),
+            None => tags.on_road(&f.ring),
+        };
+        tags.usage_at(geometry::centroid(&f.ring)) != Usage::Open && !on_road
+    });
+}
+
 /// How far about a chunk its map's tiles are read (m): a quay's water and a pier reaching in from beyond it.
 const TAGS_REACH_M: f64 = 150.0;
+
+/// A footway's, path's or cycleway's half width (m), as Taiwan's lots keep off it: a pavement 2-3 m wide.
+const PATH_HALF_M: f32 = 1.5;
+/// A pedestrian street's (m): a street given over to walkers, as a minor road's.
+const PEDESTRIAN_HALF_M: f32 = 3.0;
 
 /// The zoom a chunk's map is read at: the deepest (14) at both near levels, whatever the period. OpenMapTiles' zoom 13
 /// holds a tile's buildings as one shape with no heights, parts or colours (a boxed tower 3.5 km off fell to an
@@ -2227,14 +2340,9 @@ fn chunk_mesh_under(
     };
     let region = context.region_of(chunk.index);
     let lots = if context.cover.is_some() {
-        let mut lots = infill::lots(chunk.index, &land, &infill::occupied(&footprints), &|p| {
-            context.region_at(p)
-        });
-        if !tags.zones.is_empty() || !tags.roads.is_empty() {
-            lots.retain(|f| {
-                tags.usage_at(geometry::centroid(&f.ring)) != Usage::Open && !tags.on_road(&f.ring)
-            });
-        }
+        let held = held_of(&footprints, &tags);
+        let mut lots = infill::lots(chunk.index, &land, &held, &|p| context.region_at(p));
+        off_roads(&mut lots, &tags, region);
         // A terminal's container yard holds the stacks (`theatre::infra`).
         super::infra::clear_yards(&tags, &context.ground, chunk.index, &mut lots);
         // An airfield's paving and grass (`theatre::infra`), and a generated base's clearing in the period.
@@ -2269,6 +2377,26 @@ const OMT_DEFAULT_HEIGHT_M: f64 = 5.0;
 
 /// A polygon cut to its tile: its exterior and holes, chunk-local.
 type Clipped = (Vec<[f32; 2]>, Vec<Vec<[f32; 2]>>);
+
+/// What the source holds of a chunk for its infill (`infill::Held`, chunk-local): the cells its footprints (`merged`,
+/// OSM's outlines merged in) hold, and the buildings a lot laid between a sparse map's keeps clear of
+/// (`infill::fills_between`): those footprints, OSM's outlines their parts draw (`hide_3d`), and OSM's about the chunk
+/// that reach in drawn by parts or standing on the ground as their own chunks stand them (under `tags::PART_BASE_M`,
+/// `tags::merge_outlines`). A part above the ground is left to its building's outline below it.
+fn held_of<'a>(merged: &'a [Footprint], map: &'a MapTags) -> infill::Held<'a> {
+    let about = map
+        .outlines_about
+        .iter()
+        .chain(&map.outlines_reaching)
+        .filter(|o| o.hide_3d || o.min_height < tags::PART_BASE_M);
+    let rings = map
+        .outlines
+        .iter()
+        .filter(|o| o.hide_3d)
+        .chain(about)
+        .map(|o| o.ring.as_slice());
+    infill::Held::new(merged, rings)
+}
 
 /// The map's tags for chunk `index` (chunk-local metres) from `tiles` about `geo`: the land use, the points of interest
 /// that type a building, OSM's building outlines whose middles lie in the chunk, the water (the sea, docks, rivers) and
@@ -2346,16 +2474,27 @@ pub fn tags_for(geo: LatLon, index: [i32; 2], tiles: &[Arc<OsmTile>]) -> MapTags
                 }
                 let c = geometry::centroid(&ring);
                 // Each building once: in the tile whose proper holds its middle, in the chunk that holds it; those
-                // about the chunk read for the building a part of its belongs to (`MapTags::outlines_about`).
+                // about the chunk read for the building a part of its belongs to (`MapTags::outlines_about`), and
+                // those farther off that reach near it for the infill to keep clear of (`MapTags::outlines_reaching`:
+                // by their bounds, a large building's middle lying well off).
                 let reach = TAGS_REACH_M as f32;
                 let near = |v: f32| (-reach..CHUNK_M as f32 + reach).contains(&v);
-                if !near(c[0]) || !near(c[1]) || !geometry::contains(&quad, c) {
+                // Whether its box meets the chunk's out by the infill's reach, axis by axis.
+                let reaching = || {
+                    let (lo, hi) = (-infill::REACH_M, CHUNK_M as f32 + infill::REACH_M);
+                    (0..2)
+                        .all(|a| ring.iter().any(|p| p[a] >= lo) && ring.iter().any(|p| p[a] <= hi))
+                };
+                let about = near(c[0]) && near(c[1]);
+                if !(about || reaching()) || !geometry::contains(&quad, c) {
                     continue;
                 }
                 let outlines = if in_chunk(c) {
                     &mut out.outlines
-                } else {
+                } else if about {
                     &mut out.outlines_about
+                } else {
+                    &mut out.outlines_reaching
                 };
                 outlines.push(Outline {
                     ring,
@@ -2390,12 +2529,37 @@ pub fn tags_for(geo: LatLon, index: [i32; 2], tiles: &[Arc<OsmTile>]) -> MapTags
                 } else {
                     half
                 };
+                let oneway = t.oneway != 0;
                 for line in lines {
                     for piece in geometry::clip_polyline(&ring_of(line), &quad) {
                         out.roads.extend(piece.windows(2).map(|w| tags::Road {
                             a: w[0],
                             b: w[1],
                             half,
+                            oneway,
+                        }));
+                    }
+                }
+            }
+            // The paths the land does not draw (a pavement mapped beside its road, a pedestrian street), which Taiwan's
+            // lots keep off too: not in a tunnel, nor a corridor indoors.
+            if t.class == "path"
+                && t.brunnel != naval_osm::Brunnel::Tunnel
+                && t.subclass.as_deref() != Some("corridor")
+                && let Geometry::Lines(lines) = &t.geometry
+            {
+                let half = if t.subclass.as_deref() == Some("pedestrian") {
+                    PEDESTRIAN_HALF_M
+                } else {
+                    PATH_HALF_M
+                };
+                for line in lines {
+                    for piece in geometry::clip_polyline(&ring_of(line), &quad) {
+                        out.paths.extend(piece.windows(2).map(|w| tags::Road {
+                            a: w[0],
+                            b: w[1],
+                            half,
+                            oneway: false,
                         }));
                     }
                 }
@@ -2695,12 +2859,14 @@ pub fn status_json(scene_id: u64, layer: Option<&BuildingsLayer>) -> serde_json:
             (f.pending, f.awaiting, f.epoch == split_epoch())
         });
     let worker = status();
+    let towers = towers::status();
     // A big file under the chunks drawn streaming in (drawn with the infill meanwhile), or split since the feed last
-    // looked: waiting for its footprints.
+    // looked, or the far chunks' towers' tiles coming in: waiting for its footprints.
     let state = if pending > 0
         || counts.queued > 0
         || layer.camera_theatre().is_none()
         || (awaiting > 0 && worker.streaming > 0)
+        || (counts.far_chunks > 0 && towers.fetching > 0)
         || !fed
     {
         "waiting"
@@ -2722,6 +2888,9 @@ pub fn status_json(scene_id: u64, layer: Option<&BuildingsLayer>) -> serde_json:
         "masses": counts.masses,
         "drawnFarChunks": counts.drawn_far_chunks,
         "drawnMasses": counts.drawn_masses,
+        "farTriangles": counts.far_triangles,
+        "drawnFarTriangles": counts.drawn_far_triangles,
+        "towers": towers,
         "fading": counts.fading,
         "farM": layer.settings().far_m,
         "gpuBytes": counts.bytes,

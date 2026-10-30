@@ -45,6 +45,7 @@ pub mod parcels;
 pub mod parts;
 pub mod period;
 pub mod region;
+pub mod street;
 pub mod tags;
 pub mod thinning;
 pub mod towns;
@@ -1028,6 +1029,12 @@ fn storeys_of(height: f32, storey_m: f32) -> u8 {
         .clamp(1.0, f32::from(MAX_STOREYS)) as u8
 }
 
+/// The share of Taiwan's large compact outlines (1,300-4,000 m², built over, no height mapped) estimated as towers
+/// ([`estimate`]). Of Taoyuan's and Zhongli's 1,366 such outlines in OSM (2026-10-29) 483 say nothing of what they
+/// are, 287 are industrial, 136 apartments, 111 residential, 105 schools and the rest shops, offices, halls and
+/// stations; 37 of the apartments' 40 with storeys mapped have nine or more, none of the 27 untyped ones has.
+pub const TAIWAN_TOWER_SHARE: f32 = 0.3;
+
 /// A building's kind and storeys without a measured height: from its area, its elongation (long over short side), the
 /// share of the ground built over about it and its land's `usage`, varied by `t` (0-1). A detached house about 6 m, a
 /// terrace 8 m, blocks 12-25 m in dense cores (offices on commercial land), warehouses and factories 8-10 m on
@@ -1188,18 +1195,29 @@ pub fn estimate(
             );
         }
         // Taiwan's towers (大樓) of 12 to 25 storeys where the ground is built over (and about a residential
-        // district's edge), shops below and flats above; an office tower on a large commercial footprint.
+        // district's edge), shops below and flats above, an office tower on a large commercial footprint: on three in
+        // ten of these outlines ([`TAIWAN_TOWER_SHARE`]). The rest are a block of four or five (cut into its walk-ups,
+        // `parcels`): OSM traces many of a dense core's blocks of townhouses as one outline (Zhongli's by its
+        // station), and a market's, a store's or a car park's is low; a school's or a hospital's is a block.
         Region::Taiwan
             if area < 4000.0
                 && elongation < 2.5
                 && (density > 0.3 || (usage == Usage::Residential && density > 0.15)) =>
         {
-            let storeys = up(12, 13);
-            return if commercial && area >= 2500.0 {
-                (Kind::Office, storeys)
+            let share = if usage == Usage::Civic {
+                0.0
             } else {
-                (Kind::Tower, storeys)
+                TAIWAN_TOWER_SHARE
             };
+            if t < share {
+                let storeys = 12 + (t / share * 13.999) as u8;
+                return if commercial && area >= 2500.0 {
+                    (Kind::Office, storeys)
+                } else {
+                    (Kind::Tower, storeys)
+                };
+            }
+            return (Kind::Block, 4 + ((t - share) / (1.0 - share) * 1.999) as u8);
         }
         // A market's, a department store's or an estate's block of five to eight under one outline; a school, an
         // estate's walk-ups; a village's factories and stores.
@@ -2131,19 +2149,32 @@ mod tests {
                 .iter()
                 .all(|(k, s)| *k == Kind::Terrace && (3..=4).contains(s))
         );
-        // Over 1,300 m² where it is built over: towers of 12 to 25, offices on commercial land.
-        let towers = est(1800.0, 1.5, 0.45, homes);
-        assert!(
-            towers
-                .iter()
-                .all(|(k, s)| *k == Kind::Tower && (12..=25).contains(s)),
-            "{towers:?}"
-        );
+        // Over 1,300 m² where it is built over: towers of 12 to 25 on three in ten, offices on commercial land; the
+        // rest blocks of four and five (a block of townhouses under one outline, a market, a car park); a school's
+        // or a hospital's a block.
+        let large = est(1800.0, 1.5, 0.45, homes);
+        let towers: Vec<_> = large.iter().filter(|b| b.0 == Kind::Tower).collect();
+        assert_eq!(towers.len(), 12, "{large:?}");
+        assert!(towers.iter().all(|(_, s)| (12..=25).contains(s)));
         assert!(towers.iter().any(|b| b.1 <= 14) && towers.iter().any(|b| b.1 >= 23));
         assert!(
-            est(2500.0, 1.5, 0.5, Usage::Commercial)
+            large
                 .iter()
-                .all(|(k, s)| *k == Kind::Office && *s >= 12)
+                .filter(|b| b.0 != Kind::Tower)
+                .all(|(k, s)| *k == Kind::Block && (4..=5).contains(s))
+        );
+        assert!(large.iter().any(|b| b.1 == 4) && large.iter().any(|b| b.1 == 5));
+        let shops = est(2500.0, 1.5, 0.5, Usage::Commercial);
+        assert_eq!(shops.iter().filter(|b| b.0 == Kind::Office).count(), 12);
+        assert!(
+            shops
+                .iter()
+                .all(|(k, s)| (*k == Kind::Office && *s >= 12) || (*k == Kind::Block && *s <= 5))
+        );
+        assert!(
+            est(2000.0, 1.3, 0.6, Usage::Civic)
+                .iter()
+                .all(|(k, s)| *k == Kind::Block && (4..=5).contains(s))
         );
         // A shophouse walk-up on commercial land, not an office; a market's or an estate's whole block under one
         // outline five to eight, not a tower.

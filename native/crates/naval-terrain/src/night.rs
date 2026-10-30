@@ -194,6 +194,8 @@ pub struct LightScales {
     pub shielded: bool,
     /// The share of a building's lit rooms left unshaded (`buildings.wgsl`'s `rule_light`).
     pub windows: f32,
+    /// The share of the shop signs' light let out (`buildings.wgsl`'s `sign_surface`).
+    pub signs: f32,
 }
 
 impl LightsRule {
@@ -207,6 +209,7 @@ impl LightsRule {
                 leak: 0.0,
                 shielded: false,
                 windows: 1.0,
+                signs: 1.0,
             },
             // The Western Defense Command's dimout from August 1942: street lights hooded and dimmed (a quarter of
             // their light, none upward or to seaward), signs and floodlights out or hooded, windows in sight of the sea
@@ -219,6 +222,8 @@ impl LightsRule {
                 leak: 0.02,
                 shielded: true,
                 windows: 0.15,
+                // Hooded or out: what light the few left burning show.
+                signs: 0.1,
             },
             LightsRule::Blackout => LightScales {
                 street: 0.0,
@@ -228,6 +233,7 @@ impl LightsRule {
                 leak: 0.004,
                 shielded: false,
                 windows: 0.03,
+                signs: 0.0,
             },
         }
     }

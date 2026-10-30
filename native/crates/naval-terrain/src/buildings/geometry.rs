@@ -362,15 +362,40 @@ pub fn overlaps(a: &[[f32; 2]], b: &[[f32; 2]]) -> bool {
     if a.len() < 3 || b.len() < 3 {
         return false;
     }
-    let crosses = |p: [f32; 2], q: [f32; 2], r: [f32; 2], s: [f32; 2]| {
-        side(p, q, r) * side(p, q, s) < 0.0 && side(r, s, p) * side(r, s, q) < 0.0
-    };
     a.iter().any(|p| contains(b, *p))
         || b.iter().any(|p| contains(a, *p))
         || (0..a.len()).any(|i| {
             let (p, q) = (a[i], a[(i + 1) % a.len()]);
             (0..b.len()).any(|j| crosses(p, q, b[j], b[(j + 1) % b.len()]))
         })
+}
+
+/// Whether segments `p`-`q` and `r`-`s` cross (each one's ends on either side of the other).
+fn crosses(p: [f32; 2], q: [f32; 2], r: [f32; 2], s: [f32; 2]) -> bool {
+    side(p, q, r) * side(p, q, s) < 0.0 && side(r, s, p) * side(r, s, q) < 0.0
+}
+
+/// The least distance between a ring and the segment `a`-`b` (m): 0 where the segment crosses the ring or lies in it.
+pub fn ring_segment_distance(ring: &[[f32; 2]], a: [f32; 2], b: [f32; 2]) -> f32 {
+    let n = ring.len();
+    if n < 3 {
+        return f32::INFINITY;
+    }
+    if contains(ring, a) {
+        return 0.0;
+    }
+    let mut d = f32::INFINITY;
+    for i in 0..n {
+        let (p, q) = (ring[i], ring[(i + 1) % n]);
+        if crosses(p, q, a, b) {
+            return 0.0;
+        }
+        d = d
+            .min(segment_distance(p, a, b))
+            .min(segment_distance(a, p, q))
+            .min(segment_distance(b, p, q));
+    }
+    d
 }
 
 /// Which side of the edge `a`-`b` of a counter-clockwise convex polygon `p` lies on: positive inside.

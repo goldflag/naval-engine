@@ -787,6 +787,7 @@ mod tests {
             a: [0.0, 750.0],
             b: [700.0, 750.0],
             half: 5.0,
+            oneway: false,
         });
         let mut m = MeshBuilder::default();
         stack(&mut m, &tags, &ground, [0, 0]);

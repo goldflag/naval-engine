@@ -250,7 +250,9 @@ impl<'a> Gather<'a> {
             ground: &context.ground,
             cover: context.cover.as_ref(),
         };
-        let lots = infill::lots(index, &land, &[false; 100], &|p| context.region_at(p));
+        let lots = infill::lots(index, &land, &infill::Held::default(), &|p| {
+            context.region_at(p)
+        });
         let found = (!lots.is_empty()).then(|| Arc::new(Built::of(&lots)));
         self.cover_built.insert(index, found.clone());
         found

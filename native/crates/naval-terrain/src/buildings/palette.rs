@@ -48,9 +48,9 @@ const MALTA_FLAT_ROOFS: &[u8] = &[SCREED, 14, SCREED, 10, 24, SCREED, 15, SCREED
 /// North Africa's flat roofs: limewash and white membranes, limestone screed, pale concrete.
 const AFRICA_FLAT_ROOFS: &[u8] = &[15, 24, SCREED, 14, 24, 10, SCREED, 15, 9];
 
-/// Taiwan's flat roofs: grey concrete, green-grey waterproofing, dark felt, gravel, brown and red-brown heat tiles
-/// (隔熱磚).
-const TAIWAN_FLAT_ROOFS: &[u8] = &[14, 14, 27, 13, 3, 14, 27, 9, 14, 11, 23, 3];
+/// Taiwan's flat roofs: grey concrete, green-grey waterproofing, dark felt, gravel, brown heat tiles (隔熱磚) on one in
+/// twelve (the red-brown ones read salmon-pink from the air: none since 2026-10-29).
+const TAIWAN_FLAT_ROOFS: &[u8] = &[14, 14, 27, 13, 3, 14, 27, 9, 14, 11, 14, 3];
 
 /// A region's flat roofs.
 pub(super) fn flat_roofs(region: Region) -> &'static [u8] {
@@ -957,10 +957,12 @@ mod tests {
                 mean(&now),
                 mean(&japan)
             );
-            // Flat roofs mostly grey concrete and green-grey waterproofing, a heat tile's red now and then, no
-            // membranes.
+            // Flat roofs mostly grey concrete and green-grey waterproofing, a brown heat tile now and then (none of
+            // the red-brown that stood out from the air), no membranes.
             assert!(share(&now, &|_, r| matches!(r, 14 | 27)) > 0.45, "{kind:?}");
-            assert!(share(&now, &|_, r| r == 23) < 0.12, "{kind:?}");
+            let brown = share(&now, &|_, r| r == 13);
+            assert!(brown < 0.12, "{kind:?} {brown}");
+            assert_eq!(share(&now, &|_, r| r == 23), 0.0, "{kind:?}");
             assert_eq!(share(&now, &|_, r| matches!(r, 10 | 24)), 0.0, "{kind:?}");
             assert!(
                 roof_rules(Region::Taiwan, kind, Period::Today).flat >= 0.95 || kind != Kind::House

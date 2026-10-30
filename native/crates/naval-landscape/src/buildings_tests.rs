@@ -411,21 +411,21 @@ fn a_far_chunk_stands_its_town_from_the_cover() {
         index,
         lod: Lod::Far,
     };
-    let (mesh, done) = far_mesh(&context, None, key([0, 0]), &Clearing::default());
+    let (mesh, done) = far_mesh(&context, None, key([0, 0]), &Clearing::default(), &[]);
     assert!(done.tiles && !done.awaiting);
     assert!(mesh.masses.len() > 50, "{}", mesh.masses.len());
     assert!(mesh.vertices.is_empty());
-    let (none, _) = far_mesh(&context, None, key([1, 1]), &Clearing::default());
+    let (none, _) = far_mesh(&context, None, key([1, 1]), &Clearing::default(), &[]);
     assert!(none.masses.is_empty());
     // Past the window's maps: none, and made again later.
-    let (out, done) = far_mesh(&context, None, key([5, 0]), &Clearing::default());
+    let (out, done) = far_mesh(&context, None, key([5, 0]), &Clearing::default(), &[]);
     assert!(out.masses.is_empty() && !done.tiles);
     // In a past period with nothing known of its ground: none yet, and made again later.
     let past = Context {
         period: Period::Year(1942),
         ..context
     };
-    let (unknown, done) = far_mesh(&past, None, key([0, 0]), &Clearing::default());
+    let (unknown, done) = far_mesh(&past, None, key([0, 0]), &Clearing::default(), &[]);
     assert!(unknown.masses.is_empty() && !done.tiles);
 }
 
@@ -521,6 +521,105 @@ fn built_up_cover_with_no_footprints_is_filled_in() {
     assert_eq!(held.buildings, 100);
 }
 
+/// Taiwan's lots in chunk (0, 0) of the tropical town's built-up cover, laid between the map's buildings (`map`'s
+/// outlines merged as the chunk's footprints), as the chunk's mesh lays them.
+fn taiwans_lots(map: &MapTags) -> Vec<Footprint> {
+    let context = tropical_town();
+    let land = Land {
+        ground: &context.ground,
+        cover: context.cover.as_ref(),
+    };
+    let mut merged = Vec::new();
+    tags::merge_outlines(&mut merged, &map.outlines, &map.outlines_about);
+    infill::lots([0, 0], &land, &held_of(&merged, map), &|_| Region::Taiwan)
+}
+
+/// Whether a lot's middle lies in the 100 m cell east of (0, 3), beside the neighbours' buildings below.
+fn in_cell_13(f: &Footprint) -> bool {
+    let m = geometry::centroid(&f.ring);
+    (100.0..200.0).contains(&m[0]) && (300.0..400.0).contains(&m[1])
+}
+
+/// A neighbour's large building reaching into a chunk is kept clear of by Taiwan's lots laid between the chunk's
+/// buildings, however far off its middle: a 580 m shed whose middle lies 210 m west of the chunk, beyond the map's reach
+/// of it, is read by its bounds (`MapTags::outlines_reaching`); one stopping 100 m short of the chunk is not read.
+#[test]
+fn taiwans_lots_keep_clear_of_a_large_neighbour_whose_middle_lies_far_off() {
+    use naval_osm::{Building, Features, Polygon};
+    // Taoyuan's tile, its middle at theatre (0, 0).
+    let near = LatLon {
+        lat: 24.99,
+        lon: 121.31,
+    };
+    let id = TileId::of(near.lat, near.lon, 14);
+    let geo = to_lat_lon(near, osm::project(near, id, [0.5, 0.5]));
+    let n = f64::from(TileId::side(14));
+    let frac = |x: f64, z: f64| {
+        let ll = to_lat_lon(geo, [x, z]);
+        let f = naval_osm::tiles::fraction(ll.lat, ll.lon);
+        [f[0] * n - f64::from(id.x), f[1] * n - f64::from(id.y)]
+    };
+    let building = |x0: f64, z0: f64, x1: f64, z1: f64| Building {
+        id: None,
+        render_height: None,
+        render_min_height: None,
+        colour: None,
+        hide_3d: false,
+        geometry: Geometry::Polygons(vec![Polygon {
+            exterior: vec![frac(x0, z0), frac(x1, z0), frac(x1, z1), frac(x0, z1)],
+            holes: vec![],
+        }]),
+    };
+    let features = Features {
+        building: vec![
+            building(-500.0, 300.0, 80.0, 400.0),
+            building(-500.0, 500.0, -100.0, 600.0),
+            building(90.0, 310.0, 95.0, 315.0),
+        ],
+        ..Features::default()
+    };
+    let tile = Arc::new(OsmTile::new(geo, id, &features));
+    let map = tags_for(geo, [0, 0], &[tile]);
+    assert_eq!(map.outlines.len(), 1);
+    assert!(map.outlines_about.is_empty());
+    assert_eq!(map.outlines_reaching.len(), 1);
+    let shed = &map.outlines_reaching[0].ring;
+    // Lots stand beside it (the cell it covers four fifths of, (0, 3), is the source's), none on it.
+    let lots = taiwans_lots(&map);
+    assert!(lots.iter().any(in_cell_13));
+    assert!(lots.iter().all(|f| !geometry::overlaps(&f.ring, shed)));
+}
+
+/// A neighbour's outline a quarter-metre up (OSM's `min_height`) stands on the ground in its own chunk (under
+/// `tags::PART_BASE_M`), and Taiwan's lots keep clear of it where it reaches in.
+#[test]
+fn taiwans_lots_keep_clear_of_a_neighbours_outline_a_little_off_the_ground() {
+    let outline = |x0: f32, z0: f32, x1: f32, z1: f32, min_height: f32| Outline {
+        ring: vec![[x0, z0], [x1, z0], [x1, z1], [x0, z1]],
+        height: Some(9.0),
+        min_height,
+        colour: None,
+        hide_3d: false,
+    };
+    // In its own chunk, (-1, 0): a building on the ground, not a part.
+    let mut own = Vec::new();
+    tags::merge_outlines(&mut own, &[outline(900.0, 300.0, 1080.0, 400.0, 0.25)], &[]);
+    assert_eq!(own.len(), 1);
+    assert!(own[0].part.is_none());
+    let wide = outline(-100.0, 300.0, 80.0, 400.0, 0.25);
+    let map = MapTags {
+        outlines: vec![outline(90.0, 310.0, 95.0, 315.0, 0.0)],
+        outlines_about: vec![wide.clone()],
+        ..MapTags::default()
+    };
+    let lots = taiwans_lots(&map);
+    assert!(lots.iter().any(in_cell_13));
+    assert!(
+        lots.iter()
+            .all(|f| !geometry::overlaps(&f.ring, &wide.ring))
+    );
+}
+
 /// The tests handing the host's clear areas (one list for the whole program), one at a time.
 static CLEAR_AREAS: Mutex<()> = Mutex::new(());
 
@@ -561,7 +660,7 @@ fn the_hosts_clear_areas_leave_no_building_at_any_level_and_remake_their_chunks(
     let made = |lod| chunk_mesh(&context, key(lod), &stores, &[], None);
     assert_eq!(made(Lod::Full).buildings, 100);
     let infill = chunk_mesh(&context, key(Lod::Full), &none, &[], None);
-    let (far, _) = far_mesh(&context, None, key(Lod::Far), &clearing());
+    let (far, _) = far_mesh(&context, None, key(Lod::Far), &clearing(), &[]);
     let made_then = Made {
         mesh: Arc::new(infill.clone()),
         complete: true,
@@ -569,8 +668,9 @@ fn the_hosts_clear_areas_leave_no_building_at_any_level_and_remake_their_chunks(
         awaiting: false,
         epoch: split_epoch(),
         answered: 0,
-        relief: 0,
+        relief: Some(0),
         cleared: clearing().signature(geo, [0, 0]),
+        towers: None,
     };
     assert!(!made_then.stale_for(&context, key(Lod::Full)));
     // A circle 120 m about theatre (500, 500) and a square about (150, 850).
@@ -614,7 +714,7 @@ fn the_hosts_clear_areas_leave_no_building_at_any_level_and_remake_their_chunks(
             .any(|v| inside([v.position[0], v.position[2]]))
     );
     // Nor a far mass.
-    let (thinned, _) = far_mesh(&context, None, key(Lod::Far), &clearing());
+    let (thinned, _) = far_mesh(&context, None, key(Lod::Far), &clearing(), &[]);
     let middle = |m: &naval_terrain::buildings::far::Mass| m.at();
     assert!(far.masses.iter().any(|m| inside(middle(m))));
     assert!(thinned.masses.len() < far.masses.len());
@@ -656,8 +756,9 @@ fn a_drawn_chunk_whose_mesh_left_the_cache_is_made_again_under_new_clear_areas()
         awaiting: false,
         epoch: split_epoch(),
         answered: 0,
-        relief: context.relief_under(key),
+        relief: Some(context.relief_under(key)),
         cleared: clearing().signature(geo, key.index),
+        towers: None,
     };
     // Evicted from the cache while still drawn: what it was made on is kept, and an area handed over it makes it again.
     let evicted = made.evicted();
@@ -673,8 +774,9 @@ fn a_drawn_chunk_whose_mesh_left_the_cache_is_made_again_under_new_clear_areas()
         ..key
     };
     let quiet = Evicted {
-        relief: context.relief_under(beyond),
+        relief: Some(context.relief_under(beyond)),
         cleared: 0,
+        towers: None,
     };
     assert!(!quiet.stale_for(&context, beyond));
     // Taken away again: as it was made.
@@ -729,7 +831,7 @@ fn a_chunk_is_made_and_marked_under_one_reading_of_the_clear_areas() {
             .vertices
             .iter()
             .any(|v| inside([v.position[0], v.position[2]]));
-        let (far, _) = far_mesh(&context, None, key(Lod::Far), c);
+        let (far, _) = far_mesh(&context, None, key(Lod::Far), c, &[]);
         (near, mesh.buildings, far.masses.len())
     };
     let (stood, buildings, masses) = made(&begun);
@@ -741,8 +843,9 @@ fn a_chunk_is_made_and_marked_under_one_reading_of_the_clear_areas() {
         awaiting: false,
         epoch: split_epoch(),
         answered: 0,
-        relief: context.relief_under(key(Lod::Full)),
+        relief: Some(context.relief_under(key(Lod::Full))),
         cleared: begun.signature(geo, [0, 0]),
+        towers: None,
     };
     // Made again while the circle stands; right as it is once it is taken away.
     assert!(marked.stale_for(&context, key(Lod::Full)));
@@ -1040,4 +1143,444 @@ fn landmarks_stand_in_their_chunks() {
         .map(|i| tags_for(geo, i, &[]).landmarks.len())
         .sum();
     assert_eq!(stacks, 6);
+}
+
+/// A tile of the map's over the tropical town (made here, not fetched): a tower of 250 m on commercial land, one
+/// mapped as its parts (an outline drawn by them, a podium and a shaft to 150 m), a low block, and land use away from
+/// them. The towers' reader keeps the towers alone, and the far chunk stands them as its boxes, the masses off them.
+#[test]
+fn a_far_chunk_stands_the_maps_towers() {
+    use naval_osm::{Building, Features, Landuse, Polygon};
+    let context = tropical_town();
+    let geo = context.geo;
+    let id = TileId::of(-0.004, 0.004, 14);
+    let n = f64::from(TileId::side(14));
+    let frac = |x: f64, z: f64| {
+        let ll = to_lat_lon(geo, [x, z]);
+        let f = naval_osm::tiles::fraction(ll.lat, ll.lon);
+        [f[0] * n - f64::from(id.x), f[1] * n - f64::from(id.y)]
+    };
+    let square = |x: f64, z: f64, side: f64| {
+        let h = side / 2.0;
+        Geometry::Polygons(vec![Polygon {
+            exterior: vec![
+                frac(x - h, z - h),
+                frac(x + h, z - h),
+                frac(x + h, z + h),
+                frac(x - h, z + h),
+            ],
+            holes: vec![],
+        }])
+    };
+    let building = |x: f64, z: f64, side: f64, height: f64, base: f64, hide_3d: bool| Building {
+        id: None,
+        render_height: Some(height),
+        render_min_height: Some(base),
+        colour: None,
+        hide_3d,
+        geometry: square(x, z, side),
+    };
+    let features = Features {
+        building: vec![
+            building(500.0, 500.0, 40.0, 250.0, 0.0, false),
+            building(300.0, 300.0, 30.0, 30.0, 0.0, false),
+            building(700.0, 700.0, 60.0, 150.0, 0.0, true),
+            building(700.0, 700.0, 60.0, 30.0, 0.0, false),
+            building(700.0, 700.0, 30.0, 150.0, 30.0, false),
+        ],
+        landuse: vec![
+            Landuse {
+                class: "commercial".into(),
+                geometry: square(500.0, 500.0, 200.0),
+            },
+            Landuse {
+                class: "residential".into(),
+                geometry: square(200.0, 200.0, 150.0),
+            },
+        ],
+        ..Features::default()
+    };
+    let reduced = towers::reduce(&features);
+    assert_eq!(reduced.building.len(), 4, "the low block left out");
+    assert!(
+        reduced
+            .building
+            .iter()
+            .all(|b| b.render_height != Some(30.0) || b.geometry != square(300.0, 300.0, 30.0))
+    );
+    assert_eq!(reduced.landuse.len(), 1);
+    assert_eq!(reduced.landuse[0].class, "commercial");
+    assert!(
+        towers::reduce(&Features {
+            building: vec![building(300.0, 300.0, 30.0, 30.0, 0.0, false)],
+            ..Features::default()
+        })
+        .building
+        .is_empty()
+    );
+    let tile = Arc::new(OsmTile::new(geo, id, &reduced));
+    let key = ChunkKey {
+        index: [0, 0],
+        lod: Lod::Far,
+    };
+    let (mesh, done) = far_mesh(
+        &context,
+        None,
+        key,
+        &Clearing::default(),
+        std::slice::from_ref(&tile),
+    );
+    assert!(done.tiles);
+    // The tower at its height over its ground, an office on its commercial land; the parts' shaft to 150 m.
+    let top = |x: f32, z: f32, r: f32| {
+        mesh.vertices
+            .iter()
+            .filter(|v| (v.position[0] - x).hypot(v.position[2] - z) < r)
+            .map(|v| v.position[1])
+            .reduce(f32::max)
+    };
+    let ground = context.footing([500.0, 500.0]) as f32;
+    let tower = top(500.0, 500.0, 30.0).expect("the tower");
+    assert!(
+        (tower - ground - 250.0).abs() < 1.5,
+        "{tower} over {ground}"
+    );
+    let shaft = top(700.0, 700.0, 25.0).expect("the shaft");
+    assert!((shaft - ground - 150.0).abs() < 1.5, "{shaft}");
+    assert!(top(300.0, 300.0, 25.0).is_none());
+    use naval_terrain::buildings::Kind;
+    let office = mesh
+        .vertices
+        .iter()
+        .filter(|v| (v.position[0] - 500.0).hypot(v.position[2] - 500.0) < 30.0)
+        .all(|v| v.style[3] & 15 == Kind::Office as u8);
+    assert!(office);
+    // No mass on either.
+    for (x, z, side) in [(500.0f32, 500.0f32, 40.0f32), (700.0, 700.0, 60.0)] {
+        let h = side / 2.0 - 1.0;
+        assert!(
+            !mesh.masses.iter().filter(|m| !m.is_block()).any(|m| {
+                let [mx, mz] = m.at();
+                (mx - x).abs() < h && (mz - z).abs() < h
+            }),
+            "a run on the tower at {x}, {z}"
+        );
+    }
+    // Made again the same; without its tile, no tower and made again once the tile is in.
+    let (again, _) = far_mesh(&context, None, key, &Clearing::default(), &[tile]);
+    assert_eq!(
+        (&again.vertices, &again.masses),
+        (&mesh.vertices, &mesh.masses)
+    );
+    let (bare, _) = far_mesh(&context, None, key, &Clearing::default(), &[]);
+    assert!(bare.vertices.is_empty() && bare.masses.len() > mesh.masses.len());
+}
+
+/// A far chunk's towers stand on the relief as drawn (their boxes' footing): made again when a page under it comes in or
+/// is made again, as a boxed chunk is, held or evicted from the cache; a far chunk of masses alone, on the window's
+/// heights, is not.
+#[test]
+fn a_far_chunk_with_towers_is_made_again_when_the_relief_under_it_changes() {
+    use naval_terrain::{ReliefGrid, ReliefPage, relief::PAGE_TEXELS};
+    let _one = CLEAR_AREAS.lock().unwrap_or_else(|e| e.into_inner());
+    let grid = ReliefGrid {
+        origin: [0.0, 0.0],
+        texel_m: 10.0,
+        slots: 2,
+    };
+    let page = |m: f32| {
+        Arc::new(ReliefPage::from_residual(
+            &vec![m; (PAGE_TEXELS * PAGE_TEXELS) as usize],
+            10.0,
+        ))
+    };
+    let on = |page| Context {
+        relief: Some(naval_terrain::ReliefHeights::of_pages(
+            grid,
+            [([0, 0], page)],
+        )),
+        ..tropical_town()
+    };
+    let (flat, risen) = (on(page(0.0)), on(page(5.0)));
+    let far = ChunkKey {
+        index: [0, 0],
+        lod: Lod::Far,
+    };
+    // The page raises the towers' ground.
+    assert!(risen.footing([500.0, 500.0]) > flat.footing([500.0, 500.0]) + 4.0);
+    let towers = ChunkMesh {
+        indices: vec![0, 1, 2],
+        ..ChunkMesh::default()
+    };
+    let masses = ChunkMesh::default();
+    let made = |mesh: &ChunkMesh| Made {
+        mesh: Arc::new(mesh.clone()),
+        complete: true,
+        at: Instant::now(),
+        awaiting: false,
+        epoch: split_epoch(),
+        answered: 0,
+        relief: flat.relief_mark(far, mesh),
+        cleared: clearing().signature(flat.geo, far.index),
+        towers: Some(towers::epoch()),
+    };
+    assert_ne!(flat.relief_under(far), 0);
+    assert_eq!(made(&masses).relief, None);
+    assert!(!made(&towers).stale_for(&flat, far));
+    assert!(made(&towers).stale_for(&risen, far));
+    assert!(made(&towers).evicted().stale_for(&risen, far));
+    assert!(!made(&masses).stale_for(&risen, far));
+    assert!(!made(&masses).evicted().stale_for(&risen, far));
+}
+
+/// A drawn far chunk whose mesh left the cache before the towers' tile it lacked landed is made again once it lands, not
+/// a minute later; one made with everything it wanted is not.
+#[test]
+fn a_drawn_far_chunk_whose_mesh_left_the_cache_is_made_again_when_its_towers_land() {
+    let _one = CLEAR_AREAS.lock().unwrap_or_else(|e| e.into_inner());
+    let context = tropical_town();
+    let key = ChunkKey {
+        index: [0, 0],
+        lod: Lod::Far,
+    };
+    let made = |complete| Made {
+        mesh: Arc::new(ChunkMesh::default()),
+        complete,
+        at: Instant::now(),
+        awaiting: false,
+        epoch: split_epoch(),
+        answered: 0,
+        relief: None,
+        cleared: clearing().signature(context.geo, key.index),
+        towers: Some(towers::epoch()),
+    };
+    let (lacking, whole) = (made(false).evicted(), made(true).evicted());
+    assert!(!lacking.stale_for(&context, key) && !whole.stale_for(&context, key));
+    towers::landed();
+    assert!(lacking.stale_for(&context, key));
+    assert!(!whole.stale_for(&context, key));
+}
+
+/// Measures the far level's towers over the map's tiles on disk (`osm::cache_dir`) within 30 km of a place
+/// (`NAVAL_TOWERS_AT=lat,lon`, Taipei 101 by default): the tiles held, read and reduced, the towers kept, their memory,
+/// and their boxes' meshing over the far chunks. `cargo test --profile dev-client -p naval-landscape --lib
+/// measure_far_towers -- --ignored --nocapture`.
+#[test]
+#[ignore = "reads the map's tiles on disk"]
+fn measure_far_towers() {
+    let (lat, lon) = std::env::var("NAVAL_TOWERS_AT")
+        .ok()
+        .and_then(|v| {
+            let (a, b) = v.split_once(',')?;
+            Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+        })
+        .unwrap_or((25.0340, 121.5645));
+    let geo = LatLon { lat, lon };
+    let reach = 30_000.0;
+    let ids = osm::tiles_over(geo, [-reach, -reach], [reach, reach], 14);
+    let ids: Vec<TileId> = ids
+        .into_iter()
+        .filter(|&id| {
+            let p = osm::project(geo, id, [0.5, 0.5]);
+            p[0].hypot(p[1]) <= reach + 1500.0
+        })
+        .collect();
+    let mut on_disk = 0;
+    let mut bytes_on_disk = 0;
+    let mut decode_s = 0.0;
+    let mut whole_s = 0.0;
+    let mut tiles = Vec::new();
+    for &id in &ids {
+        let Some(bytes) = osm::cached(id) else {
+            continue;
+        };
+        let bytes = bytes.unwrap_or_default();
+        on_disk += 1;
+        bytes_on_disk += bytes.len();
+        let t = Instant::now();
+        let Some(tile) = towers::decode(geo, id, &bytes) else {
+            continue;
+        };
+        decode_s += t.elapsed().as_secs_f64();
+        let t = Instant::now();
+        let _ = OsmTile::decode(geo, id, &bytes);
+        whole_s += t.elapsed().as_secs_f64();
+        tiles.push(Arc::new(tile));
+    }
+    let outlines: usize = tiles.iter().map(|t| t.features.building.len()).sum();
+    let kept_bytes: usize = tiles.iter().map(|t| t.bytes).sum();
+    let tall: usize = tiles
+        .iter()
+        .flat_map(|t| &t.features.building)
+        .filter(|b| {
+            b.render_height
+                .is_some_and(|h| h >= f64::from(far::TOWER_M))
+        })
+        .count();
+    eprintln!(
+        "{lat},{lon}: {} tiles within 30 km, {on_disk} on disk ({:.1} MB); towers' read {:.0} ms ({:.2} ms a tile), the \
+         map's whole decode {:.0} ms; {outlines} outlines kept ({tall} of {} m and more), {:.2} MB held",
+        ids.len(),
+        bytes_on_disk as f64 / 1e6,
+        decode_s * 1e3,
+        decode_s * 1e3 / on_disk.max(1) as f64,
+        whole_s * 1e3,
+        far::TOWER_M,
+        kept_bytes as f64 / 1e6,
+    );
+    // The towers' boxes over the far chunks (10-30 km), on flat ground with no cover (no masses): the meshing and the
+    // GPU bytes, through `far::build_far` as the far chunks make them.
+    struct Bare;
+    impl infill::Land for Bare {
+        fn cover(&self, _: [f64; 2]) -> u8 {
+            30
+        }
+        fn built_share(&self, _: [f64; 2], _: f64) -> f32 {
+            0.0
+        }
+        fn height(&self, _: [f64; 2]) -> f32 {
+            10.0
+        }
+    }
+    let landuse_points: usize = tiles
+        .iter()
+        .flat_map(|t| &t.features.landuse)
+        .map(|l| l.geometry.points().count())
+        .sum();
+    let start = Instant::now();
+    let (mut chunks, mut with, mut triangles, mut gpu, mut most, mut buildings) =
+        (0, 0, 0, 0, 0, 0);
+    for j in -31..31 {
+        for i in -31..31 {
+            let index = [i, j];
+            let c = chunk_corner(index);
+            let d = (c[0] + 500.0).hypot(c[1] + 500.0);
+            if !(10_000.0..=30_000.0).contains(&d) {
+                continue;
+            }
+            chunks += 1;
+            let key = ChunkKey {
+                index,
+                lod: Lod::Far,
+            };
+            let ids = osm_tiles_of(geo, key, Period::Today);
+            let have: Vec<Arc<OsmTile>> = tiles
+                .iter()
+                .filter(|t| ids.contains(&t.id))
+                .cloned()
+                .collect();
+            let mut tags = tags_for(geo, index, &have);
+            tags.landmarks.clear();
+            let mut footprints = Vec::new();
+            tags::merge_outlines(&mut footprints, &tags.outlines, &tags.outlines_about);
+            if footprints.is_empty() {
+                continue;
+            }
+            let mesh = far::build_far(&far::FarInput {
+                index,
+                land: &Bare,
+                stood: &|_| true,
+                region: &|_| Region::Taiwan,
+                chunk_region: Region::Taiwan,
+                period: Period::Today,
+                cap_m: 400.0,
+                towers: Some(far::FarTowers {
+                    footprints: &footprints,
+                    about: &[],
+                    tags: &tags,
+                    ground: &|_| 10.0,
+                    thinning: None,
+                }),
+            });
+            if !mesh.indices.is_empty() {
+                with += 1;
+                triangles += mesh.triangles();
+                gpu += mesh.bytes();
+                most = most.max(mesh.bytes());
+                buildings += mesh.buildings;
+            }
+        }
+    }
+    let building_points: usize = tiles
+        .iter()
+        .flat_map(|t| &t.features.building)
+        .map(|b| b.geometry.points().count())
+        .sum();
+    let most_points = tiles
+        .iter()
+        .flat_map(|t| &t.features.building)
+        .map(|b| b.geometry.points().count())
+        .max()
+        .unwrap_or(0);
+    eprintln!(
+        "kept: the land use's {landuse_points} points, the buildings' {building_points} (at most {most_points})"
+    );
+    eprintln!(
+        "far chunks 10-30 km: {chunks}, {with} with towers ({buildings} buildings and parts), {triangles} triangles, \
+         {:.2} MB on the GPU ({:.1} KB the most a chunk), meshed in {:.0} ms on one thread (the tags and merge \
+         counted)",
+        gpu as f64 / 1e6,
+        most as f64 / 1e3,
+        start.elapsed().as_secs_f64() * 1e3
+    );
+}
+
+/// Taiwan's lots keep off all the land the map's roads take: a lot whose end reaches a carriageway's stroke, one in the
+/// median between a pair of one-way carriageways, one on a footway mapped beside them; one behind the pavement stands.
+/// Every other region's lots are left out only where a road runs through their middle, as before: all four stand.
+#[test]
+fn only_taiwans_lots_keep_off_a_roads_pavement_median_and_footway() {
+    let road = |z: f32, half: f32, oneway: bool| tags::Road {
+        a: [-200.0, z],
+        b: [600.0, z],
+        half,
+        oneway,
+    };
+    let tags = MapTags {
+        roads: vec![road(100.0, 4.5, true), road(124.0, 4.5, true)],
+        paths: vec![road(86.0, 1.5, false)],
+        ..MapTags::default()
+    };
+    let lot = |x: f32, z0: f32, z1: f32| Footprint {
+        ring: vec![[x, z0], [x + 5.0, z0], [x + 5.0, z1], [x, z1]],
+        ..Footprint::default()
+    };
+    let lots = vec![
+        // Its end 2 m into the second carriageway's stroke, its middle 10 m off its middle line.
+        lot(0.0, 126.5, 141.5),
+        lot(20.0, 109.0, 115.0),
+        lot(40.0, 74.0, 89.0),
+        lot(60.0, 66.0, 81.0),
+    ];
+    let regions = [
+        Region::Tropical,
+        Region::Arid,
+        Region::NorthAfrica,
+        Region::Micronesia,
+        Region::Atoll,
+        Region::American,
+        Region::Florida,
+        Region::Hawaii,
+        Region::West,
+        Region::EastAsia,
+        Region::Nordic,
+        Region::Temperate,
+        Region::Mediterranean,
+        Region::Iceland,
+        Region::British,
+        Region::Celtic,
+        Region::NorthSea,
+        Region::Malta,
+        Region::Aegean,
+        Region::Nile,
+    ];
+    for region in regions {
+        assert!(!infill::keeps_off_road_land(region));
+        let mut kept = lots.clone();
+        off_roads(&mut kept, &tags, region);
+        assert_eq!(kept, lots, "{region:?}");
+    }
+    let mut kept = lots.clone();
+    off_roads(&mut kept, &tags, Region::Taiwan);
+    assert_eq!(kept, vec![lots[3].clone()]);
 }

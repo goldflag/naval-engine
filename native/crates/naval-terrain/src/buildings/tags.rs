@@ -272,12 +272,15 @@ pub enum LandmarkKind {
     Chimney { height: f32, radius: f32 },
 }
 
-/// A stretch of road or railway: from `a` to `b`, `half` its half width (m).
+/// A stretch of road or railway: from `a` to `b`, `half` its half width (m, its class's as the land draws it); `oneway`
+/// whether the way is mapped one way, a carriageway of a road whose other may run beside it (OSM maps a main road
+/// with a median, and often one with its lanes marked apart, as two ways).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Road {
     pub a: [f32; 2],
     pub b: [f32; 2],
     pub half: f32,
+    pub oneway: bool,
 }
 
 /// Everything a chunk's buildings read of the map, chunk-local. Empty: the footprints alone, typed by their shape and
@@ -290,11 +293,19 @@ pub struct MapTags {
     /// OSM's outlines whose middles lie in the chunks about this one, within the map's reach of it: they stand in their
     /// own chunks, and are read here only for the building a part of this chunk's belongs to ([`merge_outlines`]).
     pub outlines_about: Vec<Outline>,
+    /// OSM's outlines whose middles lie farther off but which reach within the infill's reach of the chunk
+    /// (`infill::REACH_M`), a large building's next door: they stand in their own chunks, and are read here only for the
+    /// lots laid between a sparse map's buildings to keep clear of (`infill::fills_between`).
+    pub outlines_reaching: Vec<Outline>,
     pub water: Vec<WaterArea>,
     pub piers: Vec<Pier>,
     pub landmarks: Vec<Landmark>,
     /// The roads and railways (no driveways or tracks), which the infill's lots keep off.
     pub roads: Vec<Road>,
+    /// The footways, pedestrian streets, paths and cycleways (OpenMapTiles' `path`, not in a tunnel), `half` the
+    /// width walked: a pavement mapped beside its road, a pedestrian street. The land draws none; Taiwan's lots keep off
+    /// them (`grounds::RoadLand`).
+    pub paths: Vec<Road>,
     /// Whether a working port is near (a ferry terminal within a tile or so): only its quays get cranes. OpenMapTiles
     /// maps no port land and no cranes, and a marina's or a power station's waterfront is industrial land at the water
     /// too.
@@ -359,6 +370,7 @@ impl MapTags {
             && self.piers.is_empty()
             && self.landmarks.is_empty()
             && self.roads.is_empty()
+            && self.paths.is_empty()
     }
 
     /// Whether chunk-local point `p` lies in an area the host draws itself ([`MapTags::cleared`]).
@@ -1393,6 +1405,7 @@ mod tests {
                 a: [0.0, 50.0],
                 b: [200.0, 50.0],
                 half: 3.0,
+                oneway: false,
             }],
             ..MapTags::default()
         };

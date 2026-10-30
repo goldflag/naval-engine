@@ -351,6 +351,11 @@ pub fn apply(
         return;
     };
     buildings.set_windows(windows);
+    buildings.set_signs(if shown {
+        lights.rule.scales().signs
+    } else {
+        1.0
+    });
     let version = buildings.beacons_version();
     if handed.beacons != Some((scene, version)) {
         let mut world = buildings.beacons();

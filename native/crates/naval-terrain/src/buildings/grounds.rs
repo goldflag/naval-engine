@@ -37,13 +37,42 @@ impl Grid {
 
     fn insert(&mut self, lo: [f32; 2], hi: [f32; 2], id: u32) {
         let (a, b) = (self.key(lo), self.key(hi));
-        // A road across the whole chunk spans 40 cells: no more than that.
+        // A building over the whole chunk spans 40 cells: no more than that (a road goes in along its length,
+        // `insert_segment`).
         if (b.0 - a.0 + 1) * (b.1 - a.1 + 1) > 1600 {
             return;
         }
         for i in a.0..=b.0 {
             for j in a.1..=b.1 {
                 self.cells.entry((i, j)).or_default().push(id);
+            }
+        }
+    }
+
+    /// Inserts the segment `a`-`b` widened by `pad` along its length, a cell's length at a time: the cells a road or a
+    /// median passes over, never its whole box (a map tile's stretch across the chunk's diagonal spans some 2,000), and
+    /// however long it is.
+    fn insert_segment(&mut self, a: [f32; 2], b: [f32; 2], pad: f32, id: u32) {
+        let len = geometry::distance(a, b);
+        if !len.is_finite() || !pad.is_finite() {
+            return;
+        }
+        let pieces = (len / self.cell).ceil().max(1.0) as usize;
+        let at = |i: usize| {
+            let t = i as f32 / pieces as f32;
+            [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+        };
+        for k in 0..pieces {
+            let (p, q) = (at(k), at(k + 1));
+            let lo = self.key([p[0].min(q[0]) - pad, p[1].min(q[1]) - pad]);
+            let hi = self.key([p[0].max(q[0]) + pad, p[1].max(q[1]) + pad]);
+            for i in lo.0..=hi.0 {
+                for j in lo.1..=hi.1 {
+                    let ids = self.cells.entry((i, j)).or_default();
+                    if ids.last() != Some(&id) {
+                        ids.push(id);
+                    }
+                }
             }
         }
     }
@@ -84,13 +113,19 @@ pub struct NearRoad {
 
 impl<'a> Roads<'a> {
     pub fn new(roads: &'a [Road]) -> Self {
+        Self {
+            roads,
+            grid: Self::grid_of(roads),
+        }
+    }
+
+    /// The roads' grid: each road along its length, as wide as its stroke.
+    fn grid_of(roads: &[Road]) -> Grid {
         let mut grid = Grid::new(50.0);
         for (k, r) in roads.iter().enumerate() {
-            let lo = [r.a[0].min(r.b[0]) - r.half, r.a[1].min(r.b[1]) - r.half];
-            let hi = [r.a[0].max(r.b[0]) + r.half, r.a[1].max(r.b[1]) + r.half];
-            grid.insert(lo, hi, k as u32);
+            grid.insert_segment(r.a, r.b, r.half, k as u32);
         }
-        Self { roads, grid }
+        grid
     }
 
     fn foot(r: &Road, p: [f32; 2]) -> [f32; 2] {
@@ -118,6 +153,14 @@ impl<'a> Roads<'a> {
             .min_by(|a, b| (a.distance - a.half).total_cmp(&(b.distance - b.half)))
     }
 
+    /// The roads passing within about `reach` of `p` (by the grid's cells: some farther).
+    pub fn around(&self, p: [f32; 2], reach: f32) -> impl Iterator<Item = &Road> + '_ {
+        self.grid
+            .near(p, reach)
+            .into_iter()
+            .map(|k| &self.roads[k as usize])
+    }
+
     /// Whether `p` stands off every road's paving by `margin`.
     pub fn clear(&self, p: [f32; 2], margin: f32) -> bool {
         self.grid.near(p, 30.0).into_iter().all(|k| {
@@ -125,6 +168,231 @@ impl<'a> Roads<'a> {
             geometry::distance(p, Self::foot(r, p)) > r.half + margin
         })
     }
+}
+
+/// How far past a road's drawn edge (its class's half width, [`Road::half`]) its land reaches, where a region's lots keep
+/// off it ([`super::infill::keeps_off_road_land`]): a tertiary road's or a one-way carriageway's pavement (m). The
+/// nearest tenth of the buildings OSM maps along such a road in Taipei and Taoyuan stand 6.6-8.1 m from its middle
+/// line, its stroke 3.5-4.5 m (docs/archive/terrain-history.md, "Taiwan's lots off its roads").
+pub const PAVEMENT_M: f32 = 3.0;
+/// The same past a two-way main road's drawn edge (m): one way carrying both directions' lanes, its stroke a
+/// carriageway's width. Taoyuan's nearest tenth stand 10.7 m from a two-way primary or secondary road's middle line.
+pub const WIDE_PAVEMENT_M: f32 = 5.0;
+/// A road drawn this wide or wider (half, m) has a pavement past its stroke: tertiary (3.5) and wider, a ramp or a
+/// busway; not a minor road (3), a service road or a railway (2.5), whose stroke is its land (the nearest tenth of
+/// Taipei's buildings stand 2.5-2.8 m from a minor road's middle line).
+const PAVED_HALF_M: f32 = 3.4;
+/// A main road's half width (m): secondary (4) and wider, as `street::MAIN_HALF_M`'s least.
+const MAIN_HALF_M: f32 = 3.9;
+/// How far apart two one-way main carriageways may lie (m, middle line to middle line) for the strip between them to be
+/// the road's median, and how near (a way's own pieces, or two lanes drawn as one). Of the rays across Taipei's and
+/// Taoyuan's main one-way carriageways reaching another within 40 m, 97 in 14,855 cross a mapped building on the way.
+pub const MEDIAN_M: [f32; 2] = [3.0, 40.0];
+/// Two carriageways within about 20° of each other run beside each other.
+const PARALLEL: f32 = 0.94;
+/// A footway is a road's pavement where it runs beside the road (within about 20°), its middle line this near the
+/// road's (m): Zhonghua Road's at Ximen 16 m from its outer carriageway's. Farther off, or across, it is a path through a
+/// block, a park or a campus, which the lots are not kept off.
+const PAVEMENT_BESIDE_M: f32 = 20.0;
+/// A footway is judged a road's pavement piece by piece, each this long at most (m): the stretch beside its road kept
+/// off, however long the way runs on past the road's end and wherever the map cuts it.
+const FOOTWAY_PIECE_M: f32 = 10.0;
+/// A path as wide as this (half, m) is a pedestrian street, kept off wherever it runs.
+const STREET_PATH_HALF_M: f32 = 2.9;
+
+/// The land a chunk's roads take, which a region's lots keep off ([`super::infill::keeps_off_road_land`]): every road's
+/// and railway's drawn strip, a tertiary road's or wider's pavement past it ([`PAVEMENT_M`], [`WIDE_PAVEMENT_M`]), the
+/// median between two one-way main carriageways running beside each other ([`MEDIAN_M`]), the pavements the map draws
+/// beside its roads ([`PAVEMENT_BESIDE_M`]) and its pedestrian streets ([`super::tags::MapTags::paths`]).
+pub struct RoadLand<'a> {
+    roads: Roads<'a>,
+    /// The paths kept off: each pedestrian street, and each piece of footway that is a road's pavement.
+    paths: Vec<Road>,
+    path_grid: Grid,
+    medians: Vec<[[f32; 2]; 4]>,
+    median_grid: Grid,
+}
+
+impl<'a> RoadLand<'a> {
+    pub fn new(roads: &'a [Road], paths: &'a [Road]) -> Self {
+        let roads = Roads::new(roads);
+        let medians = medians(&roads);
+        let mut median_grid = Grid::new(50.0);
+        let middle = |p: [f32; 2], q: [f32; 2]| [0.5 * (p[0] + q[0]), 0.5 * (p[1] + q[1])];
+        for (k, m) in medians.iter().enumerate() {
+            // Along the strip's middle, as wide as its wider end.
+            let pad = 0.5 * geometry::distance(m[0], m[3]).max(geometry::distance(m[1], m[2]));
+            median_grid.insert_segment(middle(m[0], m[3]), middle(m[1], m[2]), pad, k as u32);
+        }
+        let paths: Vec<Road> = paths
+            .iter()
+            .flat_map(pieces)
+            .filter(|p| kept_off(p, &roads))
+            .collect();
+        Self {
+            path_grid: Roads::grid_of(&paths),
+            roads,
+            paths,
+            medians,
+            median_grid,
+        }
+    }
+
+    /// How far from road `r`'s middle line its land reaches (m): its stroke, and past a tertiary road's or wider's its
+    /// pavement, a two-way main road's wider.
+    pub fn reach(r: &Road) -> f32 {
+        if r.half < PAVED_HALF_M {
+            r.half
+        } else if r.oneway || r.half < MAIN_HALF_M {
+            r.half + PAVEMENT_M
+        } else {
+            r.half + WIDE_PAVEMENT_M
+        }
+    }
+
+    /// The medians between the chunk's paired carriageways: each the strip between the two along the stretch they run
+    /// beside each other (a quadrilateral, chunk-local).
+    pub fn medians(&self) -> &[[[f32; 2]; 4]] {
+        &self.medians
+    }
+
+    /// Whether a building's `ring` reaches onto the roads' land: within a road's [`RoadLand::reach`] or a pavement's or
+    /// a pedestrian street's half width of its middle line anywhere along the ring, or into a median.
+    pub fn takes(&self, ring: &[[f32; 2]]) -> bool {
+        if ring.len() < 3 {
+            return false;
+        }
+        let c = geometry::centroid(ring);
+        let radius = ring
+            .iter()
+            .map(|p| geometry::distance(c, *p))
+            .fold(0.0, f32::max);
+        let near = |roads: &Roads, most: f32, reach: &dyn Fn(&Road) -> f32| {
+            roads
+                .around(c, radius + most)
+                .any(|r| geometry::ring_segment_distance(ring, r.a, r.b) < reach(r))
+        };
+        near(&self.roads, 6.5 + WIDE_PAVEMENT_M, &Self::reach)
+            || self.path_grid.near(c, radius + 4.0).into_iter().any(|k| {
+                let p = &self.paths[k as usize];
+                geometry::ring_segment_distance(ring, p.a, p.b) < p.half
+            })
+            || self
+                .median_grid
+                .near(c, radius)
+                .into_iter()
+                .any(|k| geometry::overlaps(ring, &self.medians[k as usize]))
+    }
+}
+
+/// A path's pieces as judged ([`kept_off`]): a pedestrian street whole, a footway in [`FOOTWAY_PIECE_M`] pieces.
+fn pieces(p: &Road) -> impl Iterator<Item = Road> + '_ {
+    let len = geometry::distance(p.a, p.b);
+    let n = if p.half >= STREET_PATH_HALF_M || !len.is_finite() {
+        1
+    } else {
+        (len / FOOTWAY_PIECE_M).ceil().max(1.0) as usize
+    };
+    let at = move |i: usize| {
+        let t = i as f32 / n as f32;
+        [
+            p.a[0] + (p.b[0] - p.a[0]) * t,
+            p.a[1] + (p.b[1] - p.a[1]) * t,
+        ]
+    };
+    (0..n).map(move |i| Road {
+        a: at(i),
+        b: at(i + 1),
+        ..*p
+    })
+}
+
+/// Whether path `p` (a piece of one, [`pieces`]) is kept off: a pedestrian street ([`STREET_PATH_HALF_M`]), or a
+/// footway running beside a road (a minor road or wider, not a service road or a railway) within [`PAVEMENT_BESIDE_M`]
+/// of its middle line.
+fn kept_off(p: &Road, roads: &Roads) -> bool {
+    if p.half >= STREET_PATH_HALF_M {
+        return true;
+    }
+    let len = geometry::distance(p.a, p.b);
+    if len < 0.5 {
+        return false;
+    }
+    let mid = [0.5 * (p.a[0] + p.b[0]), 0.5 * (p.a[1] + p.b[1])];
+    roads.around(mid, PAVEMENT_BESIDE_M).any(|r| {
+        let rl = geometry::distance(r.a, r.b);
+        r.half >= STREET_PATH_HALF_M
+            && rl >= 0.5
+            && ((r.b[0] - r.a[0]) * (p.b[0] - p.a[0]) + (r.b[1] - r.a[1]) * (p.b[1] - p.a[1])).abs()
+                >= PARALLEL * rl * len
+            && geometry::segment_distance(mid, r.a, r.b) <= PAVEMENT_BESIDE_M
+    })
+}
+
+/// The strips between one-way main carriageways running beside each other within [`MEDIAN_M`]: for each pair of
+/// stretches (each pair once), the part of one the other runs beside where they lie [`MEDIAN_M`] apart, and the
+/// other's beside it (short of a junction where they meet, either side of where they cross).
+fn medians(roads: &Roads) -> Vec<[[f32; 2]; 4]> {
+    let main = |r: &Road| r.oneway && r.half >= MAIN_HALF_M;
+    let mut out = Vec::new();
+    for (i, r) in roads.roads.iter().enumerate() {
+        let len = geometry::distance(r.a, r.b);
+        if !main(r) || len < 1.0 {
+            continue;
+        }
+        let u = [(r.b[0] - r.a[0]) / len, (r.b[1] - r.a[1]) / len];
+        let n = [-u[1], u[0]];
+        let along = |p: [f32; 2]| (p[0] - r.a[0]) * u[0] + (p[1] - r.a[1]) * u[1];
+        let across = |p: [f32; 2]| (p[0] - r.a[0]) * n[0] + (p[1] - r.a[1]) * n[1];
+        let at = |t: f32| [r.a[0] + u[0] * t, r.a[1] + u[1] * t];
+        let mid = at(len * 0.5);
+        for k in roads.grid.near(mid, len * 0.5 + MEDIAN_M[1]) {
+            let o = &roads.roads[k as usize];
+            let ol = geometry::distance(o.a, o.b);
+            if k as usize <= i || !main(o) || ol < 1.0 {
+                continue;
+            }
+            if ((o.b[0] - o.a[0]) * u[0] + (o.b[1] - o.a[1]) * u[1]).abs() < PARALLEL * ol {
+                continue;
+            }
+            // The stretch of `r` that `o` runs beside, and `o`'s points beside its ends.
+            let (ta, tb) = (along(o.a), along(o.b));
+            let (t0, t1) = (ta.min(tb).max(0.0), ta.max(tb).min(len));
+            if t1 - t0 < 1.0 {
+                continue;
+            }
+            let beside = |t: f32| {
+                let f = (t - ta) / (tb - ta);
+                [
+                    o.a[0] + (o.b[0] - o.a[0]) * f,
+                    o.a[1] + (o.b[1] - o.a[1]) * f,
+                ]
+            };
+            let (s0, s1) = (across(beside(t0)), across(beside(t1)));
+            for (lo, hi) in [(MEDIAN_M[0], MEDIAN_M[1]), (-MEDIAN_M[1], -MEDIAN_M[0])] {
+                if let Some((a, b)) = within([t0, t1], [s0, s1], lo, hi) {
+                    out.push([at(a), at(b), beside(b), beside(a)]);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Where along `t` (from `t[0]` to `t[1]`) a separation running evenly from `s[0]` to `s[1]` lies within `lo`..=`hi`:
+/// a metre of it at least.
+fn within(t: [f32; 2], s: [f32; 2], lo: f32, hi: f32) -> Option<(f32, f32)> {
+    let (a, b) = if (s[1] - s[0]).abs() < 1e-6 {
+        if !(lo..=hi).contains(&s[0]) {
+            return None;
+        }
+        (t[0], t[1])
+    } else {
+        let at = |v: f32| t[0] + (v - s[0]) / (s[1] - s[0]) * (t[1] - t[0]);
+        let (u, v) = (at(lo), at(hi));
+        (u.min(v).max(t[0]), u.max(v).min(t[1]))
+    };
+    (b - a >= 1.0).then_some((a, b))
 }
 
 /// The chunk's buildings' outlines, found by where they stand.
@@ -948,6 +1216,7 @@ mod tests {
             a: [-100.0, 30.0],
             b: [200.0, 30.0],
             half: 4.0,
+            oneway: false,
         }];
         let roads = Roads::new(&roads);
         let mut footings = Footings::default();
@@ -1062,5 +1331,205 @@ mod tests {
             &mut out,
         );
         assert!(!out.is_empty());
+    }
+
+    /// A lot's building: `w` along x by `d` along z about (`x`, `z`), turned `turn` radians.
+    fn lot(x: f32, z: f32, w: f32, d: f32, turn: f32) -> Vec<[f32; 2]> {
+        let (s, c) = turn.sin_cos();
+        [(-w, -d), (w, -d), (w, d), (-w, d)]
+            .iter()
+            .map(|&(a, b)| [x + 0.5 * (a * c - b * s), z + 0.5 * (a * s + b * c)])
+            .collect()
+    }
+
+    fn way(a: [f32; 2], b: [f32; 2], half: f32, oneway: bool) -> Road {
+        Road { a, b, half, oneway }
+    }
+
+    /// No lot's building stands within a primary or trunk road's width: its stroke and the pavement past it, anywhere
+    /// along the building (a Taiwanese lot's long end reaching the stroke past the circle about its middle that
+    /// `MapTags::on_road` tests).
+    #[test]
+    fn a_lot_never_stands_within_a_primary_or_trunk_roads_width() {
+        // A two-way primary road along z = 0 and a trunk road's carriageway along z = 200.
+        let roads = vec![
+            way([-300.0, 0.0], [300.0, 0.0], 4.5, false),
+            way([-300.0, 200.0], [300.0, 200.0], 5.0, true),
+        ];
+        let land = RoadLand::new(&roads, &[]);
+        assert_eq!(RoadLand::reach(&roads[0]), 4.5 + WIDE_PAVEMENT_M);
+        assert_eq!(RoadLand::reach(&roads[1]), 5.0 + PAVEMENT_M);
+        let tags = super::super::tags::MapTags {
+            roads: roads.clone(),
+            ..Default::default()
+        };
+        // A townhouse 5 m wide and 15 m deep, its middle 9 m off the primary's: its front end 3 m into the stroke.
+        let reaching = lot(0.0, 9.0, 5.0, 15.0, 0.0);
+        assert!(!tags.on_road(&reaching));
+        assert!(land.takes(&reaching));
+        // Every lot at every turn and offset either side of each road: taken where any of it lies within the road's
+        // width, kept otherwise.
+        for (r, middle) in roads.iter().zip([0.0f32, 200.0]) {
+            let width = RoadLand::reach(r);
+            for k in 0..120 {
+                let off = 2.0 + k as f32 * 0.25;
+                for side in [-1.0f32, 1.0] {
+                    for turn in [0.0f32, 0.4, 0.9, 1.3] {
+                        let ring =
+                            lot(4.0 * k as f32 - 240.0, middle + side * off, 5.0, 15.0, turn);
+                        let near = ring
+                            .iter()
+                            .map(|p| (p[1] - middle).abs())
+                            .fold(f32::MAX, f32::min);
+                        let crosses = ring.iter().any(|p| (p[1] - middle) * side < 0.0);
+                        if (near - width).abs() < 0.01 {
+                            continue;
+                        }
+                        assert_eq!(land.takes(&ring), crosses || near < width, "{off} {turn}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Two one-way carriageways running beside each other keep the strip between them bare (the median), however wide
+    /// past their pavements; two lying farther apart than a median are two roads, the land between them built on.
+    #[test]
+    fn a_pair_of_one_way_carriageways_keeps_its_median_bare() {
+        // Primary carriageways along z = 0 and z = 30 (opposite ways), a little askew; another pair 60 m apart.
+        let roads = vec![
+            way([-200.0, 0.0], [200.0, 0.0], 4.5, true),
+            way([200.0, 31.0], [-200.0, 29.0], 4.5, true),
+            way([-200.0, 300.0], [200.0, 300.0], 4.5, true),
+            way([200.0, 360.0], [-200.0, 360.0], 4.5, true),
+        ];
+        let land = RoadLand::new(&roads, &[]);
+        assert_eq!(land.medians().len(), 1);
+        // A small building in the median's middle, clear of both carriageways' pavements: taken.
+        let median = lot(50.0, 15.0, 4.0, 4.0, 0.3);
+        assert!(land.takes(&median));
+        // Past the pair's outer pavements, kept.
+        assert!(!land.takes(&lot(50.0, -20.0, 5.0, 15.0, 0.0)));
+        assert!(!land.takes(&lot(50.0, 50.0, 5.0, 15.0, 0.0)));
+        // Between the pair 60 m apart: kept. Two-way roads 30 m apart have no median either.
+        assert!(!land.takes(&lot(50.0, 330.0, 5.0, 15.0, 0.0)));
+        let two_way = vec![
+            way([-200.0, 0.0], [200.0, 0.0], 4.5, false),
+            way([-200.0, 30.0], [200.0, 30.0], 4.5, false),
+        ];
+        let land = RoadLand::new(&two_way, &[]);
+        assert!(land.medians().is_empty());
+        assert!(!land.takes(&median));
+        // A minor road's one-way pair has none: its stroke is its land.
+        let minor = vec![
+            way([-200.0, 0.0], [200.0, 0.0], 3.0, true),
+            way([200.0, 20.0], [-200.0, 20.0], 3.0, true),
+        ];
+        let land = RoadLand::new(&minor, &[]);
+        assert!(land.medians().is_empty());
+        assert!(!land.takes(&lot(50.0, 10.0, 4.0, 4.0, 0.0)));
+    }
+
+    /// A pavement the map draws beside its road (a footway 13 m off the carriageway's middle, past its pavement) is
+    /// kept clear: the lot on it taken, the one behind it kept. A footway through a block is not.
+    #[test]
+    fn a_lot_keeps_off_a_mapped_footway() {
+        let roads = vec![way([-200.0, 0.0], [200.0, 0.0], 4.5, true)];
+        let paths = vec![way([-200.0, 13.0], [200.0, 13.0], 1.5, false)];
+        let on_it = lot(0.0, 18.0, 5.0, 12.0, 0.0);
+        assert!(!RoadLand::new(&roads, &[]).takes(&on_it));
+        let land = RoadLand::new(&roads, &paths);
+        assert!(land.takes(&on_it));
+        assert!(!land.takes(&lot(0.0, 21.0, 5.0, 12.0, 0.0)));
+        // A footway through the block 40 m off the road, or across it, is a path, not its pavement; a pedestrian
+        // street is kept off wherever it runs.
+        let through = vec![
+            way([-200.0, 40.0], [200.0, 40.0], 1.5, false),
+            way([60.0, 30.0], [60.0, 90.0], 1.5, false),
+            way([-200.0, 80.0], [200.0, 80.0], 3.0, false),
+        ];
+        let land = RoadLand::new(&roads, &through);
+        assert!(!land.takes(&lot(0.0, 40.0, 5.0, 12.0, 0.0)));
+        assert!(!land.takes(&lot(60.0, 60.0, 5.0, 12.0, 0.0)));
+        assert!(land.takes(&lot(0.0, 80.0, 5.0, 12.0, 0.0)));
+    }
+
+    /// A road's stretch as long as a map tile holds (the map's roads clipped to its tiles, not to the chunk), running
+    /// corner to corner across the chunk and past it, still takes its land, and so does the median of a pair of them:
+    /// the grid holds it along its length, never its whole box (1,936 cells) or nothing.
+    #[test]
+    fn a_long_diagonal_road_and_its_median_still_take_their_land() {
+        let primary = vec![way([-500.0, -500.0], [1600.0, 1600.0], 4.5, false)];
+        let land = RoadLand::new(&primary, &[]);
+        assert!(land.takes(&lot(500.0, 500.0, 5.0, 15.0, 0.0)));
+        assert!(land.takes(&lot(1500.0, 1508.0, 5.0, 15.0, 0.0)));
+        assert!(!land.takes(&lot(500.0, 540.0, 5.0, 15.0, 0.0)));
+        let near = Roads::new(&primary).nearest([500.0, 510.0], 10.0);
+        assert!(near.is_some_and(|n| (n.distance - 50.0f32.sqrt()).abs() < 0.01));
+        // Its one-way pair 20 m apart (across the diagonal), the other carriageway coming back.
+        let n = [
+            -std::f32::consts::FRAC_1_SQRT_2 * 20.0,
+            std::f32::consts::FRAC_1_SQRT_2 * 20.0,
+        ];
+        let pair = vec![
+            way([-500.0, -500.0], [1600.0, 1600.0], 4.5, true),
+            way(
+                [1600.0 + n[0], 1600.0 + n[1]],
+                [-500.0 + n[0], -500.0 + n[1]],
+                4.5,
+                true,
+            ),
+        ];
+        let land = RoadLand::new(&pair, &[]);
+        assert_eq!(land.medians().len(), 1);
+        let turn = std::f32::consts::FRAC_PI_4;
+        for t in [0.0f32, 300.0, 900.0, 1500.0] {
+            assert!(
+                land.takes(&lot(t + 0.5 * n[0], t + 0.5 * n[1], 4.0, 4.0, turn)),
+                "{t}"
+            );
+        }
+    }
+
+    /// A footway is judged a road's pavement along the stretch it runs beside the road, not by its middle alone: one
+    /// running on 300 m past the road's end is kept off beside the road and not past it, however the map cuts it.
+    #[test]
+    fn a_footway_past_its_roads_end_is_kept_off_beside_the_road() {
+        let roads = vec![way([0.0, 0.0], [100.0, 0.0], 4.5, true)];
+        let whole = vec![way([0.0, 13.0], [400.0, 13.0], 1.5, false)];
+        let cut = vec![
+            way([0.0, 13.0], [100.0, 13.0], 1.5, false),
+            way([100.0, 13.0], [400.0, 13.0], 1.5, false),
+        ];
+        for paths in [&whole, &cut] {
+            let land = RoadLand::new(&roads, paths);
+            assert!(land.takes(&lot(50.0, 18.0, 4.0, 12.0, 0.0)));
+            assert!(!land.takes(&lot(300.0, 18.0, 4.0, 12.0, 0.0)));
+        }
+    }
+
+    /// Two one-way carriageways meeting at a junction keep bare the strip between them where they lie a median's
+    /// width apart: from 3 m apart out to the far end, not the whole strip lost for the point they share.
+    #[test]
+    fn carriageways_meeting_at_a_junction_keep_their_median_bare() {
+        let roads = vec![
+            way([0.0, 0.0], [120.0, 0.0], 4.5, true),
+            way([120.0, 40.0], [0.0, 0.0], 4.5, true),
+        ];
+        let land = RoadLand::new(&roads, &[]);
+        assert_eq!(land.medians().len(), 1);
+        let m = land.medians()[0];
+        assert!(geometry::distance(m[0], [9.0, 0.0]) < 0.01, "{m:?}");
+        assert!(geometry::distance(m[3], [9.0, 3.0]) < 0.01, "{m:?}");
+        assert!(land.takes(&lot(100.0, 16.0, 4.0, 12.0, 0.0)));
+        // Crossing each other at a narrow angle: the strip either side of the crossing.
+        let crossing = vec![
+            way([0.0, -20.0], [400.0, 20.0], 4.5, true),
+            way([400.0, -20.0], [0.0, 20.0], 4.5, true),
+        ];
+        let land = RoadLand::new(&crossing, &[]);
+        assert_eq!(land.medians().len(), 2);
+        assert!(land.takes(&lot(20.0, 0.0, 4.0, 4.0, 0.0)));
+        assert!(land.takes(&lot(380.0, 0.0, 4.0, 4.0, 0.0)));
     }
 }

@@ -51,7 +51,8 @@ Microsoft's files and tiles, the map's tiles), the made meshes only memory, so n
   layer's offset, rewritten when either changes), culled by its bounds against the view and drawn nearest first in the
   `Opaque` phase after the land. Three levels: `Lod::Full` (every roof and facade), `Lod::Box` (outlines simplified to
   2 m, each building a box under a flat top at its roof's mean height: about 30% fewer triangles) and, past the boxes,
-  `Lod::Far` (the town as coarse masses from the land cover: "The far level", below). Which chunk stands at which level
+  `Lod::Far` (the town as coarse masses from the land cover, its mapped towers as their boxes: "The far level",
+  below). Which chunk stands at which level
   is the host's choice (`BuildingSettings::lod_at`, 250 m of margin each way so a chunk does not flicker). A chunk
   changing level keeps drawing the old one until the new one is uploaded; the two then cross-fade over 0.6 s
   (`FADE_S`): each pixel goes to one level or the other by a dither that moves every frame, the two levels taking
@@ -201,7 +202,7 @@ Microsoft's files and tiles, the map's tiles), the made meshes only memory, so n
   | American | grey, brown and dark asphalt shingles, asphalt, black, slate | light grey, beige and blue-grey siding, white, brick, pastels |
   | American West | grey, brown and dark asphalt shingles, asphalt, one in ten concrete (sand) tile; one in five flat, gravel or tar (blocks: shingles, some terracotta, mostly flat) | white and cream stucco, whitewash, light ochre, peach, sand, beige and grey siding, stone, a pastel now and then |
   | East Asian | grey kawara (the colour cube's 102 grey), anthracite and black glazed tile, blue slate, lead, galvanised, blue, green and green-grey sheet metal (blocks: kawara and anthracite on the few pitched, most flat) | white, cream, light concrete, bright white, grey and beige siding, green-grey, stone, sand, dark timber now and then |
-  | Taiwan | flat (grey concrete, green-grey waterproofing, felt, gravel, brown and red-brown heat tiles); blue, galvanised, rusted and white sheet, red clay tile and kawara on the few pitched (blocks: flat) | small ceramic tiles (four homes in five, `buildings.wgsl`'s `wall_material`) in greys and dark greys, beige, tan, dun, olive, salmon, mauve, rose and brown, brick-red now and then, a white one; streaked by the rain (Weathering) |
+  | Taiwan | flat (grey concrete, green-grey waterproofing, felt, gravel, a brown heat tile on one in twelve (the red-brown ones read salmon-pink from the air: none since 2026-10-29)); blue, galvanised, rusted and white sheet, red clay tile and kawara on the few pitched (blocks: flat) | small ceramic tiles (four homes in five, `buildings.wgsl`'s `wall_material`) in greys and dark greys, beige, tan, dun, olive, salmon, mauve, rose and brown, brick-red now and then, a white one; streaked by the rain (Weathering) |
   | Tropical | galvanised and rusted corrugated iron, light galvanised, red, blue and green iron, a little terracotta | white render, cream, pastels, sand, painted boards |
   | Arid | flat concrete, white, gravel, membrane (a pitched one terracotta or concrete) | sand, cream, white, limestone, ochre |
   | Malta | flat (limestone screed, a new entry, pale concrete, white, membrane); terracotta on the few pitched | honey limestone (a new entry, ashlar), limestone, cream, pale ochre, sand, white |
@@ -233,9 +234,12 @@ Microsoft's files and tiles, the map's tiles), the made meshes only memory, so n
   (2026-10-29) a footprint under 1,300 m² over 30% built a townhouse (透天厝, 街屋) or a row of them of four or five
   storeys (a walk-up, 公寓, from 220 m² when under 1.8 times as long as wide; shops below on commercial land, not an
   office), a townhouse of three or four elsewhere; over 1,300 m² a long row's outline (over three times as long as
-  wide, a school's aside) its townhouses, a tower (大樓) of 12-25 storeys up to 4,000 m² and under 2.5 times as long as
-  wide over 30% built (over 15% on residential land; an office tower on commercial land from 2,500 m²), a market's or
-  an estate's block of five to eight beyond, a school or an estate's block of three to five where thinly built, a
+  wide, a school's aside) its townhouses; up to 4,000 m² and under 2.5 times as long as wide over 30% built (over 15%
+  on residential land) a tower (大樓) of 12-25 storeys on three in ten (`TAIWAN_TOWER_SHARE`; an office tower on
+  commercial land from 2,500 m²), a block of four or five on the rest and on a school's or a hospital's land (since
+  2026-10-29, lane D: OSM traces many of a dense core's blocks of townhouses as one untyped outline, Zhongli's by its
+  station, which the parcels cut into walk-ups, and a market's, a store's or a car park's is low; of Taoyuan's and
+  Zhongli's 1,366 such outlines 136 are apartments, 483 untyped), a market's or an estate's block of five to eight beyond, a school or an estate's block of three to five where thinly built, a
   village's factory or store (`MAX_ESTIMATED_STOREYS` holds but for the towers); in Britain,
   Ireland and the North Sea's country a small footprint over 30% built is a terrace of two storeys (three on one in
   seven), elsewhere a house of two storeys (one in eight of one; Scottish and Irish cottages one in two of one); in
@@ -310,7 +314,8 @@ Microsoft's files and tiles, the map's tiles), the made meshes only memory, so n
   harl, klinker, red sandstone, Malta's honey limestone; roofs: reed thatch, coursed by no tiles, soft streaks down its slope and matte, a flat roof's limestone screed, and since
   2026-10-14 smoked (ibushi) kawara with a silvered sheen and dark glazed kawara, glossy); the
   region picks among them (`palette.rs`, the table above), each building
-  tinted 0.88-1.12 by its hash. The colours take a milder form of the land's tone (80% of their saturation, 10% darker
+  tinted 0.88-1.12 by its hash (Taiwan's walls today also 0.82-1 wall by wall, each its own batch of tiles or coat of
+  paint, none as light as its entry in the sun: `wall_textured`). The colours take a milder form of the land's tone (80% of their saturation, 10% darker
   below a luminance of 0.35). That is Medium's facade; High and Ultra's is textured (below).
 - **Facade textures** (2026-10-08, High and Ultra; `facades.rs`, `FACADE_TEXTURES` in `buildings.wgsl`). Drawn on the
   CPU when the first layer is made (120 ms on its building thread, once a run; nothing fetched or licensed) into three
@@ -338,8 +343,10 @@ Microsoft's files and tiles, the map's tiles), the made meshes only memory, so n
   balconies (a Japanese block's balconies with solid parapets before sliding doors, its windows under hoods), a shop
   front under its sign, a curtain wall, ribbons, a factory's high ribbon, roller doors, a church's leaded arches and its
   belfry's louvres; Taiwan's homes (2026-10-29, `window_style_taiwan`): aluminium sliders, most behind an iron cage
-  (鐵窗, `Window::Cage`: its frame, close bars and rails 0.12 m proud of the wall over its floor and under a sheet hood,
-  in the building's accent: white, cream, rust or aluminium grey) on a townhouse's or a walk-up's upper floors (half
+  (鐵窗, `Window::Cage`: its frame, fifteen bars and three rails 0.12 m proud of the wall over its floor and under a
+  sheet hood, a pressed-sheet band along its foot and a scrolled one under its head, in the building's accent: white,
+  cream, rust or aluminium grey; they cover about half the cage, so far off, where a window is its mean, a cage reads as
+  a pale box over a dark pane, not as the pane) on a townhouse's or a walk-up's upper floors (half
   to all of a building's by its hash, one in seven of a tower's), roller shutters (鐵捲門) on most of a townhouse's
   ground floor, shops along three walk-ups' and towers' ground floors in four, their balconies stacked. Which one a bay and storey takes: the region and the kind, the
   building's hash and the bay's (`window_style`). The glass reflects the sky (roughness 0.04 since 2026-10-13), the
@@ -429,7 +436,8 @@ Microsoft's files and tiles, the map's tiles), the made meshes only memory, so n
     rest dark but for a thin line where the blackout cloth's halves meet, in one window in five (a box-filtered line,
     so it keeps its light far off).
   Far off every window takes its kind's and storey's mean (`mean_lit`, `rule_mean`). An evening's lit windows come to
-  within a few percent of before.
+  within a few percent of before. Taiwan's shop signs burn by the same hour and under the same rule ("Taiwan's
+  streets" below).
 
   Cost (Apple M5 Pro, Metal, `test-fast`, 1600 × 900, High, 1942, Istanbul by day; the scene's opaque pass by the
   GPU's own timestamps, medians of 40 frames in seven rounds alternating this shader and the one before by hot reload in
@@ -442,7 +450,9 @@ Microsoft's files and tiles, the map's tiles), the made meshes only memory, so n
   chunk (36 bytes a piece, sorted by shape) and drawn as instances of two shapes (a box of 10 triangles, and a water tower
   of 76: legs, a 12-sided drum and a cone) within 1.5 km of the camera (`CLUTTER_M`; a piece past it is dropped whole on
   the GPU, judged at its foot), and a third for the eaves' downpipes and the grounds below (`Shape::Near`, the box,
-  drawn only in chunks within 800 m: `NEAR_M`), each placed by its chunk's translation read from a storage buffer by its chunk's slot.
+  drawn only in chunks within 800 m: `NEAR_M`), and two closed boxes for Taiwan's shop signs (`Shape::Sign`, to
+1.5 km) and wall air conditioners (`Shape::Unit`, each within 500 m: `UNIT_M`; "Taiwan's streets" below), each placed by
+its chunk's translation read from a storage buffer by its chunk's slot.
   On flat roofs: a stair and lift housing on blocks, towers and offices of four storeys or more, air-conditioning units
   (one per 140 m² of roof; coolers on the American West's and dry countries' flat houses), vents, a Japanese block's
   water tank on its stand (55% of those of three storeys or more), a New York-style timber or tarred water tower (half
@@ -496,6 +506,60 @@ Microsoft's files and tiles, the map's tiles), the made meshes only memory, so n
   or a white iron gate before the rest, no hedges; the tropics' mostly open. Walls are the building's own brick or render where
   it is masonry; hedges are boxes shaded as leaves (`PART_LEAF`: speckled clumps of their green, the top as the sides). Yards (a garden's
   own ground) are not drawn: the photograph under the town carries them.
+- **Taiwan's streets** (2026-10-29, today, the whole level; `street.rs`, `MeshBuilder::arcade_walls`, `sign_surface`
+  and `unit_surface` in `buildings.wgsl`). What a Taiwanese street is read by from its pavement:
+  - *Arcades (騎樓).* A townhouse's, walk-up's or tower's ground storey along a main road (OpenMapTiles' secondary,
+    primary or trunk, half widths 3.9-5.5 m: `MAIN_HALF_M`) stands back behind a row of columns under the floors above,
+    3.6 m (4 m along a primary or trunk road), so the pavement runs through it. Its frontage: an edge at least 3 m
+    long within 20° of the road and facing it, within 16 m of the stroke's edge (the stroke is its class's width; a wide
+    avenue's carriageways and pavements are not drawn) over ground no other footprint or piece stands on, nor one of
+    OSM's outlines about the chunk on the ground (a neighbour across its edge, as the infill reads them); the building
+    at least 4 m deeper than its walkway, two storeys or more, the walkway's back wall crossing its outline twice, its
+    ground within a metre over the walkway. Every piece along one road reads the same, so a row's walkways run on into
+    each other; where a neighbouring piece's does not (`Arcade::runs_on`), this piece's party wall stands down to the
+    ground there and closes the walkway's end (`Party::outside`), and a neighbour on its own footprint closes it with
+    its own wall; where it runs on under a higher ceiling (a row stepping up a slope), the lower piece's wall closes the
+    step between the two ceilings (`mesh::arcade_parties`, `MeshBuilder::set_steps`). The mesh: the floors above on the whole outline from the walkway's ceiling at the first floor; the
+    ground storey on the outline behind the walkway, its back wall's shops and roller shutters as the frontage's would
+    have been; the ceiling in the walls' colour; a floor of grey concrete 0.15 m over the highest ground under it with
+    its kerb down to the street; columns 0.42 × 0.5 m flush with the frontage and held to the walkway (a tapered
+    footprint's end slants in behind it), one inside each end (two neighbours'
+    make one pier over their party wall) and no span over 6.5 m. The back wall, ceiling and floor carry window rows
+    of −1 − rows (`STREET_ARCADE`): lit as under cover (half the sky's light, the ceiling three quarters), the
+    ceiling casting into the sun's maps. No grounds stand before an arcade; the box level's frontage stands whole.
+    Geometry, not a facade's parallax: along a street what reads is the walkway's depth, the columns' silhouettes
+    against it and the floors' shadow over it, and a parallax facade is flat at a slant and shows a wall where a row's
+    walkway opens at its end.
+  - *Signs (招牌)* (`Shape::Sign`, drawn within 1.5 km). On an arcade's frontage (nine shops in ten) or a shop's front
+    onto a street (a minor road or wider within 8 m: half the townhouses and walk-ups, three towers in ten): for each
+    shop (a townhouse's one, a walk-up's or a tower's one every 4-6 m) a board along the arcade's top over the first
+    floor's foot (0.9-1.3 m high, the shop's width but 0.3 m; nine in ten; on a one-storey shop under its eaves and
+    over its door, 2.2 m, or none), and one or two boards standing out 0.75-1.3 m from the facade at the shop's ends
+    from 1.45 m over that, a storey or two high (three on a tower); each board's footprint clear of every other
+    building (a neighbour may stand before an outer shop though the frontage's middle is clear). Twelve
+    colours (`SIGN_COLOURS`): light boards with red, blue, green or black marks, dark ones with white or yellow; a frame
+    in the marks' colour and a run of marks like characters (each a 5 × 5 grid of strokes across and up, joined cell to
+    cell; read down a standing board), fading to the run's mean as a stroke outgrows the pixel; edges, top and
+    underside aluminium. At night lit through (2.4 times its colour), nearly all through the evening and a third late
+    (`sign_lit`, by the windows' hour), times the rule's share (`BuildingsLayer::set_signs` from
+    `night::LightScales::signs`: 1 lit, 0.1 under a dimout, none under a blackout).
+  - *Air conditioners (冷氣室外機)* (`Shape::Unit`, drawn within 500 m, each judged at its foot). On a townhouse's,
+    walk-up's or tower's walls over the ground floor (over the first on a front with signs), none on a wall against
+    another building nor where one stands over a unit's own span (the chunk's buildings, and OSM's outlines about it
+    on the ground: a neighbour across its edge; the infill's lots beyond it are not read): under a window or beside it (45% where the bay is wide enough), a split unit 0.78-0.88 × 0.55 ×
+    0.3 m on brackets 0.12 m off the wall (two in three) or a window unit 0.6 × 0.42 × 0.5 m; white, light grey,
+    beige or grey, rusted down its face on one in four; a split unit's fan behind its round grille beside its fins, a
+    window unit's louvres, the brackets under it. A wall fronting a street (a lane or wider within 8 m) takes them on
+    45% of a townhouse's bays a storey, 36% of a walk-up's, 10% of a tower's (to its sixteenth storey), its other walls
+    a fifth of that; at most 6 on a townhouse and 10 on a walk-up or a tower.
+  - Cost (Apple M5 Pro, `dev-client`, `theatre_town_look` today at 11:00 against `final-day/` from f02c2bf92a;
+    other agents on the machine, load average 8-20). Taipei: the drawn triangles 4-6% more (the arcades: about 40-50
+    a building, most of them its columns), the GPU's buildings bytes 5.6-11% more (the clutter: 36 bytes a sign or air
+    conditioner, every full chunk's uploaded), the drawn clutter 21-60% more instances (12 triangles each). The opaque
+    pass's time was within the machine's noise: the layer on against off moved it -2 to +0.3 ms in either direction
+    view to view. Taoyuan (Zhongli's streets): triangles 0.1-1.4% more, GPU bytes 1.5-2.5%, drawn clutter 9-62%. The
+    first count of air conditioners (a fifth of every wall's bays, to 18 a building) put 113 MB
+    more on the GPU from Zhongli's street; hence the street fronts and the caps.
 - **Footing** (2026-10-14; naval-client `theatre::buildings`, `Context::footing`). Within the fine relief's reach
   (ground.md, "Fine relief near the camera") a chunk's buildings, grounds and clutter stand on the land as drawn: the window's heights
   with the relief's residual added (`ReliefHeights`, the land layer's own pages), so a house on Palos Verdes' or
@@ -525,8 +589,26 @@ Microsoft's files and tiles, the map's tiles), the made meshes only memory, so n
   offset, blocks of 96 × 52 m between 12 m streets, two rows of lots back to back; a lot is built on where the cover is
   built-up there, more often where the cover about it is (an empty lot now and then in a thin suburb), on land over 1 m
   and slopes under 0.22, wholly inside its district (districts meet along a gap, as along a main road), and never in a
-  100 m cell holding any footprint of the source (`occupied`), nor reaching into an area the host draws itself (the
-  intro's `set_clear_areas`). What stands: houses on 12-17 m lots, set back 3-6 m and
+  100 m cell holding any footprint of the source (`infill::Held`), nor reaching into an area the host draws itself (the
+  intro's `set_clear_areas`). In Taiwan (2026-10-29, lane D, `infill::fills_between`), where Microsoft has no
+  footprints and OSM maps a town's towers, schools, markets and stations but few of its townhouses, a held cell whose
+  buildings cover under 35% of it (their union, counted every 2 m, so an outline its parts draw and its part on the
+  ground count once) is filled too, between them, and every lot's building there keeps 1 m (`CLEAR_M`)
+  from every building of the source: the chunk's footprints, the outlines its parts draw and OSM's outlines about it
+  that reach within 30 m (`REACH_M`), read by their bounds however far off their middles (a part from 0.5 m above the
+  ground, `PART_BASE_M`, left to its building); a lot laid between them is one the open cover would
+  lay there. Taoyuan's station district held nine in
+  ten of its built-up cells by its scattered outlines, most under a fifth covered, and stood as pale ground between
+  them. A lot that a road or railway of the map runs through the middle of is left out (`MapTags::on_road`: its stroke
+  reaching the circle about the lot's middle). Taiwan's lots (2026-10-29, lane G, `infill::keeps_off_road_land`,
+  `grounds::RoadLand`) keep their whole building off the land the roads take: each road's and railway's stroke, a 3 m
+  pavement past a tertiary road's or a one-way carriageway's (`PAVEMENT_M`) and 5 m past a two-way main road's
+  (`WIDE_PAVEMENT_M`), the median between two one-way carriageways of a secondary road or wider 3-40 m apart
+  (`MEDIAN_M`, `Road::oneway`), the footways OSM maps beside a road within 20 m (its pavements) and its pedestrian
+  streets (`MapTags::paths`). The nearest tenth of Taipei's and Taoyuan's mapped buildings stand 7-8 m from such a
+  carriageway's middle line (its stroke's half 4.5 m) and 10.7 m from Taoyuan's two-way main roads'; the lots, 4-6 m by
+  12-17 m and turned to their district's heading, had reached a stroke in one in six, and stood on Zhonghua Road's
+  wide pavement at Ximen. What stands: houses on 12-17 m lots, set back 3-6 m and
   turned a little; terraces where the town thickens; in a European or Nordic core blocks of three to six storeys filling
   their lots (in the tropics and dry countries rarely, and two or three storeys; three to five in Malta's, four to
   seven in Athens' and the Nile's, two or three in North Africa's, whose houses are of one storey). By region (`infill::Grid`, the region of each
@@ -551,7 +633,7 @@ Microsoft's files and tiles, the map's tiles), the made meshes only memory, so n
   no shadows, the drawn windows, no clutter (1 × 1 placeholders bound, the shader compiled without `FACADE_TEXTURES`:
   as before). `NAVAL_BUILDINGS=plain` draws High without the textures and the clutter, to measure them;
   `NAVAL_BUILDINGS_FAR=off` draws without the far level, and a number sets its range in kilometres, at most 30 (Medium too, past
-  its boxes).
+  its boxes); `NAVAL_BUILDINGS_TOWERS=off` draws the far level without its towers (its masses as before them).
 - **Period** (2026-10-10, `period.rs`). Graphics → Buildings: `period` (the default) draws the theatre's buildings as
   they stood in the scenario's year (`Period::Year`, from its start; a scenario after 1960 draws today's), `today` as
   the footprints and the map have them now (`Period::Today`, everything above). Taken when a theatre scene is built
@@ -575,7 +657,7 @@ Microsoft's files and tiles, the map's tiles), the made meshes only memory, so n
   when a chunk is begun) and the layer swaps them in. The RPC's `buildings.state` is `waiting` while a file streams
   (`worker.streaming`, `worker.streamed_mb`), so a capture waits for the real footprints. The dataset has no file for
   Taiwan (no quadkey of its index there, 2026-10-29): the island's buildings are OSM's outlines and parts (each its
-  own footprint, "Parts" above) and the infill where the map has none.
+  own footprint, "Parts" above) and the infill where the map has none or few (between OSM's buildings, "Infill" above).
 
 **Costs** (Windows 11, RTX 5070 Ti, release, 2026-10-04). Meshing on the CPU: 49 chunks of Reykjavík (8,032 buildings)
 in 20 ms on one thread, 190,000 triangles and 10.9 MB whole, 134,000 and 7.6 MB as boxes (the dataset's footprints
@@ -632,7 +714,8 @@ a rotated box; an L-shape triangulated whole; a square extruded to a closed box 
 counter-clockwise about its normal, the walls from 1.5 m under the lowest ground, three bays on a 10 m wall); an L
 extruded with its 300 m² roof; gabled and hipped roofs closed over the walls with the ridge where it belongs; heights
 from the data when sane and from the footprint otherwise; the density grid; the infill deterministic, off the sea and
-off the cells the source holds; the level of detail's margins; culling by planes. Since 2026-10-05: on industrial land
+off the cells the source holds (in Taiwan between a sparse map's buildings, clear of each, and the source's alone
+where it covers a cell); the level of detail's margins; culling by planes. Since 2026-10-05: on industrial land
 a large footprint is a warehouse or factory (never a house), factories' chimneys within their footprints; a place of
 worship's footprint a church with its tower at the west end under a spire (north of Europe) or a campanile's pyramid
 and a dome (now and then, the Mediterranean), a mosque's dome and two minarets, OSM's 74.5 m the tower's top; a round
@@ -681,7 +764,9 @@ chunk with a church's point, a lighthouse landmark in the sea (on its plinth, it
 footprint, a port's quay and a pier raising each; the setting off the map (a school within a residential zone, a hole
 in a zone, the sea by a round footprint, a pier's deck); OSM outlines lending heights (none or capped) and colours
 and adding what the footprints miss (not `hide_3d`; parts above the ground too since 2026-10-29, a stacked tower whole); CSS colours parsed; quays found along
-industrial land at the water (by the ground, or by mapped water); a street through an infill lot; features cut to
+industrial land at the water (by the ground, or by mapped water); a street through an infill lot (in Taiwan a lot's
+end on a stroke, past it on a main road's pavement, in a median and on a mapped pavement, other regions' as before:
+2026-10-29); features cut to
 their tiles (a square across two tiles halved, a line's pieces). Since 2026-10-08: the facade textures whole (every
 layer and mip, under 16 MB), every window holding glass (doors, a garage, a roller shutter and a belfry little or
 none) with the wall round it (but a curtain wall, a shop front and a Japanese balcony), shutters and doors taking the
@@ -717,7 +802,10 @@ them would darken their overlaps twice; at that distance a 10 m house's shadow i
 roofed over (a block drawn as one and deep enough has its court since 2026-10-28, `parcels`; a footprint's own holes
 are dropped) and a multipolygon keeps its first
 polygon. The far level's own open items are in "The far level", below. The infill's streets are its own grid, not the roads in the photograph (its lots keep
-off the map's roads since 2026-10-05; the land under the buildings has drawn no lots of its own since the same day:
+off the map's roads since 2026-10-05, Taiwan's off their pavements and medians too since 2026-10-29; in Taiwan, filled between OSM's buildings, its rows stand at their district's
+heading among the mapped ones at the streets'; and Taiwan's towns so filled cost: Taoyuan's and Taipei's buildings
+bytes up 50-84% and their buildings' share of a frame up to 1.9 ms more from 1,000 m, docs/archive/terrain-history.md,
+"Taoyuan's centre filled in"; the land under the buildings has drawn no lots of its own since the same day:
 surface.md, "Under real buildings"). Medium's shorter range was not looked at in a capture. The types
 (2026-10-05): no roof shapes or roof colours from OSM (the schema carries neither); a church's tower is a square on its
 footprint's west end whatever the church's own plan (Hallgrímskirkja's stepped wings are a plain tower); domes, minarets
@@ -744,10 +832,11 @@ stays.
 
 `Lod::Far` (`buildings/far.rs`) stands the town past the boxes as coarse masses, to
 30 km across the ground on High, made from what the window already holds: the land cover (WorldCover's built-up class
-in the window's maps), its heights and, in a past period, the period's ground. Nothing is fetched and no footprint is
-read: past 10 km a chunk's footprints would cost their files, the map's tiles and the meshing for buildings a pixel or
-two across. The footprints held in memory are not used either: they cover only the chunks the near levels made, so the
-masses would change their grain where they end.
+in the window's maps), its heights and, in a past period, the period's ground. No footprint is read for them: past
+10 km a chunk's footprints would cost their files, the map's tiles and the meshing for buildings a pixel or two
+across. The footprints held in memory are not used either: they cover only the chunks the near levels made, so the
+masses would change their grain where they end. Its mapped towers alone stand as themselves (2026-10-29, "Towers"
+below): a city's skyline from the sea at 15-30 km is its towers.
 
 - **Masses.** On the infill's own street grid (its districts, headings, blocks and dense cores: `infill::Grid`), each
   row of lots on built-up land is cut into runs of about 30 m (`RUN_M`; at most 1,000 runs a square kilometre,
@@ -765,6 +854,37 @@ masses would change their grain where they end.
   layer draws its runs, its blocks or both by its distance (`mass_range`), the blocks without gables, and the shader
   picks each block's. Over the far level's last 3 km the masses sink into the ground (`FAR_FADE_M`), so none pops in or
   out at its edge.
+- **Towers** (2026-10-29, `far::TOWER_M`, `far::FarTowers`; the host's `theatre::buildings::towers`). A mapped
+  building of 60 m or more stands in its far chunk as the boxes stand it: OSM's outlines with their parts, merged as
+  the near levels merge them (`tags::merge_outlines`, "Parts" above: Taipei 101's shaft, slab, crown, top and spire),
+  planned and meshed by `build_chunk` at `Lod::Box` (its outline simplified to 2 m, its colour, its storeys' windows,
+  an office on commercial land), its parts all with it (a podium under a 60 m shaft too) or none, judged by the whole
+building across a chunk's edge (its parts' one middle, `Part::middle`: a podium here under a shaft whose middle lies in
+the next chunk stands with it, as their boxes did). 60 m is just over
+  the tallest the masses and the infill stand (a dense core's rare tower, 18 storeys, 56 m), so whatever stands
+  taller is what the masses could not draw, and aviation's lit obstruction (about 200 ft): `night::beacons_of` reads
+  the far chunk's vertices as any chunk's, so its towers carry their obstruction lights at night. No mass stands on a
+  tower's footprint (its own chunk's or one about it, within the map's 150 m reach; their outlines overlapping,
+  `geometry::overlaps`, so a mass across a slim tower with neither's corner in the other counts), and a block's mass that would
+  stand over one is its runs instead, each flat in its place (`Mass::BLOCK`, so they give way together). A far chunk
+  is one draw of its masses (`vs_far`) and one of its towers' vertices (the buildings' pipeline, `vs_building`), the
+  same fade carried in its translation for both: from boxes to masses and back a tower takes the pixels its boxes'
+  chunk leaves, the same mesh on both sides, so none is drawn twice or missing. Over the far level's last 3 km the
+  towers sink to the chunk's lowest foot as the masses do (the translation's bit 15, `layer::FAR_BIT`, and its y the
+  foot); a far chunk casts nothing, its towers neither. The host reads them from the map's zoom-14 tiles, the near
+  levels' own, cut to the towers (`towers::reduce`: a tile's `building` and `landuse` layers alone decoded, each
+  polygon measured 60 m or more kept with the outlines and parts holding its middle, the parts in an outline drawn by
+  its parts, and the land use under them) and kept apart from the map's 192 MB (`towers::KEPT_BYTES`, 16 MB at most);
+  a tile not on disk is fetched behind (`theatre-towers`, six at a time), never by the far chunks' worker, whose
+  masses stand at once, and a far chunk made without it is made again once it lands (`towers::epoch`, the chunk's
+  made mark, kept past its mesh's eviction from the cache). The requests are bounded: a scene's dropped once another
+  asks, any not asked again for two minutes (`towers::FORGET_AFTER`: its chunk no longer drawn), 2,048 at most
+  (`MOST_QUEUED`); a tile whose fetch failed, or whose bytes will not decode (thrown away, as the map's own reader
+  does, never kept as an empty tile), is not asked again for a minute, and the failures older than that are forgotten.
+  The towers stand on the relief as drawn (`Context::footing`), so a far chunk with towers is marked by the relief's
+  pages under it and made again when they change, as a boxed chunk is; one of masses alone stands on the window's
+  heights and is not. Microsoft's footprints are not read for them (its files are of 70 km squares, its heights the model's
+  estimates); the landmarks (`LANDMARKS`) neither.
 - **Across the ground.** Whole and boxes are chosen by the distance from the camera, as before; the far level by the
   distance across the ground (`lod_at`'s `across`), so a climbing camera keeps its ring of masses (from 10 km up there
   are no boxes, only masses below). `wanted` reaches 30.25 km (`reach_m`): about 2,650 chunks about the camera,
@@ -774,10 +894,15 @@ masses would change their grain where they end.
   buildings' thinning where it ran, the cover's estimate beyond), no taller than the region's period storeys and the
   place's cap (`thinning::height_cap`); a chunk whose period ground is not known yet stands empty and is made again a
   minute later, and one whose ground is answered anew (the buildings' thinning as the camera comes near it, a window's
-  estimate) is made again (`period_land::changed_since`).
+  estimate) is made again (`period_land::changed_since`). A tower stands in a past period where the ground stood, at
+  most at its place's cap (or as one of `thinning::TALL` stood), none built after it (`LATER`), as the boxes stand it
+  (`towers::thinning`): Taiwan's 31 m in 1942 leaves Taipei none, New York's and Chicago's 320 m their own.
 - **The host** (`theatre::buildings`). Far chunks are made 64 at a time on up to four threads (`make_far`, nothing
-  fetched), after the near chunks queued before them: about 2,600 in 1.4 s once a scene's footprints are in. A chunk
-  the window's maps cover only in part is made again a minute later. With thousands of chunks wanted, the feed looks
+  fetched on its thread), after the near chunks queued before them: about 2,600 in 1.4 s once a scene's footprints are
+  in, the batch's towers' tiles read from the disk once for them all. A chunk the window's maps cover only in part is
+  made again a minute later, one made without some of its towers' tiles once they land. The RPC's `buildings.state`
+  is `waiting` while the towers' tiles come in (`buildings.towers`: tiles held, their bytes and outlines, read and
+  fetched; `farTriangles`, `drawnFarTriangles`). With thousands of chunks wanted, the feed looks
   them over again only when the camera has moved 100 m, the worker has made something (`MADE_VERSION`), a big file's
   split has landed, or every half second. While a far chunk's masses are made, its boxes stand in (`other`).
 
@@ -807,7 +932,28 @@ does nothing saved 0.5-1 ms of Istanbul's worst 2.5: the rest is their vertices.
 16 km (`NAVAL_BUILDINGS_FAR=16`) it cost 1.1-2.7 ms over Istanbul, since from 4 km up Medium's boxes end 4.4 km across
 the ground and the masses from there are large on the screen (0.4 ms over Los Angeles).
 
-**Checked.** `--lib buildings::far`: masses on built-up dry land only, a chunk the same made twice and no run in two
+The towers (Apple M5 Pro, dev-client, 2026-10-29; `--lib measure_far_towers -- --ignored` over the map's tiles on
+disk, one thread, and `theatre_town_look`'s Taipei today with `NAVAL_BUILDINGS_TOWERS` off and on): within 30 km of
+Taipei 101 the 347 tiles then on disk were read for their towers in 92 ms (0.27 ms a tile against the map's whole
+decode's 1.3), 1,236 outlines kept (891 of 60 m and more) in 1.6 MB; its far ring (10-30 km) 108 chunks with towers,
+710 buildings and parts, 11,900 triangles, 0.68 MB on the GPU (30 KB a chunk at most), meshed with their tags in 21
+ms. Los Angeles' ring 176 buildings and parts (0.23 MB), Yokohama's 52 (0.05), Istanbul's 525 (0.71); Athens maps 11.
+From the Tamsui's mouth, Taipei's centre in the far ring, 47,600 towers' triangles (30,000-38,000 drawn), 2.6 MB more
+on the GPU; the far batches stayed under 0.5 s. A first visit fetches the tiles under the far chunks with land that
+the near levels had not (Taipei: 250 tiles, 6.2 MB, its hills and coast; Piraeus 361). The frame
+(`NAVAL_LOOK_FRAMES=3`, two alternating rounds a setting, the GPU's own times, the machine shared with other agents'
+builds): within the noise, the opaque pass -0.1 to +0.1 ms over the views drawing 30,000-38,000 of the towers'
+triangles (`air-xinyi`, `sea`), 0.0-0.2 elsewhere, but `plane-1000` +0.4-0.8 ms drawing 34 of them.
+
+**Checked.** `--lib buildings::far`: a mapped tower standing in its far chunk at its height and no mass (run or block)
+on it, nor on one about the chunk, a lower one and an estimated one left to the masses; a tower's parts standing
+together (a 40 m podium under its shaft), low parts alone not; in a past period a tower over the place's cap none, one
+of `TALL` at what it stood (the boxes' mesh of it), one of `LATER` or on ground that did not stand none, New York's cap
+keeping it; none in a host's area; a chunk with towers the same made twice. `--native -p naval-landscape --lib
+buildings::`: the map's tile cut to its towers (the low block and the land use away from them left out), a far chunk
+standing them from it (the office on its commercial land, the parts' shaft), the same made twice, and without the
+tile no tower. `measure_far_towers` (ignored, the map's tiles on disk) gives the costs. Before them: masses on built-up
+dry land only, a chunk the same made twice and no run in two
 chunks, the period's ground and caps, the shape closed with its normals out and its gables last, a core higher than
 its suburbs, pitched and flat roofs by region, each block's mass over its runs (its top within theirs, its foot under
 theirs), 600-1,000 runs and 100-240 blocks to a built-up chunk in every region. `--lib buildings::layer`: the levels'
@@ -819,8 +965,10 @@ chunk made from a tropical town's cover. `--test all -- backends::` translates `
 **Open.** The cost looking out over a large city (1.5-2.3 ms on High); the next levers are a cheaper fragment path for
 the masses (no windows' mean or sky reflection) and a flat block's top of four vertices rather than two slopes of
 eight. The masses stand on the infill's grid, not the city's streets: the photograph's boulevards and parks show only
-where the cover is not built up (Los Angeles' grid of boulevards is covered). The towers and skyline end with the
-boxes: the far level makes a core's blocks to its region's storeys, not its measured towers. In a past period the far
+where the cover is not built up (Los Angeles' grid of boulevards is covered). The far level's towers are OSM's alone:
+a tower only Microsoft's footprints measure ends with the boxes, and where Microsoft's footprint is the one a tower's
+parts draw (its middle, "Parts"), the far level's tower takes the middle of its own outlines, so its colour may change
+at the crossover; the landmarks (chimneys, lighthouses) end with the boxes too. In a past period the far
 level is as good as `period_land`'s ground: in these stills Istanbul's 1942 ground left most of the historic
 peninsula, Galata and Üsküdar as fields, as the near levels did, until the old towns were listed (period.md, "Old towns", under
 "Fewer buildings in the period"); a city whose old extent is not listed still thins by today's density. The ground under a mass is the window's

@@ -40,6 +40,8 @@ struct Buildings {
     sun_radiance: vec4<f32>,
     // The hemisphere fill's sky and ground; fill_sky.w: 1 while the clouds' shadow is bound.
     fill_sky: vec4<f32>,
+    // fill_ground.w: the share of the shop signs' light a scenario's rule lets out (1 lit, dimmed under a dimout, 0
+    // under a blackout: `BuildingsLayer::set_signs`).
     fill_ground: vec4<f32>,
     // Scene fog: colour and power; start, end, sky blend (m), 1 while on.
     fog_color: vec4<f32>,
@@ -312,7 +314,8 @@ struct VertexIn {
     @location(1) normal: vec4<f32>,
     @location(2) facade: vec2<f32>,
     @location(3) style: vec4<u32>,
-    // The chunk's translation into the world (x, y, z) and its region (w).
+    // The chunk's translation into the world (x, z; y a far chunk's towers' lowest foot, else 0) and its region, period,
+    // fade and whether it is a far chunk (w).
     @location(4) chunk: vec4<f32>,
 }
 
@@ -334,23 +337,44 @@ struct VertexOut {
     // of a face shares as its first vertex (`mesh.rs`' `face` and `parts.rs`' `smooth_face` fan from it), so the
     // number holds over the whole wall; 0 off the building meshes.
     @location(9) @interpolate(flat) wall: f32,
+    // Taiwan's streets (`street.rs`): bits 0-1 what it is (0 none, `STREET_ARCADE`, `STREET_SIGN`, `STREET_UNIT`), bit 2
+    // an air conditioner's front, bits 8 and up the piece's own hash (0-65535).
+    @location(10) @interpolate(flat) street: u32,
 }
+
+// `street`'s kinds: an arcade's walkway (its back wall, ceiling and floor: window rows of -1 - rows), a shop's sign, a
+// wall air conditioner (`clutter::Shape::Sign`, `Shape::Unit`).
+const STREET_ARCADE: u32 = 1u;
+const STREET_SIGN: u32 = 2u;
+const STREET_UNIT: u32 = 3u;
+const SHAPE_SIGN: u32 = 3u;
+const SHAPE_UNIT: u32 = 4u;
 
 @vertex
 fn vs_building(in: VertexIn) -> VertexOut {
-    let world = in.position + in.chunk.xyz;
+    var world = in.position + vec3<f32>(in.chunk.x, 0.0, in.chunk.z);
+    let packed = u32(in.chunk.w + 0.5);
+    let far = (packed >> 15u) & 1u;
+    // A far chunk's towers sink toward their lowest foot as the camera draws away across the ground, toward the far
+    // level's range, as its masses do (`vs_far`).
+    if far == 1u {
+        let reach = length(camera.position.xz - world.xz);
+        let k = 1.0 - smoothstep(buildings.params.w - FAR_FADE_M, buildings.params.w, reach);
+        world.y = mix(in.chunk.y, world.y, k);
+    }
     var out: VertexOut;
     out.clip = world_to_clip(world);
     out.world = world;
     out.normal = in.normal.xyz;
     out.facade = in.facade;
     out.style = in.style;
-    // snorm8's w: the window rows, 1/127 each.
-    out.rows = round(in.normal.w * 127.0);
-    let packed = u32(in.chunk.w + 0.5);
+    // snorm8's w: the window rows, 1/127 each; an arcade's walkway's -1 - rows.
+    let rows = round(in.normal.w * 127.0);
+    out.rows = select(rows, -1.0 - rows, rows < 0.0);
+    out.street = select(0u, STREET_ARCADE, rows < 0.0);
     out.region = packed & 31u;
     out.past = (packed >> 5u) & 1u;
-    out.fade = packed >> 6u;
+    out.fade = (packed >> 6u) & 511u;
     out.local = in.position;
     out.wall = hash13(round(in.position * 4.0)) * 61.0;
     return out;
@@ -368,8 +392,10 @@ struct ClutterIn {
     @location(5) style: vec4<u32>,
 }
 
-// `clutter::CLUTTER_M`, and the far end of the fade (none: a piece stands or does not, a metre at 1.5 km).
+// `clutter::CLUTTER_M`, and the far end of the fade (none: a piece stands or does not, a metre at 1.5 km); an air
+// conditioner's `clutter::UNIT_M`.
 const CLUTTER_M: f32 = 1500.0;
+const UNIT_M: f32 = 500.0;
 
 fn clutter_world(in: ClutterIn) -> vec4<f32> {
     let t = chunk_translations[in.shape >> 8u];
@@ -388,7 +414,8 @@ fn vs_clutter(in: ClutterIn) -> VertexOut {
     var out: VertexOut;
     out.clip = world_to_clip(world);
     // Past its distance the whole piece goes (judged at its foot, so it never tears).
-    if distance(camera.position, in.at_yaw.xyz + t.xyz) > CLUTTER_M {
+    let shape = in.shape & 255u;
+    if distance(camera.position, in.at_yaw.xyz + t.xyz) > select(CLUTTER_M, UNIT_M, shape == SHAPE_UNIT) {
         out.clip = vec4<f32>(0.0, 0.0, -1.0, 1.0);
     }
     let c = cos(in.at_yaw.w);
@@ -410,6 +437,20 @@ fn vs_clutter(in: ClutterIn) -> VertexOut {
     out.past = (packed >> 5u) & 1u;
     out.fade = 0u;
     out.local = world - t.xyz;
+    if shape == SHAPE_SIGN || shape == SHAPE_UNIT {
+        // The face's own coordinates (m): across it from its middle and up it (a top or underside across and along),
+        // its width and height; an air conditioner's front its local +x face.
+        let p = in.position * in.size;
+        let side = abs(in.normal.x) > 0.5;
+        let level = abs(in.normal.y) > 0.5;
+        out.facade = select(select(p.xy, p.zy, side), p.xz, level);
+        out.wall = select(select(in.size.x, in.size.z, side), in.size.x, level);
+        out.rows = select(in.size.y, in.size.z, level);
+        out.style = in.style;
+        let piece = u32(hash13(round(in.at_yaw.xyz * 4.0) + 0.5) * 65535.0);
+        let front = select(0u, 4u, in.normal.x > 0.5);
+        out.street = select(STREET_UNIT, STREET_SIGN, shape == SHAPE_SIGN) | front | (piece << 8u);
+    }
     return out;
 }
 
@@ -476,7 +517,8 @@ fn vs_far(in: FarIn) -> VertexOut {
     let along = in.position.x * in.place.z;
     let across = in.position.z * in.place.w;
     let local = vec3<f32>(in.place.x + along * c - across * s, y, in.place.y + along * s + across * c);
-    let world = local + t.xyz;
+    // The translation's x and z (its y is the chunk's towers' foot, `vs_building`).
+    let world = local + vec3<f32>(t.x, 0.0, t.z);
     var out: VertexOut;
     out.clip = world_to_clip(world);
     if k < 0.01 {
@@ -520,7 +562,7 @@ fn vs_far(in: FarIn) -> VertexOut {
     let packed = u32(t.w + 0.5);
     out.region = packed & 31u;
     out.past = (packed >> 5u) & 1u;
-    out.fade = packed >> 6u;
+    out.fade = (packed >> 6u) & 511u;
     out.local = local;
     return out;
 }
@@ -1930,6 +1972,11 @@ fn wall_textured(in: VertexOut, part: u32, kind: u32, detail: bool, tint: f32, g
     let masonry = material == MATERIAL_BRICK || material == MATERIAL_ASHLAR || material == MATERIAL_TILE;
     let joint = select(wall * 0.45, srgb_to_linear(vec3<f32>(178.0, 174.0, 164.0)) * tint, masonry);
     var albedo = mix(wall * (t.r * 2.0), joint, t.g);
+    if region == REGION_TAIWAN && in.past == 0u {
+        // Taiwan's walls each their own batch of tiles or coat of paint, darker or lighter wall to wall and none as
+        // light as its entry in the sun (0.82-1 of it).
+        albedo *= 0.82 + 0.18 * hash12(vec2<f32>(in.wall, seed + 3.0));
+    }
     var bump = t.ba * 2.0 - 1.0;
     let metal = material == MATERIAL_CORRUGATED;
     var roughness = select(select(0.9, 0.6, material == MATERIAL_TILE), 0.5, metal);
@@ -2114,6 +2161,150 @@ fn leaf_surface(in: VertexOut, footprint: f32) -> Surface {
     return s;
 }
 
+// Taiwan's shop signs' boards and marks (`street.rs`' `sign_style`): light boards first, then dark ones.
+const SIGN_COLOURS = array<vec3<f32>, 12>(
+    vec3<f32>(236.0, 234.0, 226.0), // white
+    vec3<f32>(246.0, 206.0, 40.0),  // yellow
+    vec3<f32>(240.0, 226.0, 186.0), // cream
+    vec3<f32>(250.0, 170.0, 40.0),  // amber
+    vec3<f32>(170.0, 214.0, 236.0), // pale blue
+    vec3<f32>(196.0, 28.0, 30.0),   // red
+    vec3<f32>(28.0, 72.0, 168.0),   // blue
+    vec3<f32>(24.0, 128.0, 64.0),   // green
+    vec3<f32>(232.0, 96.0, 20.0),   // orange
+    vec3<f32>(120.0, 40.0, 140.0),  // purple
+    vec3<f32>(28.0, 28.0, 30.0),    // black
+    vec3<f32>(150.0, 20.0, 40.0),   // crimson
+);
+
+// A lit sign's light over its colour by night (a backlit board, brighter than a lamp-lit room).
+const SIGN_GLOW: f32 = 2.4;
+
+// Whether a shop's sign burns at this hour: nearly all through the evening, a third late at night.
+fn sign_lit(piece: f32) -> f32 {
+    let p = buildings.far.w;
+    return select(0.0, 1.0, hash12(vec2<f32>(piece, 131.0)) < mix(0.92, 0.3, smoothstep(3.0, 6.0, p)));
+}
+
+// A shop's sign (`clutter::Shape::Sign`): its board's colour in a frame of its marks' colour, and along it a run of
+// marks like characters (each on a 5 × 5 grid of strokes across and up, joined cell to cell), read down a standing
+// board and along a long one, fading to their mean as a stroke outgrows the pixel; its edges, top and underside plain
+// aluminium. At night lit through (`sign_lit`), dimmed under a dimout and dark under a blackout (`fill_ground.w`).
+fn sign_surface(in: VertexOut, footprint: f32) -> Surface {
+    var s: Surface;
+    let n = normalize(in.normal);
+    let wide = in.wall;
+    let high = in.rows;
+    let u = in.facade.x + 0.5 * wide;
+    let v = in.facade.y;
+    let piece = f32(in.street >> 8u);
+    let bg = srgb_to_linear(SIGN_COLOURS[min(in.style.x, 11u)]);
+    let ink = srgb_to_linear(SIGN_COLOURS[min(in.style.y, 11u)]);
+    s.roughness = 0.35;
+    s.specular = 0.8;
+    s.occlusion = 1.0;
+    s.emissive = vec3<f32>(0.0);
+    if abs(n.y) > 0.5 || wide < 0.3 {
+        s.albedo = vec3<f32>(0.45, 0.46, 0.47);
+        s.roughness = 0.5;
+        return s;
+    }
+    // The frame, a fourteenth of the board's shorter side.
+    let m = 0.07 * min(wide, high);
+    let e = max(footprint, 1e-3);
+    let framed = 1.0 - band(u, m, wide - m, e) * band(v, m, high - m, e);
+    // The marks: square cells of three quarters of the run's width, read top to bottom on a standing board.
+    let standing = high > 1.3 * wide;
+    let run = select(wide, high, standing) - 2.0 * m;
+    let span = select(high, wide, standing) - 2.0 * m;
+    let cell = max(min(0.76 * span, run), 0.05);
+    let count = max(floor(run / (cell * 1.1)), 1.0);
+    let pitch = run / count;
+    let along = select(u - m, high - m - v, standing);
+    let across = select(v - m, u - m, standing);
+    let k = floor(along / pitch);
+    let g = vec2<f32>(along - k * pitch - 0.5 * (pitch - cell), across - 0.5 * (span - cell)) / cell * 5.0;
+    let grid = floor(g);
+    let inside = all(grid >= vec2<f32>(0.0)) && all(grid < vec2<f32>(5.0)) && k >= 0.0 && k < count;
+    let f = fract(g);
+    let across_stroke = hash13(vec3<f32>(grid.x + k * 7.0, grid.y, piece)) < 0.42;
+    let up_stroke = hash13(vec3<f32>(grid.x + k * 7.0 + 31.0, grid.y, piece)) < 0.3;
+    let stroke = (across_stroke && abs(f.y - 0.5) < 0.22) || (up_stroke && abs(f.x - 0.5) < 0.22);
+    // Resolved while a stroke's cell spans a few pixels; past that the run's mean.
+    let resolved = 1.0 - smoothstep(0.3, 0.9, e * 5.0 / cell);
+    let in_run = band(along, 0.0, run, e) * band(g.y, 0.0, 5.0, e * 5.0 / cell);
+    let marks = mix(0.28 * in_run, select(0.0, 1.0, inside && stroke), resolved);
+    let cover = max(marks, framed);
+    s.albedo = mix(bg, ink, cover);
+    // Lit through by night.
+    let rule = buildings.fill_ground.w;
+    s.emissive = s.albedo * SIGN_GLOW * buildings.sun_direction.w * rule * sign_lit(piece);
+    return s;
+}
+
+// A wall air conditioner (`clutter::Shape::Unit`): white, light grey, beige or grey (`style.x`), rusted at its seams
+// and down its face by `style.y` (0-3); on its front a split unit's fan behind its round grille and its fins, a window
+// unit's louvres; dark brackets under it.
+fn unit_surface(in: VertexOut, footprint: f32) -> Surface {
+    var s: Surface;
+    let n = normalize(in.normal);
+    let wide = in.wall;
+    let high = in.rows;
+    let u = in.facade.x + 0.5 * wide;
+    let v = in.facade.y;
+    let e = max(footprint, 1e-3);
+    var colour = vec3<f32>(225.0, 225.0, 218.0);
+    switch in.style.x {
+        case 1u: {
+            colour = vec3<f32>(192.0, 194.0, 192.0);
+        }
+        case 2u: {
+            colour = vec3<f32>(212.0, 202.0, 176.0);
+        }
+        case 3u: {
+            colour = vec3<f32>(150.0, 152.0, 150.0);
+        }
+        default: {}
+    }
+    var albedo = srgb_to_linear(colour);
+    let piece = f32(in.street >> 8u);
+    let rust = f32(in.style.y) / 3.0;
+    if rust > 0.0 {
+        let streak = hash12(vec2<f32>(floor(u / 0.05), piece)) * smoothstep(high, 0.0, v);
+        albedo = mix(albedo, srgb_to_linear(vec3<f32>(120.0, 72.0, 44.0)), clamp(rust * (0.25 + 0.5 * streak), 0.0, 0.8));
+    }
+    s.roughness = 0.6;
+    s.specular = 0.5;
+    s.occlusion = 1.0;
+    s.emissive = vec3<f32>(0.0);
+    let front = (in.street & 4u) != 0u;
+    if front {
+        let split = wide > 0.7;
+        if split {
+            // The fan's grille to one side, its fins beside it.
+            let c = vec2<f32>(u - 0.62 * wide, v - 0.5 * high);
+            let r = length(c);
+            let radius = 0.38 * high;
+            let fan = 1.0 - smoothstep(radius - e, radius + e, r);
+            let rings = mix(0.5, band(fract(r / 0.035), 0.0, 0.35, e / 0.035), 1.0 - smoothstep(0.01, 0.03, e));
+            let fins = band(fract(v / 0.03), 0.0, 0.4, e / 0.03) * (1.0 - fan) * band(u, 0.05 * wide, 0.36 * wide, e);
+            albedo = mix(albedo, vec3<f32>(0.035, 0.037, 0.04), fan * (0.75 + 0.25 * rings));
+            albedo *= 1.0 - 0.35 * mix(0.4, fins, 1.0 - smoothstep(0.01, 0.03, e)) * band(u, 0.05 * wide, 0.36 * wide, e);
+        } else {
+            // A window unit's louvres over its face.
+            let louvres = band(fract(v / 0.04), 0.0, 0.45, e / 0.04);
+            albedo *= 1.0 - 0.4 * mix(0.45, louvres, 1.0 - smoothstep(0.012, 0.04, e)) * band(v, 0.06, high - 0.06, e);
+        }
+    }
+    if n.y < -0.5 {
+        // The brackets under it.
+        let bars = band(abs(in.facade.x), 0.28 * wide, 0.33 * wide, e);
+        albedo = mix(albedo * 0.7, vec3<f32>(0.04), bars);
+    }
+    s.albedo = albedo;
+    return s;
+}
+
 @fragment
 fn fs_building(in: VertexOut) -> @location(0) vec4<f32> {
 #ifdef BUILDINGS_FADE
@@ -2157,7 +2348,12 @@ fn fs_building(in: VertexOut) -> @location(0) vec4<f32> {
     // The walls' shade: a past period's soot on them where coal burned (1 today).
     let wall_tint = tint * soot(in);
     var s: Surface;
-    if part == PART_LEAF {
+    let street = in.street & 3u;
+    if street == STREET_SIGN {
+        s = sign_surface(in, footprint);
+    } else if street == STREET_UNIT {
+        s = unit_surface(in, footprint);
+    } else if part == PART_LEAF {
         s = leaf_surface(in, footprint);
     } else if part == PART_ROOF || part == PART_DOME {
         s = roof_surface(in, part, kind, tint, footprint);
@@ -2167,6 +2363,10 @@ fn fs_building(in: VertexOut) -> @location(0) vec4<f32> {
 #endif
     } else {
         s = wall_surface(in, part, kind, detail, wall_tint);
+    }
+    if street == STREET_ARCADE {
+        // Under the walkway's cover: the sky's light from the street alone, the ceiling lit by the street below it.
+        s.occlusion *= select(0.5, 0.75, n.y < -0.5);
     }
     let albedo = tone(s.albedo);
     // The wall's relief leans the shading normal along the wall and up it (the shadow's lookup keeps the face's).
