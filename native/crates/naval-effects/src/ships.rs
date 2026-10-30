@@ -67,6 +67,8 @@ pub struct FunnelOutlet {
     pub length: f64,
     /// Turn of a raked or rotated casing from the bow (construction ships only).
     pub bearing_rad: Option<f64>,
+    /// Its share of the smoke her load and soot make, 0 none (a dummy funnel's) to 1 (every funnel of the game's).
+    pub smoke: f64,
 }
 
 /// The fixed, per-definition part of what the effects draw on a ship.

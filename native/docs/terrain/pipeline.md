@@ -35,7 +35,7 @@ and feeds them each frame, and hands the bases' parked aircraft (`bases::ParkedP
 | --- | --- | --- | --- | --- |
 | `surface`, `near`, `naip` | naval-landscape | EOX Sentinel-2 cloudless 2016, ESA WorldCover 2021; USDA NAIP in the United States | `SurfaceMaps`, near tiles | [surface.md](surface.md) |
 | `osm`, `features`, `features_period` | naval-landscape | OpenStreetMap vector tiles from OpenFreeMap, read by `naval-osm` | road, rail and water distance-field pages | [surface.md](surface.md), "Map features on the ground" |
-| `relief` | naval-landscape | AWS Terrain Tiles, GSI elevation tiles (Japan) | relief pages | [ground.md](ground.md), "Fine relief near the camera" |
+| `relief`, `relief_synth`, `relief_glo30`, `relief_combined`, `relief_limit` | naval-landscape; the pages' report against the release the client's (`land_release`'s `relief_report_tests`) | AWS Terrain Tiles, GSI elevation tiles (Japan); synthetic, Copernicus GLO-30 and the two combined elsewhere | relief pages | [ground.md](ground.md), "Fine relief near the camera" |
 | `horizon` | naval-landscape | AWS Terrain Tiles, EOX imagery | `HorizonMaps` | [layer.md](layer.md), "The horizon ring" |
 | `canopy` | naval-landscape | Meta and WRI's 1 m canopy height map | canopy pages | [trees.md](trees.md), "Trees where real trees stand" |
 | `period_land` | naval-landscape | HYDE 3.3 (`naval_terrain::buildings::history`) | the period's country marks | [period.md](period.md), "The period's ground" |

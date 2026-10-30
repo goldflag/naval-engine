@@ -5,6 +5,7 @@
 mod caustics;
 mod field;
 mod hull_heights;
+mod hull_sides;
 mod surface;
 mod tiling;
 mod wake;

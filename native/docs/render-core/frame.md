@@ -415,6 +415,27 @@ buffer of its own each call. So:
 Still a submission of its own: the page's composite (its own encoder in `naval-ui`, about 1.5 % of the main thread),
 which could join the tail if the window's frame left the tail open for it.
 
+## Drawing about the eye
+
+Positions on the GPU are f32. Past 16 km from the world's origin a world position steps by 2 mm, and
+`view_projection * world` cancels kilometres against kilometres, so a body seen from a few metres shakes by pixels: the
+gallery's plane, flying a 15 km turn from the berth, shook by up to 9 px at 2 m (2026-10-29). A layer that draws close
+bodies far from the origin keeps them about the eye instead:
+
+- The host gives the renderer the camera's eye at full precision (`Renderer::set_eye`; the session sets the rig's each
+  frame). A frame takes it while it rounds to the frame camera's eye, else that camera's own (a second view, a harness's
+  camera), and hands it to every layer as `PrepareContext::eye`.
+- The layer uploads its matrices less that eye, in doubles until the subtraction, and projects with
+  `naval::camera::eye_to_clip(offset)` (the view's turn alone; `naval_render::camera::eye_to_clip` is its CPU twin). It
+  shades and casts at `offset + eye`, where millimetres do not show. Its motion goes through
+  `naval::motion::surface_motion_from_eye`, with the frame before's positions less this frame's eye too.
+- Temporal AA reprojects every pixel about the camera's own (f32) eye, which the world's layers draw about
+  (`CameraMotion::previous_from_eye`: the previous view-projection moved by that eye's step, taken in doubles; `post.md`).
+  A layer drawn about the full-precision eye adds `CameraMotion::precise_step` (the two eyes' steps' difference,
+  millimetres) to its previous positions, which `surface_motion_from_eye` does, so its history lands where it was drawn.
+
+The aircraft draw this way (`aircraft.md`, "Drawn about the eye"); every other layer draws world positions.
+
 ## The Earth's curvature
 
 The simulation's world is a plane. The client draws it curving away from the camera over the Earth, so the sea has a

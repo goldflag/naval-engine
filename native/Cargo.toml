@@ -98,6 +98,10 @@ objc2 = "0.6"
 steamworks = "0.13"
 # The aircraft lane (naval-aircraft) builds on the ships' model loading and paint and the effects' particle pools.
 naval-effects = { path = "crates/naval-effects" }
+# A hull riding the drawn sea and the wake, spray and smoke she stirs, visual only (the engine's ships).
+naval-afloat = { path = "crates/naval-afloat" }
+# Any glTF ship as a visual on the sea, for the engine (engine-example's `--ship`).
+naval-vessel = { path = "crates/naval-vessel" }
 # The packed-asset format (naval-assets): postcard for the binary encoding, zstd
 # (with its frame checksum) for the payloads, sha2 for content-hashed names, BC7
 # textures encoded by Intel's ISPC kernels (builder only; prebuilt for macOS arm64

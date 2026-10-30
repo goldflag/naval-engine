@@ -27,6 +27,7 @@ fn rebuilding_a_scene_keeps_its_smoke_columns_and_rebases_the_released_plume() {
             width: 8.0,
             length: 10.0,
             bearing_rad: None,
+            smoke: 1.0,
         }],
         ..Default::default()
     });

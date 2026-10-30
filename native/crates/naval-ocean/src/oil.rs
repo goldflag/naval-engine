@@ -30,7 +30,7 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::trail::{EMPTY, Motion, NO_BAND, Stamp, StampCollector, WakeHull};
+use crate::trail::{EMPTY, Motion, NO_BAND, NO_START, Stamp, StampCollector, WakeHull};
 
 /// Edge (m) of each slick's fine square, centred on its newest oil: her after body while she leaks.
 pub const OIL_NEAR_EXTENT: f64 = 2048.0;
@@ -737,6 +737,7 @@ impl OilSlick {
             ring: false,
             channel,
             across: NO_BAND,
+            start: NO_START,
         });
         self.collector.version += 1;
     }

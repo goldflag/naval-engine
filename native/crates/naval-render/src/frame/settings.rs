@@ -409,6 +409,22 @@ impl Renderer {
         self.eye.sky_mean
     }
 
+    /// The camera's eye at full precision (the f32 [`crate::Camera`] rounds it), for layers that draw about the eye
+    /// ([`crate::PrepareContext::eye`]) and temporal AA's reprojection: kilometres from the world's origin an f32 eye
+    /// steps by millimetres, which shakes a body seen from a few metres by pixels. Kept until set again; a frame whose
+    /// camera's eye it does not round to takes that camera's own.
+    pub fn set_eye(&mut self, eye: Option<glam::DVec3>) {
+        self.precise_eye = eye;
+    }
+
+    /// The frame's eye at full precision ([`crate::PrepareContext::eye`]): the host's ([`Renderer::set_eye`]) while it
+    /// rounds to `camera`'s, else that camera's own (a second view, a harness's camera, a host that gives none).
+    pub(crate) fn frame_eye(&self, camera: &crate::Camera) -> glam::DVec3 {
+        self.precise_eye
+            .filter(|eye| eye.as_vec3() == camera.eye)
+            .unwrap_or_else(|| camera.eye.as_dvec3())
+    }
+
     /// Where the night grade reads which pixels look through water: a texture over the screen, r the metres under
     /// water where each pixel's view ray starts (positive under), as the ocean's underwater probe writes it. Those
     /// pixels take the grade of the world near the eye whatever their depth: the open deep has none and is not sky.

@@ -44,15 +44,16 @@ struct FramePlan {
     debug_pass: Option<OverlayPipelineId>,
 }
 
-/// This frame's camera as the scene draws it: the viewport, the uniforms (jittered under temporal AA), temporal AA's
-/// frame, the frame the motion is for and the camera's motion.
+/// This frame's camera as the scene draws it: the viewport, the uniforms (jittered under temporal AA), the eye at full
+/// precision, temporal AA's frame and the frame the motion is for.
 #[derive(Clone, Copy)]
 struct FrameCamera {
     viewport: (u32, u32),
     uniforms: CameraUniforms,
+    /// The eye at full precision ([`PrepareContext::eye`]).
+    eye: glam::DVec3,
     taa_frame: Option<crate::taa::TaaFrame>,
     motion_frame: u64,
-    motion: CameraMotion,
 }
 
 impl Renderer {
@@ -275,6 +276,7 @@ impl Renderer {
             .camera
             .projection(viewport.0 as f32 / viewport.1.max(1) as f32)
             * input.camera.view();
+        let eye = self.frame_eye(input.camera);
         let (uniforms, taa_frame) = if taa_on {
             Taa::ensure_targets(&self.device, &mut self.resources, output_size);
             // No time passed (the presentation held: a pause): a still camera repeats the last
@@ -289,6 +291,7 @@ impl Renderer {
                 viewport,
                 held,
                 phases,
+                eye,
             );
             // A new frame's step is the interval its motion spans; a frame drawn again keeps the last one's.
             if frame.new_frame {
@@ -317,6 +320,21 @@ impl Renderer {
                 .to_cols_array(),
             jitter: taa_frame.map_or([0.0; 2], |frame| frame.jitter.to_array()),
             padding: [0.0; 2],
+            previous_from_eye: taa_frame
+                .map_or_else(
+                    || {
+                        input
+                            .camera
+                            .projection(viewport.0 as f32 / viewport.1.max(1) as f32)
+                            * input.camera.view_about_eye()
+                    },
+                    |frame| frame.previous_from_eye,
+                )
+                .to_cols_array(),
+            precise_step: taa_frame
+                .map_or(glam::Vec3::ZERO, |frame| frame.precise_step)
+                .extend(0.0)
+                .to_array(),
         };
         // The frame's own uniforms through its staging belt too: in place before its passes, as the layers' are.
         self.uploads
@@ -326,9 +344,9 @@ impl Renderer {
         FrameCamera {
             viewport,
             uniforms,
+            eye,
             taa_frame,
             motion_frame,
-            motion,
         }
     }
 
@@ -416,6 +434,7 @@ impl Renderer {
         let FrameCamera {
             viewport,
             uniforms,
+            eye,
             motion_frame,
             ..
         } = *cam;
@@ -428,6 +447,7 @@ impl Renderer {
                 pipelines: &self.pipelines,
                 resources: &mut self.resources,
                 camera: &uniforms,
+                eye,
                 camera_group: &self.camera.group,
                 time: input.time,
                 motion_frame,
@@ -656,6 +676,7 @@ impl Renderer {
         let FrameCamera {
             viewport,
             uniforms,
+            eye,
             motion_frame,
             ..
         } = *cam;
@@ -728,6 +749,7 @@ impl Renderer {
                             pipelines: &self.pipelines,
                             resources: &mut self.resources,
                             camera: &uniforms,
+                            eye,
                             camera_group: &self.camera.group,
                             time: input.time,
                             motion_frame,
@@ -1167,7 +1189,6 @@ impl Renderer {
         let FrameCamera {
             uniforms,
             taa_frame,
-            motion,
             ..
         } = *cam;
         if let Some(frame) = taa_frame {
@@ -1180,7 +1201,6 @@ impl Renderer {
                 &self.timer,
                 &frame,
                 &uniforms,
-                &motion,
             );
         }
         if self.antialiasing == Antialiasing::Smaa {

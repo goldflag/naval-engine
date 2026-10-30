@@ -15,6 +15,17 @@
 //!   theatre's metres, [`SLOTS`]² about the camera (8 km each way), made only where the window has land and a source
 //!   covers. A texel holds the finer model's height less the window grid's bilinear surface through the finer model's
 //!   heights at the grid's samples ([`Lattice`]): a page is made for one window's lattice, again after each cut.
+//! - **Synthetic** ([`Source::Synthetic`], `relief_synth`): detail made from the window's
+//!   own heights (gullies down the fall lines, as deep as the slope and the land's range about), through the same
+//!   residual. `NAVAL_RELIEF_SOURCE` (`auto`, `real`, `synthetic`, `glo30`, `combined`, `off`; [`mode`]) chooses for
+//!   comparisons.
+//! - **GLO-30** ([`Source::Glo30`], `relief_glo30`), a test source (`glo30` only, not in `auto`): Copernicus's 30 m
+//!   surface model through the same residual, kept to open ground by WorldCover so canopy and roofs make no steps.
+//! - **Combined** ([`Source::Combined`], `relief_combined`): GLO-30's band (its fills kept) for the shapes from about
+//!   60 m up, the synthetic's detail under that on top, the synthetic alone where GLO-30 is masked or absent; what
+//!   `auto` takes where no finer model covers.
+//! - **Real or made**: a finer model's page is [`ReliefPage::real`] (its ledges are the ground's, so the land draws
+//!   none of its own stepped beds under it); a synthetic, GLO-30 or combined page is not.
 //! - **Switched** with the surface streaming (`surface::enabled`), on the High terrain setting only;
 //!   `NAVAL_RELIEF=off` leaves it off alone.
 
@@ -25,9 +36,14 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use naval_earth::geo::{LatLon, to_lat_lon, wrap_lon};
+use naval_terrain::field::PreparedField;
 use naval_terrain::relief::{CONTENT, GUTTER, PAGE_TEXELS};
 use naval_terrain::{ReliefGrid, ReliefPage};
 
+use super::relief_combined;
+use super::relief_glo30;
+use super::relief_limit;
+use super::relief_synth;
 use super::surface::{self, FETCHERS, FetchError, Fetched};
 
 /// The AWS Terrain Tiles (`{TERRARIUM_URL}/{z}/{x}/{y}.png`).
@@ -81,7 +97,49 @@ pub fn enabled() -> bool {
             )
         })
     });
-    surface::enabled() && !off
+    surface::enabled() && !off && mode() != Mode::Off
+}
+
+/// Which sources the pages take (`NAVAL_RELIEF_SOURCE`): a finer model where one covers, else the combined (`auto`, the
+/// default; the synthetic alone offline); a finer model only (`real`); the synthetic everywhere, a finer model's place
+/// too (`synthetic`, to compare it with the real); GLO-30 everywhere (`glo30`, a test); the combined everywhere
+/// (`combined`); none (`off`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Auto,
+    Real,
+    Synthetic,
+    Glo30,
+    Combined,
+    Off,
+}
+
+impl Mode {
+    pub fn parse(v: &str) -> Option<Self> {
+        match v.trim().to_ascii_lowercase().as_str() {
+            "auto" | "" => Some(Self::Auto),
+            "real" => Some(Self::Real),
+            "synthetic" | "synth" => Some(Self::Synthetic),
+            "glo30" | "glo-30" => Some(Self::Glo30),
+            "combined" => Some(Self::Combined),
+            "off" | "0" | "none" => Some(Self::Off),
+            _ => None,
+        }
+    }
+}
+
+/// The sources' mode, `NAVAL_RELIEF_SOURCE`'s (read once), `auto` without it.
+pub fn mode() -> Mode {
+    static MODE: OnceLock<Mode> = OnceLock::new();
+    *MODE.get_or_init(|| match std::env::var("NAVAL_RELIEF_SOURCE") {
+        Ok(v) => Mode::parse(&v).unwrap_or_else(|| {
+            eprintln!(
+                "NAVAL_RELIEF_SOURCE={v}: auto, real, synthetic, glo30, combined or off; auto"
+            );
+            Mode::Auto
+        }),
+        Err(_) => Mode::Auto,
+    })
 }
 
 static SHOWN: AtomicBool = AtomicBool::new(true);
@@ -102,6 +160,26 @@ pub enum Source {
     Terrarium,
     /// The GSI's 5 m model at zoom 15, its 10 m at zoom 14 where the 5 m has none.
     Gsi,
+    /// Made from the window's own heights (`relief_synth`): no tiles.
+    Synthetic,
+    /// Copernicus GLO-30 on open ground (`relief_glo30`), a test: its own cells and WorldCover's tiles, none of these.
+    Glo30,
+    /// GLO-30's band (its fills kept) for the shapes from about 60 m up, the synthetic's detail under that on top, the
+    /// synthetic alone where GLO-30 is masked or absent (`relief_combined`).
+    Combined,
+}
+
+impl Source {
+    /// Whether the source is a finer model's measurement of the ground ([`ReliefPage::real`]), not a page made.
+    pub fn real(self) -> bool {
+        matches!(self, Self::Terrarium | Self::Gsi)
+    }
+
+    /// Whether the source's pages are made from the window's heights where nothing finer is held (so made only where
+    /// the window has relief, [`page_has_relief`]).
+    pub fn synthetic(self) -> bool {
+        matches!(self, Self::Synthetic | Self::Combined)
+    }
 }
 
 /// Where a source finer than the window's covers (south, north, west, east, degrees): the Terrain Tiles' 3DEP over the
@@ -198,12 +276,12 @@ fn tile_key(dataset: Dataset, x: i64, y: i64) -> TileKey {
 }
 
 /// A tile's heights, none where the dataset has no tile.
-type Tile = Option<Arc<Vec<f32>>>;
+pub type Tile = Option<Arc<Vec<f32>>>;
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The disk and the network.
 
-fn dir() -> PathBuf {
+pub(crate) fn dir() -> PathBuf {
     surface::cache_dir().join("relief-dem-v1")
 }
 
@@ -351,7 +429,7 @@ fn keep_tile(key: TileKey, tile: Tile) {
 }
 
 /// The tiles `keys`, from memory, the disk or the network, a few at once.
-fn load_tiles(keys: &BTreeSet<TileKey>) -> Result<HashMap<TileKey, Tile>, FetchError> {
+pub fn load_tiles(keys: &BTreeSet<TileKey>) -> Result<HashMap<TileKey, Tile>, FetchError> {
     let mut found = HashMap::new();
     let mut missing = Vec::new();
     {
@@ -614,6 +692,7 @@ impl Heights {
         match source {
             Source::Terrarium => &[Dataset::Terrarium],
             Source::Gsi => &[Dataset::Gsi5m, Dataset::Gsi10m],
+            Source::Synthetic | Source::Glo30 | Source::Combined => &[],
         }
     }
 
@@ -622,6 +701,7 @@ impl Heights {
     fn at(&self, px: [f64; 2]) -> f32 {
         let h = match self.source {
             Source::Terrarium => self.rasters[0].sample(px),
+            Source::Synthetic | Source::Glo30 | Source::Combined => f32::NAN,
             Source::Gsi => {
                 let fine = self.rasters[0].sample(px);
                 if fine.is_finite() {
@@ -636,7 +716,7 @@ impl Heights {
 }
 
 /// The metres about a page's own the page reads: its gutter, and a lattice cell beyond for the samples about it.
-fn reach(lattice: &Lattice) -> (f64, f64) {
+pub(crate) fn reach(lattice: &Lattice) -> (f64, f64) {
     let g = f64::from(GUTTER) * TEXEL_M;
     (-g - lattice.cell, page_m() + g + lattice.cell)
 }
@@ -676,6 +756,31 @@ pub fn make_page(
             .map(|&d| Raster::new(d, low, high, tiles))
             .collect(),
     };
+    let texels = residual_texels(lattice, index, &|m| heights.at(map.px(m)));
+    ReliefPage::from_residual(&texels, TEXEL_M as f32)
+}
+
+/// Page `index`'s texels (with its gutters) on `lattice` from a finer model's heights at the page's metres (x east, z
+/// south from its corner; `fine`): each the model's height less the lattice's bilinear surface through the model's
+/// heights at its samples, so zero at the samples and agreeing with a neighbour's in the gutters.
+pub(crate) fn residual_texels(
+    lattice: &Lattice,
+    index: [i64; 2],
+    fine: &dyn Fn([f64; 2]) -> f32,
+) -> Vec<f32> {
+    residual_grid(lattice, index, fine, 0)
+}
+
+/// [`residual_texels`] over the page's texels and `extra` more each way (`PAGE_TEXELS + 2 extra` a side).
+pub(crate) fn residual_grid(
+    lattice: &Lattice,
+    index: [i64; 2],
+    fine: &dyn Fn([f64; 2]) -> f32,
+    extra: usize,
+) -> Vec<f32> {
+    let (lo, hi) = reach(lattice);
+    let wide = extra as f64 * TEXEL_M;
+    let (lo, hi) = (lo - wide, hi + wide);
     let side = page_m();
     let corner = [index[0] as f64 * side, index[1] as f64 * side];
     // The lattice's samples about the page: k from `first` (theatre node + k × cell), `count` a side.
@@ -689,11 +794,11 @@ pub fn make_page(
                 lattice.node[0] + (first[0] + i as i64) as f64 * lattice.cell,
                 lattice.node[1] + (first[1] + j as i64) as f64 * lattice.cell,
             ];
-            nodes[j * count[0] + i] = heights.at(map.px([p[0] - corner[0], p[1] - corner[1]]));
+            nodes[j * count[0] + i] = fine([p[0] - corner[0], p[1] - corner[1]]);
         }
     }
-    let n = PAGE_TEXELS as usize;
-    let g = f64::from(GUTTER);
+    let n = PAGE_TEXELS as usize + 2 * extra;
+    let g = f64::from(GUTTER) + extra as f64;
     let mut texels = vec![0f32; n * n];
     for j in 0..n {
         for i in 0..n {
@@ -701,7 +806,7 @@ pub fn make_page(
                 (i as f64 - g + 0.5) * TEXEL_M,
                 (j as f64 - g + 0.5) * TEXEL_M,
             ];
-            let fine = heights.at(map.px(m));
+            let h = fine(m);
             let t = [0, 1]
                 .map(|k| (corner[k] + m[k] - lattice.node[k]) / lattice.cell - first[k] as f64);
             let (a, b) = (t[0].floor(), t[1].floor());
@@ -713,23 +818,38 @@ pub fn make_page(
             let at = |i: usize, j: usize| nodes[j * count[0] + i];
             let surface = (at(a, b) * (1.0 - u) + at(a + 1, b) * u) * (1.0 - v)
                 + (at(a, b + 1) * (1.0 - u) + at(a + 1, b + 1) * u) * v;
-            texels[j * n + i] = fine - surface;
+            texels[j * n + i] = h - surface;
         }
     }
-    ReliefPage::from_residual(&texels, TEXEL_M as f32)
+    texels
 }
 
-/// The source covering page `index` about `geo` (at its middle).
+/// The source page `index` about `geo` takes ([`mode`]): the finer model covering its middle, else the synthetic.
 pub fn page_source(geo: LatLon, index: [i64; 2]) -> Option<Source> {
-    let side = page_m();
-    let p = to_lat_lon(
-        geo,
-        [
-            (index[0] as f64 + 0.5) * side,
-            (index[1] as f64 + 0.5) * side,
-        ],
-    );
-    source_at(p.lat, p.lon)
+    page_source_in(mode(), geo, index)
+}
+
+/// [`page_source`] in `mode`.
+pub fn page_source_in(mode: Mode, geo: LatLon, index: [i64; 2]) -> Option<Source> {
+    let real = || {
+        let side = page_m();
+        let p = to_lat_lon(
+            geo,
+            [
+                (index[0] as f64 + 0.5) * side,
+                (index[1] as f64 + 0.5) * side,
+            ],
+        );
+        source_at(p.lat, p.lon)
+    };
+    match mode {
+        Mode::Auto => real().or(Some(Source::Combined)),
+        Mode::Real => real(),
+        Mode::Synthetic => Some(Source::Synthetic),
+        Mode::Glo30 => Some(Source::Glo30),
+        Mode::Combined => Some(Source::Combined),
+        Mode::Off => None,
+    }
 }
 
 /// Whether the land layer's field (its chart's (0, 0) at theatre point `origin`) has land on page `index`: any block of
@@ -752,6 +872,47 @@ pub fn page_has_land(
     }
     let last = last.map(|l| (l as usize).min(level.size.saturating_sub(1)));
     (first[1]..=last[1]).any(|j| (first[0]..=last[0]).any(|i| level.max[j * level.size + i] > 0.0))
+}
+
+/// Whether the field has land on page `index` rising [`SYNTHETIC_RANGE_M`] or more within one of its bounds' finest
+/// blocks (320 m on a 40 m window): what a synthetic page needs to hold anything.
+pub fn page_has_relief(field: &PreparedField, origin: [f64; 2], index: [i64; 2]) -> bool {
+    let Some(level) = field.bounds.levels.first() else {
+        return false;
+    };
+    let side = page_m();
+    let block = field.bounds.base as f64 * field.grid.cell;
+    let chart = [0, 1].map(|k| index[k] as f64 * side - origin[k] - f64::from(field.origin[k]));
+    let first = chart.map(|c| (c / block).floor().max(0.0) as usize);
+    let last = chart.map(|c| ((c + side) / block).floor());
+    if last[0] < 0.0 || last[1] < 0.0 {
+        return false;
+    }
+    let last = last.map(|l| (l as usize).min(level.size.saturating_sub(1)));
+    (first[1]..=last[1]).any(|j| {
+        (first[0]..=last[0]).any(|i| {
+            let k = j * level.size + i;
+            level.max[k] > 0.0 && level.max[k] - level.min[k].max(0.0) >= SYNTHETIC_RANGE_M
+        })
+    })
+}
+
+/// The least rise within a block of a page's land for a synthetic page (m).
+pub const SYNTHETIC_RANGE_M: f32 = 20.0;
+
+/// The window's heights a synthetic page reads: the land layer's field, its chart's (0, 0) at theatre point `origin`.
+#[derive(Clone)]
+pub struct Coarse {
+    pub field: Arc<PreparedField>,
+    pub origin: [f64; 2],
+}
+
+impl Coarse {
+    /// The field's height at theatre point `p` (m).
+    pub fn height(&self, p: [f64; 2]) -> f32 {
+        self.field
+            .height(p[0] - self.origin[0], p[1] - self.origin[1]) as f32
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -780,7 +941,7 @@ pub struct WorkerStatus {
 }
 
 struct State {
-    job: Option<(LatLon, Lattice)>,
+    job: Option<(LatLon, Lattice, Option<Coarse>)>,
     wanted: VecDeque<[i64; 2]>,
     /// Pages made: none where the source holds nothing there.
     made: HashMap<Key, Option<Arc<ReliefPage>>>,
@@ -821,8 +982,8 @@ pub fn made(geo: LatLon, lattice: &Lattice, index: [i64; 2]) -> Option<Option<Ar
 }
 
 /// Asks for `pages` (in the order given) about `geo` on `lattice`, in place of whatever was asked before; a page made,
-/// or failed lately, is left out.
-pub fn want(geo: LatLon, lattice: Lattice, pages: &[[i64; 2]]) {
+/// or failed lately, is left out. `coarse`: the window's heights, for synthetic pages.
+pub fn want(geo: LatLon, lattice: Lattice, coarse: Option<Coarse>, pages: &[[i64; 2]]) {
     if !enabled() {
         return;
     }
@@ -839,7 +1000,7 @@ pub fn want(geo: LatLon, lattice: Lattice, pages: &[[i64; 2]]) {
             !state.made.contains_key(&k) && !state.failed.contains_key(&k)
         })
         .collect();
-    state.job = Some((geo, lattice));
+    state.job = Some((geo, lattice, coarse));
     state.status.queued = wanted.len();
     state.wanted = wanted;
     if state.wanted.is_empty() {
@@ -872,10 +1033,10 @@ fn work() {
     // The cache held to its bound once a session before anything is read.
     prune(&dir(), CACHE_BYTES);
     loop {
-        let (geo, lattice, batch) = {
+        let (geo, lattice, coarse, batch) = {
             let mut state = lock();
             loop {
-                if let Some((geo, lattice)) = state.job
+                if let Some((geo, lattice, coarse)) = state.job.clone()
                     && let Some(first) = state.wanted.pop_front()
                 {
                     // The nearest page, and the others asked for on its row (they share their tiles).
@@ -893,7 +1054,7 @@ fn work() {
                     state.status.queued = state.wanted.len();
                     if !batch.is_empty() {
                         state.status.working = batch.len();
-                        break (geo, lattice, batch);
+                        break (geo, lattice, coarse, batch);
                     }
                     continue;
                 }
@@ -905,7 +1066,7 @@ fn work() {
             }
         };
         let started = Instant::now();
-        let result = make_batch(geo, &lattice, &batch);
+        let result = make_batch(geo, &lattice, coarse.as_ref(), &batch);
         let mut state = lock();
         state.status.working = 0;
         match result {
@@ -946,6 +1107,7 @@ fn work() {
 fn make_batch(
     geo: LatLon,
     lattice: &Lattice,
+    coarse: Option<&Coarse>,
     batch: &[[i64; 2]],
 ) -> Result<Vec<([i64; 2], Option<Arc<ReliefPage>>)>, FetchError> {
     let sources: Vec<Option<Source>> = batch.iter().map(|&i| page_source(geo, i)).collect();
@@ -956,6 +1118,30 @@ fn make_batch(
         }
     }
     let tiles = load_tiles(&all)?;
+    // GLO-30's cells and WorldCover's tiles under each GLO-30 page, read before the pages are made.
+    let glo30 = batch
+        .iter()
+        .zip(&sources)
+        .map(|(&i, source)| match source {
+            Some(Source::Glo30) => relief_glo30::Inputs::load(geo, lattice, i).map(Some),
+            // The combined source's GLO-30, its band with the fills and their mask; offline, the synthetic alone.
+            Some(Source::Combined) => {
+                match relief_glo30::Inputs::load_with(geo, lattice, i, relief_combined::GLO30, true)
+                {
+                    Ok(inputs) => Ok(Some(inputs)),
+                    Err(FetchError::Offline(e)) => {
+                        surface::log_once(
+                            "relief-combined-offline",
+                            &format!("the relief's GLO-30: {e}"),
+                        );
+                        Ok(None)
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            _ => Ok(None),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let next = AtomicUsize::new(0);
     let results: Mutex<Vec<Option<Arc<ReliefPage>>>> = Mutex::new(vec![None; batch.len()]);
     let threads = std::thread::available_parallelism()
@@ -976,6 +1162,50 @@ fn make_batch(
                     let Some(source) = sources[k] else {
                         continue;
                     };
+                    // A made page's water: WorldCover's and the features' (`relief_limit::Water`).
+                    let made =
+                        matches!(source, Source::Synthetic | Source::Combined | Source::Glo30);
+                    let water = made.then(|| relief_limit::Water::load(geo, i));
+                    if source == Source::Synthetic {
+                        let (Some(coarse), Some(water)) = (coarse, &water) else {
+                            continue;
+                        };
+                        let height = |p: [f64; 2]| coarse.height(p);
+                        if let Some(page) = relief_synth::make_page(geo, lattice, i, &height, water)
+                        {
+                            results.lock().unwrap_or_else(|e| e.into_inner())[k] =
+                                Some(Arc::new(page));
+                        }
+                        continue;
+                    }
+                    if source == Source::Combined {
+                        let (Some(coarse), Some(water)) = (coarse, &water) else {
+                            continue;
+                        };
+                        if let Some(page) = relief_combined::make_page(
+                            geo,
+                            lattice,
+                            i,
+                            glo30[k].as_ref(),
+                            coarse,
+                            water,
+                        ) {
+                            results.lock().unwrap_or_else(|e| e.into_inner())[k] =
+                                Some(Arc::new(page));
+                        }
+                        continue;
+                    }
+                    if source == Source::Glo30 {
+                        if let Some(inputs) = &glo30[k]
+                            && let Some(water) = &water
+                            && let Some(page) =
+                                relief_glo30::make_page(geo, lattice, i, inputs, coarse, water)
+                        {
+                            results.lock().unwrap_or_else(|e| e.into_inner())[k] =
+                                Some(Arc::new(page));
+                        }
+                        continue;
+                    }
                     // A page none of whose tiles the source holds is none.
                     let held = page_tiles(geo, lattice, i, source)
                         .iter()
@@ -1086,9 +1316,14 @@ impl Feed {
         let base = page_of(origin);
         let mut missing = Vec::new();
         for &index in &self.block {
-            let drawn = *self.drawn.entry(index).or_insert_with(|| {
-                page_source(geo, index).is_some() && page_has_land(land.field(), origin, index)
-            });
+            let drawn = *self
+                .drawn
+                .entry(index)
+                .or_insert_with(|| match page_source(geo, index) {
+                    Some(s) if s.synthetic() => page_has_relief(land.field(), origin, index),
+                    Some(_) => page_has_land(land.field(), origin, index),
+                    None => false,
+                });
             let l = local(index, base);
             if !drawn || land.holds_relief_page(l) {
                 continue;
@@ -1102,7 +1337,11 @@ impl Feed {
         self.pending = missing.len();
         let stale = self.asked_at.is_none_or(|t| t.elapsed() > RETRY_AFTER);
         if missing != self.asked || (!missing.is_empty() && stale) {
-            want(geo, lattice, &missing);
+            let coarse = Coarse {
+                field: land.shared_field(),
+                origin,
+            };
+            want(geo, lattice, Some(coarse), &missing);
             self.asked = missing;
             self.asked_at = Some(Instant::now());
         }

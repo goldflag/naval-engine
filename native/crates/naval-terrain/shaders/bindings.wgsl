@@ -94,6 +94,9 @@ struct Terrain {
     // k = j * slots + i), i32's least where none.
     relief: vec4<f32>,
     relief_slots: array<vec4<i32>, 32>,
+    // Which layers hold a real page (a finer model's, `ReliefPage::real`; not a synthetic or GLO-30's): layer k at bit
+    // k mod 32 of component k / 32.
+    relief_real: vec4<u32>,
     // The period's country (`TerrainLayer::set_country`, `surface.wgsl`'s "The period's country"): the region's
     // country (`country::Country::index`, 0 for none), the season (months since mid-January, half a year on south of
     // the equator), a test's marks (`TerrainLayer::mark_country_for_tests`: the share of the built-up land taken as
@@ -420,6 +423,18 @@ fn relief_at(xz: vec2<f32>) -> ReliefAt {
     at.uv = (f * RELIEF_CONTENT + RELIEF_GUTTER) / RELIEF_PAGE_TEXELS;
     at.share = share;
     return at;
+}
+
+// How much of a real page's relief point `xz` takes (`relief_at`'s share where its layer holds a finer model's page,
+// 0 where a made one: the synthetic's, GLO-30's).
+fn relief_real_share(xz: vec2<f32>) -> f32 {
+    let at = relief_at(xz);
+    if at.layer < 0 {
+        return 0.0;
+    }
+    let bits = select(terrain.relief_real.y, terrain.relief_real.x, at.layer < 32);
+    let real = (bits >> u32(at.layer % 32)) & 1u;
+    return select(0.0, at.share, real == 1u);
 }
 
 // The residual at `uv` of layer `layer`, level `lod` (m).

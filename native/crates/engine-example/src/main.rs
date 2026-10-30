@@ -2,8 +2,8 @@
 //! from a land release and a few combat effects, each a `naval_render::SceneLayer` on one renderer. The template
 //! another project copies: see README.md for the crates to depend on and what each layer needs from its host.
 //!
-//!     bun run cargo -- run -p engine-example --profile dev-client [-- --size 1600x900] [--globe]
-//!     bun run cargo -- run -p engine-example --profile dev-client -- --still <out.png> [--size 1600x900] [--globe]
+//!     bun run cargo -- run -p engine-example --profile dev-client [-- --size 1600x900] [--globe] [--ship <setup.json> …] [--knots <k>] [--hour <h>]
+//!     bun run cargo -- run -p engine-example --profile dev-client -- --still <out.png> [--size 1600x900] [--globe] [--ship <setup.json> …] [--knots <k>] [--hour <h>]
 //!
 //! The window: WASD to fly, Q and E down and up, a mouse button held to look, Shift eight times as fast, the wheel for
 //! the speed; T and G an hour on and back, B the next weather, N and M the sea calmer and rougher (the wind 3 m/s
@@ -12,14 +12,26 @@
 //! globe. `--exit-after <seconds>` closes it by itself. `--still` renders one frame offscreen from a fixed camera in
 //! fixed conditions, the effects 1.2 s after they were spawned (with `--globe`, the whole Earth over the North
 //! Atlantic), writes the PNG and exits.
+//!
+//! `--ship <setup.json>` puts the ship that setup file names (naval-vessel) to sea at `--knots` (15 without it), her
+//! hull from her model's numbers (`join.rs`), afloat on the drawn sea with her wake, bow waves, spray and funnel smoke,
+//! sailing straight on (`afloat.rs`); each further `--ship` sails abreast of the first. `--afloat <knots>` puts a
+//! stand-in ship to sea, sailing a circle, her proxy hull grey. The window and the still then follow the first (the
+//! chase camera, off her port bow): `[` and `]` a knot slower and faster, `,` and `.` five, R puts her about, Tab
+//! follows the next, C the chase camera back after flying. With `--still`, the frame is the chase camera's after
+//! [`AFLOAT_STILL_S`] seconds, the combat effects not spawned; `--wind <m/s>` raises the still's sea (the weather's own
+//! without it), `--hour` sets the hour both start at.
 
+mod afloat;
 mod coast;
 mod fly;
 mod globe;
+mod join;
+mod ship;
 mod world;
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -36,7 +48,7 @@ use winit::window::{Window, WindowId};
 
 use fly::Fly;
 use globe::GlobeView;
-use world::{Conditions, WEATHERS, World, ahead};
+use world::{Conditions, Sail, WEATHERS, World, ahead};
 
 /// Where the window and the still start: 2.5 km off the coast and 700 m up, looking north-north-east down at it.
 const EYE: Vec3 = Vec3::new(-1800.0, 700.0, 2500.0);
@@ -50,6 +62,19 @@ const STILL: Conditions = Conditions {
 /// The still's frames at 60 a second: the effects spawned at the 18th, so 1.2 s old in the last.
 const STILL_FRAMES: u64 = 90;
 const STILL_SPAWN: u64 = 18;
+/// A still of ships afloat: this long under way at 30 frames a second, so their wakes and smoke stream out astern.
+const AFLOAT_STILL_S: f64 = 30.0;
+/// The ships' knots without `--knots`.
+const KNOTS: f64 = 15.0;
+/// The keys that fly the camera: one leaves the chase camera.
+const FLY_KEYS: [KeyCode; 6] = [
+    KeyCode::KeyW,
+    KeyCode::KeyA,
+    KeyCode::KeyS,
+    KeyCode::KeyD,
+    KeyCode::KeyQ,
+    KeyCode::KeyE,
+];
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -67,11 +92,34 @@ fn main() -> Result<()> {
         None => (1600u32, 900u32),
     };
     let globe = args.iter().any(|a| a == "--globe");
+    let sail = Sail {
+        stand_in: option("--afloat").map(|s| s.parse::<f64>()).transpose()?,
+        ships: args
+            .windows(2)
+            .filter(|w| w[0] == "--ship")
+            .map(|w| PathBuf::from(&w[1]))
+            .collect(),
+        knots: option("--knots")
+            .map(|s| s.parse::<f64>())
+            .transpose()
+            .context("--knots takes a speed in knots")?
+            .unwrap_or(KNOTS),
+    };
+    let hour = option("--hour")
+        .map(|s| s.parse::<f64>())
+        .transpose()
+        .context("--hour takes an hour, 0 to 24")?;
     if let Some(out) = option("--still") {
+        let wind = option("--wind").map(|s| s.parse::<f64>()).transpose()?;
         return if globe {
             globe_still(Path::new(&out), size)
         } else {
-            still(Path::new(&out), size)
+            let conditions = Conditions {
+                hour: hour.unwrap_or(STILL.hour),
+                wind,
+                ..STILL
+            };
+            still(Path::new(&out), size, conditions, &sail)
         };
     }
     let exit_after = option("--exit-after")
@@ -81,6 +129,8 @@ fn main() -> Result<()> {
     let mut app = App {
         size,
         globe,
+        sail,
+        hour: hour.unwrap_or(15.0),
         exit_after,
         running: None,
         error: None,
@@ -89,22 +139,61 @@ fn main() -> Result<()> {
     app.error.map_or(Ok(()), Err)
 }
 
-/// One frame offscreen, written to `out`.
-fn still(out: &Path, (width, height): (u32, u32)) -> Result<()> {
+/// One frame offscreen in `conditions`, written to `out`: of the coast and the effects, or with ships afloat (`sail`) of
+/// the first from the chase camera.
+fn still(
+    out: &Path,
+    (width, height): (u32, u32),
+    conditions: Conditions,
+    sail: &Sail,
+) -> Result<()> {
     let gpu = Gpu::headless_with(wgpu::Features::TEXTURE_COMPRESSION_BC)?;
     let capture = Capture::new(&gpu, width, height);
     let mut renderer = Renderer::new(&gpu.device, &gpu.queue, width, height, CAPTURE_FORMAT)
         .map_err(|e| anyhow!("the renderer: {e:?}"))?;
-    let mut world = World::new(&mut renderer, STILL)?;
-    let fly = Fly::looking_at(EYE, TARGET);
-    let camera = fly.camera();
-    let dt = 1.0 / 60.0;
-    for frame in 0..STILL_FRAMES {
-        if frame == STILL_SPAWN {
+    let mut world = World::new(&mut renderer, conditions, sail)?;
+    let mut fly = start(&mut world);
+    let afloat = !world.fleet.ships.is_empty();
+    let (frames, dt) = match afloat {
+        true => ((AFLOAT_STILL_S * 30.0) as u64, 1.0 / 30.0),
+        false => (STILL_FRAMES, 1.0 / 60.0),
+    };
+    let mut squares: Vec<[f64; 3]> = Vec::new();
+    for frame in 0..frames {
+        if frame == STILL_SPAWN && !afloat {
             world.spawn(ahead(fly.eye, fly.forward()), fly.forward().as_dvec3());
         }
+        // A still of ships follows the first.
+        chase(&mut world, &mut fly);
+        let camera = fly.camera();
         world.advance(&mut renderer, &camera, (width, height), dt);
-        if frame + 1 == STILL_FRAMES {
+        // Their motion every 5 s, now and its root mean square over those 5 s: heave up, pitch bow up, roll starboard
+        // side up.
+        squares.resize(world.fleet.ships.len(), [0.0; 3]);
+        for (ship, sum) in world.fleet.ships.iter().zip(&mut squares) {
+            let m = ship.afloat.motion();
+            for (s, v) in sum
+                .iter_mut()
+                .zip([m.heave, m.pitch.to_degrees(), m.roll.to_degrees()])
+            {
+                *s += v * v / 150.0;
+            }
+            if frame % 150 == 149 {
+                println!(
+                    "{:5.1} s {}: heave {:+.2} m ({:.2}), pitch {:+.2}° ({:.2}), roll {:+.2}° ({:.2})",
+                    (frame + 1) as f64 * dt,
+                    ship.name,
+                    m.heave,
+                    sum[0].sqrt(),
+                    m.pitch.to_degrees(),
+                    sum[1].sqrt(),
+                    m.roll.to_degrees(),
+                    sum[2].sqrt()
+                );
+                *sum = [0.0; 3];
+            }
+        }
+        if frame + 1 == frames {
             renderer.snap_eye_adaptation();
         }
         renderer
@@ -128,6 +217,27 @@ fn still(out: &Path, (width, height): (u32, u32)) -> Result<()> {
             .map_err(|e| anyhow!("frame {frame}: {e:?}"))?;
     }
     save(&gpu, &capture, out)
+}
+
+/// The first view: the chase camera's with ships afloat, else 2.5 km off the coast.
+fn start(world: &mut World) -> Fly {
+    let mut fly = Fly::looking_at(EYE, TARGET);
+    chase(world, &mut fly);
+    fly
+}
+
+/// Put `fly` where the chase camera has the ship followed (`afloat::Sailing::chase`), if one is afloat, keeping its
+/// speed; whether one is.
+fn chase(world: &mut World, fly: &mut Fly) -> bool {
+    let Some(ship) = world.fleet.followed() else {
+        return false;
+    };
+    let (eye, target) = ship.chase();
+    *fly = Fly {
+        speed: fly.speed,
+        ..Fly::looking_at(eye, target)
+    };
+    true
 }
 
 /// The round Earth offscreen, its world chart's meshes made first, written to `out`.
@@ -183,6 +293,10 @@ struct App {
     size: (u32, u32),
     /// `--globe`: the window starts on the globe.
     globe: bool,
+    /// `--afloat`, `--ship`, `--knots`: what sails.
+    sail: Sail,
+    /// `--hour`: the hour the window starts at.
+    hour: f64,
     exit_after: Option<f64>,
     running: Option<Running>,
     error: Option<anyhow::Error>,
@@ -198,6 +312,8 @@ struct Running {
     renderer: Renderer,
     world: World,
     fly: Fly,
+    /// Whether the view is the chase camera's, following the ship followed (until a fly key or a look leaves it).
+    chasing: bool,
     /// The round Earth (O), made the first time it is shown, and whether it is shown.
     globe: Option<GlobeView>,
     on_globe: bool,
@@ -219,6 +335,8 @@ impl Running {
         event_loop: &ActiveEventLoop,
         (width, height): (u32, u32),
         on_globe: bool,
+        sail: &Sail,
+        hour: f64,
     ) -> Result<Self> {
         let window = Arc::new(
             event_loop.create_window(
@@ -261,19 +379,27 @@ impl Running {
         let mut renderer =
             Renderer::new(&device, &queue, config.width, config.height, config.format)
                 .map_err(|e| anyhow!("the renderer: {e:?}"))?;
-        let world = World::new(
+        let mut world = World::new(
             &mut renderer,
             Conditions {
-                hour: 15.0,
+                hour,
                 weather: 1,
                 wind: None,
             },
+            sail,
         )?;
         println!(
             "WASD fly, Q/E down/up, mouse button + drag look, Shift fast, wheel speed; T/G hour, B weather, N/M sea, \
              F effects, O globe (drag turn, wheel zoom), Esc quit"
         );
+        if !world.fleet.ships.is_empty() {
+            println!(
+                "[/] a knot slower/faster, ,/. five, R put about, Tab next ship, C chase camera"
+            );
+        }
         let now = Instant::now();
+        let fly = start(&mut world);
+        let chasing = !world.fleet.ships.is_empty();
         let mut running = Self {
             window,
             surface,
@@ -282,7 +408,8 @@ impl Running {
             queue,
             renderer,
             world,
-            fly: Fly::looking_at(EYE, TARGET),
+            fly,
+            chasing,
             globe: None,
             on_globe: false,
             cursor: [0.0; 2],
@@ -311,8 +438,17 @@ impl Running {
             return;
         }
         let c = self.world.conditions;
+        let fleet = &self.world.fleet;
+        let afloat = fleet.ships.get(fleet.followed).map_or(String::new(), |s| {
+            let of = match fleet.ships.len() {
+                1 => String::new(),
+                n => format!(" ({} of {n})", fleet.followed + 1),
+            };
+            let chasing = if self.chasing { ", chasing" } else { "" };
+            format!(", {} at {:.0} knots{of}{chasing}", s.name, s.knots)
+        });
         self.window.set_title(&format!(
-            "engine example: {:02.0}:00, {}, wind {:.0} m/s, {:.0} m/s flying",
+            "engine example: {:02.0}:00, {}, wind {:.0} m/s, {:.0} m/s flying{afloat}",
             c.hour.rem_euclid(24.0),
             WEATHERS[c.weather % WEATHERS.len()],
             self.world.scene.wind.0,
@@ -355,6 +491,33 @@ impl Running {
                 let forward = self.fly.forward();
                 self.world
                     .spawn(ahead(self.fly.eye, forward), forward.as_dvec3());
+            }
+            KeyCode::BracketLeft | KeyCode::BracketRight | KeyCode::Comma | KeyCode::Period => {
+                let knots = match code {
+                    KeyCode::BracketLeft => -1.0,
+                    KeyCode::BracketRight => 1.0,
+                    KeyCode::Comma => -5.0,
+                    _ => 5.0,
+                };
+                if let Some(ship) = self.world.fleet.followed() {
+                    ship.throttle(knots);
+                    self.title();
+                }
+            }
+            KeyCode::KeyR => {
+                if let Some(ship) = self.world.fleet.followed() {
+                    ship.helm.put_about();
+                    self.title();
+                }
+            }
+            KeyCode::Tab => {
+                self.world.fleet.follow_next();
+                self.chasing = !self.world.fleet.ships.is_empty();
+                self.title();
+            }
+            KeyCode::KeyC => {
+                self.chasing = !self.chasing && !self.world.fleet.ships.is_empty();
+                self.title();
             }
             _ => {}
         }
@@ -406,7 +569,14 @@ impl Running {
             self.queue.present(frame);
             return Ok(());
         }
-        self.fly.fly(&self.held, dt as f32);
+        // A fly key or a look leaves the chase camera where it is.
+        if self.chasing && (self.looking || FLY_KEYS.iter().any(|k| self.held.contains(k))) {
+            self.chasing = false;
+            self.title();
+        }
+        if !(self.chasing && chase(&mut self.world, &mut self.fly)) {
+            self.fly.fly(&self.held, dt as f32);
+        }
         let camera = self.fly.camera();
         let (width, height) = (self.config.width, self.config.height);
         self.world
@@ -454,7 +624,7 @@ impl App {
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.running.is_none() {
-            match Running::new(event_loop, self.size, self.globe) {
+            match Running::new(event_loop, self.size, self.globe, &self.sail, self.hour) {
                 Ok(running) => self.running = Some(running),
                 Err(error) => self.fail(event_loop, error),
             }

@@ -15,6 +15,9 @@
 //! destroyer, finer across, enough for the stem crest (at least 1.5 m wide) and every wave longer than two texels. The
 //! shorter waves (centimetres high) are what the bilinear read smooths away.
 //!
+//! The same pass keeps the water's memory against the hulls' sides ([`crate::hull_sides`]: how high it has lately climbed
+//! each side, how hard it rushes up it) in one more layer, [`SIDES_LAYER`], which the ships read with the patches.
+//!
 //! [`Ocean::set_hull_sea`]: crate::Ocean::set_hull_sea
 
 use bytemuck::{Pod, Zeroable};
@@ -25,6 +28,8 @@ use naval_render::{
 };
 
 use crate::hull_sea::{HULL_SEA_SLOTS, HullFootprint};
+pub use crate::hull_sides::SIDES_LAYER;
+use crate::hull_sides::{HullSides, HullSidesUniforms, SIDE_SLOTS, SIDE_STATIONS, SideHull};
 use crate::sea_read::SeaRead;
 use crate::shaders;
 use crate::ship_wake::WakeBindings;
@@ -142,13 +147,15 @@ impl HullPatch {
 }
 
 /// `HullPatches` in `shaders/hull_heights.wgsl` and `SeaPatches` in naval-ships' `ship.wgsl`: per patch (centre x, z,
-/// bow axis x, z) and (half length, half breadth, texels along, texels across), then (patches in use, ·, ·, ·). A
-/// patch's texels sit in the corner of its layer.
+/// bow axis x, z) and (half length, half breadth, texels along, texels across), then (patches in use, ·, ·, ·), then
+/// per slot of the sides' memory ([`HullSides::ship_records`]) the hull's origin (x, y, z, w 1 in use) and her stations
+/// (x her stem's z, y 1 / a station's span). A patch's texels sit in the corner of its layer.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct HullHeightsUniforms {
     pub patches: [[f32; 4]; HULL_HEIGHT_SLOTS * 2],
     pub count: [f32; 4],
+    pub sides: [[f32; 4]; SIDE_SLOTS * 2],
 }
 
 impl Default for HullHeightsUniforms {
@@ -206,7 +213,8 @@ impl HullHeightsUniforms {
 
 /// What the ships bind of the heights (their frame group's bindings 21 and 22).
 pub struct HullHeightsBindings<'a> {
-    /// The heights, an `R32Float` 2D array of [`HULL_HEIGHT_SLOTS`] layers of [`PATCH_ALONG`] × [`PATCH_ACROSS`].
+    /// The heights, an `R32Float` 2D array of [`HULL_HEIGHT_SLOTS`] layers of [`PATCH_ALONG`] × [`PATCH_ACROSS`], then
+    /// the sides' layer ([`SIDES_LAYER`]).
     pub heights: &'a wgpu::TextureView,
     /// The patches, [`HullHeightsUniforms`].
     pub patches: &'a wgpu::Buffer,
@@ -229,7 +237,19 @@ pub struct HullHeights {
     group: wgpu::BindGroup,
     pipeline: wgpu::ComputePipeline,
     id: Option<PipelineId>,
+    /// The hulls whose sides are remembered, their uniforms and their history ([`crate::hull_sides`]): per slot, side
+    /// and station a vec4 (now, climb, slap, rise), the pass's alone.
+    sides: HullSides,
+    sides_buffer: wgpu::Buffer,
+    side_state: wgpu::Buffer,
+    sides_pipeline: wgpu::ComputePipeline,
+    sides_id: Option<PipelineId>,
 }
+
+/// Bytes of the sides' history: a vec4 per slot, side and station.
+const SIDE_STATE_SIZE: u64 = (SIDE_SLOTS as u64) * 2 * (SIDE_STATIONS as u64) * 16;
+/// The sides' pass's workgroup (a row of stations).
+const SIDES_GROUP: u32 = 64;
 
 impl HullHeights {
     /// The heights for a wave field whose group layout is `waves`.
@@ -265,6 +285,28 @@ impl HullHeights {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: compute,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(
+                            std::mem::size_of::<HullSidesUniforms>() as u64,
+                        ),
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: compute,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(SIDE_STATE_SIZE),
+                    },
+                    count: None,
+                },
             ],
         });
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -278,7 +320,7 @@ impl HullHeights {
             size: wgpu::Extent3d {
                 width: PATCH_ALONG,
                 height: PATCH_ACROSS,
-                depth_or_array_layers: HULL_HEIGHT_SLOTS as u32,
+                depth_or_array_layers: SIDES_LAYER + 1,
             },
             mip_level_count: 1,
             sample_count: 1,
@@ -294,6 +336,18 @@ impl HullHeights {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
         });
+        let sides_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ocean hull sides"),
+            size: std::mem::size_of::<HullSidesUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let side_state = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ocean hull sides history"),
+            size: SIDE_STATE_SIZE,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("ocean hull heights"),
             layout: &layout,
@@ -306,27 +360,40 @@ impl HullHeights {
                     binding: 1,
                     resource: wgpu::BindingResource::TextureView(&view),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: sides_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: side_state.as_entire_binding(),
+                },
             ],
         });
         let layouts = sea.layouts(waves, &layout);
-        let pipeline = make.compute(|| {
-            let module = shaders::shader_module(device, shaders::HULL_HEIGHTS, &[]);
-            let groups: Vec<Option<&wgpu::BindGroupLayout>> = layouts.iter().map(Some).collect();
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("ocean hull heights"),
-                layout: Some(
-                    &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                        label: Some("ocean hull heights"),
-                        bind_group_layouts: &groups,
-                        immediate_size: 0,
-                    }),
-                ),
-                module: &module,
-                entry_point: Some("heights_main"),
-                compilation_options: Default::default(),
-                cache: None,
+        let build = |entry: &'static str| {
+            make.compute(|| {
+                let module = shaders::shader_module(device, shaders::HULL_HEIGHTS, &[]);
+                let groups: Vec<Option<&wgpu::BindGroupLayout>> =
+                    layouts.iter().map(Some).collect();
+                device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("ocean hull heights"),
+                    layout: Some(
+                        &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                            label: Some("ocean hull heights"),
+                            bind_group_layouts: &groups,
+                            immediate_size: 0,
+                        }),
+                    ),
+                    module: &module,
+                    entry_point: Some(entry),
+                    compilation_options: Default::default(),
+                    cache: None,
+                })
             })
-        });
+        };
+        let pipeline = build("heights_main");
+        let sides_pipeline = build("sides_main");
         Self {
             sea,
             layout,
@@ -338,6 +405,11 @@ impl HullHeights {
             group,
             pipeline,
             id: None,
+            sides: HullSides::default(),
+            sides_buffer,
+            side_state,
+            sides_pipeline,
+            sides_id: None,
         }
     }
 
@@ -353,18 +425,30 @@ impl HullHeights {
             Vec::new(),
             compute_recipe(self.sea.layouts(waves, &self.layout), "heights_main"),
         )?);
+        self.sides_id = Some(ctx.add_pipeline(
+            "ocean hull sides",
+            shaders::HULL_HEIGHTS.path,
+            Vec::new(),
+            compute_recipe(self.sea.layouts(waves, &self.layout), "sides_main"),
+        )?);
         Ok(())
     }
 
-    /// Takes the registry's current pipeline; whether it changed.
+    /// Takes the registry's current pipelines; whether either changed.
     pub(crate) fn adopt(&mut self, registry: &PipelineRegistry) -> bool {
-        let Some(id) = self.id else {
-            return false;
-        };
-        let pipeline = registry.compute(id);
-        let changed = *pipeline != self.pipeline;
-        if changed {
-            self.pipeline = pipeline.clone();
+        let mut changed = false;
+        for (id, held) in [
+            (self.id, &mut self.pipeline),
+            (self.sides_id, &mut self.sides_pipeline),
+        ] {
+            let Some(id) = id else {
+                continue;
+            };
+            let pipeline = registry.compute(id);
+            if *pipeline != *held {
+                *held = pipeline.clone();
+                changed = true;
+            }
         }
         changed
     }
@@ -387,6 +471,23 @@ impl HullHeights {
         &self.placed
     }
 
+    /// The hulls whose sides are remembered from the next pass on ([`HullSides::place`]: the same nearest hulls as the
+    /// patches, with their poses and waterlines).
+    pub fn place_sides(&mut self, hulls: &[SideHull<'_>]) {
+        self.sides.place(hulls);
+    }
+
+    /// Which slot each remembered hull's sides are kept in ([`HullSides::slot`]).
+    pub fn sides(&self) -> &HullSides {
+        &self.sides
+    }
+
+    /// The sides' history (the pass's own, a vec4 per slot, side and station: now, climb, slap, rise; see
+    /// `side_state` in `shaders/hull_heights.wgsl`), for read-backs and for another pass to bind read-only.
+    pub fn side_state(&self) -> &wgpu::Buffer {
+        &self.side_state
+    }
+
     /// The patches the last pass evaluated, as the ships read them.
     pub fn uniforms(&self) -> &HullHeightsUniforms {
         &self.uniforms
@@ -406,8 +507,9 @@ impl HullHeights {
     }
 
     /// Writes the patches `camera` sees and evaluates the sea on them, the wave field's group `field` being this frame's
-    /// (after its update and the wakes' encode). Whether it ran (no patch in view: nothing to do, and the ships find
-    /// none).
+    /// (after its update and the wakes' encode), then steps the sides' memory by `step` seconds of presentation (0, a
+    /// paused frame or a second view of one, holds it). Whether it ran (no patch in view and no hull remembered:
+    /// nothing to do, and the ships find none).
     #[allow(clippy::too_many_arguments)]
     pub fn encode(
         &mut self,
@@ -416,23 +518,44 @@ impl HullHeights {
         encoder: &mut wgpu::CommandEncoder,
         camera: &CameraUniforms,
         field: &wgpu::BindGroup,
+        step: f64,
         timer: Option<&naval_render::GpuTimer>,
     ) -> bool {
         self.uniforms.seen(&self.placed, camera);
+        self.uniforms.sides = self.sides.ship_records();
         queue.write_buffer(&self.buffer, 0, bytemuck::bytes_of(&self.uniforms));
         let count = self.uniforms.count() as u32;
-        if count == 0 {
+        let sides = self.sides.any();
+        if count == 0 && !sides {
             return false;
         }
-        let (along, across) = self.uniforms.largest();
+        if sides {
+            queue.write_buffer(
+                &self.sides_buffer,
+                0,
+                bytemuck::bytes_of(self.sides.uniforms(step)),
+            );
+        }
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("ocean hull heights"),
             timestamp_writes: timer.and_then(|timer| timer.compute_pass("ocean hull heights")),
         });
-        pass.set_pipeline(&self.pipeline);
         self.sea.bind(device, queue, &mut pass, camera, field);
         pass.set_bind_group(3, &self.group, &[]);
-        pass.dispatch_workgroups(along.div_ceil(8), across.div_ceil(8), count);
+        if count > 0 {
+            let (along, across) = self.uniforms.largest();
+            pass.set_pipeline(&self.pipeline);
+            pass.dispatch_workgroups(along.div_ceil(8), across.div_ceil(8), count);
+        }
+        if sides {
+            pass.set_pipeline(&self.sides_pipeline);
+            pass.dispatch_workgroups(
+                (SIDE_STATIONS * 2).div_ceil(SIDES_GROUP),
+                SIDE_SLOTS as u32,
+                1,
+            );
+            self.sides.passed();
+        }
         true
     }
 }

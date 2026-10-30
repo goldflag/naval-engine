@@ -20,6 +20,8 @@ bytemuck = { version = "1.25.2", default-features = false, features = ["aarch64_
 codespan-reporting = { version = "0.13.1", default-features = false, features = ["std", "termcolor"] }
 core-foundation-sys = { version = "0.8.7", default-features = false, features = ["default", "link"] }
 glam = { version = "0.33.11", default-features = false, features = ["all-types", "bytemuck", "default", "f64", "float-types", "i16", "i32", "i64", "i8", "integer-types", "isize", "mint", "mint-05", "serde", "size-types", "std", "u16", "u32", "u64", "u8", "usize"] }
+gltf = { version = "1.4.1", default-features = false, features = ["base64", "default", "extras", "image", "import", "names", "urlencoding", "utils"] }
+gltf-json = { version = "1.4.1", default-features = false, features = ["default", "extras", "names"] }
 half = { version = "2.7.1", default-features = false, features = ["alloc", "default", "num-traits", "std"] }
 hashbrown = { version = "0.17.1", default-features = false, features = ["default-hasher", "inline-more"] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "tiff"] }
@@ -59,6 +61,8 @@ arrayvec = { version = "0.7.8", default-features = false, features = ["std"] }
 bytemuck = { version = "1.25.2", default-features = false, features = ["aarch64_simd", "bytemuck_derive", "derive", "extern_crate_alloc", "min_const_generics", "wasm_simd"] }
 codespan-reporting = { version = "0.13.1", default-features = false, features = ["std", "termcolor"] }
 glam = { version = "0.33.11", default-features = false, features = ["all-types", "bytemuck", "default", "f64", "float-types", "i16", "i32", "i64", "i8", "integer-types", "isize", "mint", "mint-05", "serde", "size-types", "std", "u16", "u32", "u64", "u8", "usize"] }
+gltf = { version = "1.4.1", default-features = false, features = ["base64", "default", "extras", "image", "import", "names", "urlencoding", "utils"] }
+gltf-json = { version = "1.4.1", default-features = false, features = ["default", "extras", "names"] }
 half = { version = "2.7.1", default-features = false, features = ["alloc", "default", "num-traits", "std"] }
 hashbrown = { version = "0.17.1", default-features = false, features = ["default-hasher", "inline-more"] }
 image = { version = "0.25.10", default-features = false, features = ["bmp", "jpeg", "png"] }

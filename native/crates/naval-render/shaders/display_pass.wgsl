@@ -128,15 +128,19 @@ fn scene_radiance(pixel: vec2<i32>) -> vec3<f32> {
     return radiance * exp2(stops * night);
 }
 
-// The dark-adapted eye (2026-10-26): by the moon and the stars the rods see, and they see no colour, so what the night
-// leaves dim comes out a faint cool grey (`NIGHT_GREY`, the moonlit sky and sea of a night photograph Bill gave, where the
-// game's night had been a saturated blue), while light bright enough for the cones keeps its colour: fires, flashes,
-// lamps, a star shell's light close by (`CONES`, log2 of the scene's luminance, over which the grey gives way to colour;
-// the night's lift sets fires and flashes far over the moonlit world). The host's sun brings it in as the twilight
-// falls under a full moon's light (`night_vision.x`), so dusk keeps its colour. Luminance is kept, so the night's lift,
-// the highlights and the eye see the same light.
+// The dark-adapted eye (2026-10-26): by the stars the rods see, and they see no colour, so what the night leaves dim
+// comes out a faint cool grey (`NIGHT_GREY`, the moonlit sky and sea of a night photograph Bill gave, where the game's
+// night had been a saturated blue), while light bright enough for the cones keeps its colour: fires, flashes, lamps, a
+// star shell's light close by (`CONES`, log2 of the scene's luminance, over which the grey gives way to colour; the
+// night's lift sets fires and flashes far over the moonlit world). The grey gives way from the foot of mesopic vision,
+// a thousandth of a candela a square metre (after dark the scene's unit is one), to all colour at a quarter of one,
+// sooner than the eye's (2026-10-29: the moonlit night read black and white): the full moon's sky and sea keep a little
+// of their blue, the starlit night none. The grey takes no more than `RODS_MOST`, so the night is never colourless.
+// The host's sun brings it in as the twilight falls under a full moon's light (`night_vision.x`), so dusk keeps its
+// colour. Luminance is kept, so the night's lift, the highlights and the eye see the same light.
 const NIGHT_GREY: vec3<f32> = vec3<f32>(0.82, 1.03, 1.2);
-const CONES: vec2<f32> = vec2<f32>(-5.5, 1.0);
+const CONES: vec2<f32> = vec2<f32>(-10.0, -2.0);
+const RODS_MOST: f32 = 0.9;
 
 fn night_vision(radiance: vec3<f32>) -> vec3<f32> {
     let rods = params.night_vision.x;
@@ -144,7 +148,7 @@ fn night_vision(radiance: vec3<f32>) -> vec3<f32> {
         return radiance;
     }
     let light = luminance(radiance);
-    let grey = rods * (1.0 - smoothstep(CONES.x, CONES.y, log2(max(light, 1e-12))));
+    let grey = RODS_MOST * rods * (1.0 - smoothstep(CONES.x, CONES.y, log2(max(light, 1e-12))));
     return mix(radiance, light * NIGHT_GREY, grey);
 }
 

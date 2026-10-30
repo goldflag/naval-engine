@@ -26,11 +26,34 @@ pub const SLICK_LIFETIME: f64 = 240.0;
 const MIN_CELLS: f64 = 1.5;
 /// Furthest (m, each axis) the slick's square may centre from the hull.
 const SLICK_REACH: f64 = 0.42 * SLICK_EXTENT;
+/// How far a trail's slick fades in over where it starts ([`Stamp::start`]), in its first stamp's half-widths (its
+/// sides fade over half of one): seen low across the sea from some hundreds of metres, a shorter fade still showed its
+/// pale, stilled water ending at a line.
+const SLICK_START_LENGTH: f64 = 8.0;
+/// Where the start has faded the slick out, astern of its first stamp's centre, in the stamp's half-lengths: about
+/// where its coverage thins past the calm's threshold (`WakeShading::slick_full`), less [`SLICK_START_INSIDE`].
+const SLICK_START_OUT: f64 = 0.8;
+/// How far short of [`SLICK_START_OUT`] the start has faded the slick out, in the fade's lengths: where the coverage
+/// thins the band's coordinate has reached the end of its range (`stamps.wgsl`'s `TRACK_RANGE`, 1.3), so the slick's
+/// wandering edge shows there, not its coverage cut along the atlas's texels.
+const SLICK_START_INSIDE: f64 = 0.3;
 /// A box around nothing (finite: shaders compare it).
 pub const EMPTY: [f64; 4] = [1e9, 1e9, -1e9, -1e9];
 /// Atlas tiles per edge, and the trails it holds.
 pub const TILES: usize = 8;
 pub const ATLAS_CAPACITY: usize = TILES * TILES;
+
+/// A slick stamp's half-width and half-length (m) for a sample `age` seconds old, laid at `speed`: it spreads as the
+/// water it stilled is left behind.
+fn slick_extent(tuning: &WakeTuning, beam: f64, cell: f64, age: f64, speed: f64) -> (f64, f64) {
+    let run = age * speed.abs();
+    let spread = (run / beam).sqrt();
+    let width = (beam * (tuning.slick_width + tuning.slick_spread * spread)).max(cell);
+    (
+        width,
+        (SLICK_EVERY as f64 * SAMPLE_DISTANCE).max(width * 0.5),
+    )
+}
 
 fn smooth(value: f64) -> f64 {
     let t = value.clamp(0.0, 1.0);
@@ -181,10 +204,17 @@ pub struct Stamp {
     /// band's centreline and its own half-width. [`NO_BAND`] for stamps that belong to no band (splash rings, torpedo
     /// tracks).
     pub across: [f64; 2],
+    /// How far behind her trail's start a slick stamp near it lies along her trail, in the fade's lengths from where it
+    /// begins: at its centre and per its own half-length astern. A point reads as lying that much further off the
+    /// band's centreline, so the slick fades in at its start as it fades out across its sides. [`NO_START`] for every
+    /// other stamp.
+    pub start: [f64; 2],
 }
 
 /// [`Stamp::across`] of a stamp outside any band.
 pub const NO_BAND: [f64; 2] = [0.0, 0.0];
+/// [`Stamp::start`] of a stamp its trail's start does not reach.
+pub const NO_START: [f64; 2] = [0.0, 0.0];
 
 /// The last rasterisation of one tile (`WakeStampCollector`): its stamps and where each channel's square sits.
 #[derive(Clone, Debug)]
@@ -262,6 +292,9 @@ pub struct WakeFoam {
     /// Where the hull stands while she lays her trail, and how fast she turns there (rad/s): the band's head, painted
     /// at every rasterisation so it keeps up with her stern between samples.
     head: Option<(Motion, f64)>,
+    /// Whether the slick's oldest sample is the first her trail laid (where the wakes first took her, or after a jump):
+    /// its start fades in ([`Stamp::start`]) until that sample retires.
+    slick_start: bool,
     sample_distance: f64,
     sample_count: u64,
     elapsed: f64,
@@ -292,6 +325,7 @@ impl WakeFoam {
             impacts: Default::default(),
             previous: None,
             head: None,
+            slick_start: true,
             sample_distance: 0.0,
             sample_count: 0,
             elapsed: 0.0,
@@ -383,6 +417,7 @@ impl WakeFoam {
             .is_some_and(|&i| self.time - self.history[i].born > SLICK_LIFETIME)
         {
             self.slick_samples.pop_front();
+            self.slick_start = false;
         }
         while self
             .impacts
@@ -556,6 +591,7 @@ impl WakeFoam {
         self.impacts.clear();
         self.previous = None;
         self.head = None;
+        self.slick_start = true;
         self.sample_distance = 0.0;
         self.sample_count = 0;
         self.collector.clear();
@@ -601,6 +637,7 @@ impl WakeFoam {
                 false,
                 0,
                 NO_BAND,
+                NO_START,
             );
             self.stamp(
                 impact.x,
@@ -613,6 +650,7 @@ impl WakeFoam {
                 true,
                 0,
                 NO_BAND,
+                NO_START,
             );
         }
         self.impact_room = impacts;
@@ -701,10 +739,30 @@ impl WakeFoam {
                     ring: false,
                     channel: 0,
                     across: [side * 0.35, half / width],
+                    start: NO_START,
                 });
             }
         }
-        let slick = |sample: &mut WakeSample| {
+        let extent = |sample: &WakeSample| {
+            slick_extent(&tuning, beam, slick_cell, now - sample.born, sample.speed)
+        };
+        // Her trail's start: there her slick, at its oldest and widest under thinned churned water, stood out as a
+        // pale slab of stilled water, ended by its first stamp's coverage thresholded over the atlas's texels. Over its
+        // first stretch each slick stamp says how far behind the start a point lies along her trail (`Stamp::start`),
+        // so the slick fades in there as its sides fade across it, over [`SLICK_START_LENGTH`] of the first stamp's
+        // half-widths. The fade's length (m), where it has faded the slick out (m along her trail from the first
+        // stamp's centre) and the farthest along her trail a stamp's quad can still reach back into it.
+        let fade = self
+            .slick_samples
+            .front()
+            .filter(|_| self.slick_start)
+            .map(|&i| {
+                let (width, length) = extent(&self.history[i]);
+                let along = SLICK_START_LENGTH * width;
+                let out = SLICK_START_INSIDE * along - SLICK_START_OUT * length;
+                (along, out, out + along + 2.0 * length + slick_cell)
+            });
+        let slick = |sample: &mut WakeSample, path: Option<f64>| {
             let age = now - sample.born;
             if sample.slick_power != tuning.slick_power {
                 sample.slick =
@@ -719,34 +777,59 @@ impl WakeFoam {
             }
             let right_x = -sample.forward_z;
             let right_z = sample.forward_x;
-            let run = age * sample.speed.abs();
-            let spread = (run / beam).sqrt();
-            let width =
-                (beam * (tuning.slick_width + tuning.slick_spread * spread)).max(slick_cell);
+            let (width, length) = extent(sample);
+            // How far behind the start (in the fade's lengths) the stamp's centre lies, and per its half-length astern
+            // (toward the start, unless she was going astern), where its quad can reach back into the fade
+            // (`stamps::paint` grows it at most a quarter of its length, 4.5 m and a texel).
+            let start = match (fade, path) {
+                (Some((along, out, _)), Some(path))
+                    if path < out + along + 2.0 * length + slick_cell =>
+                {
+                    let astern = if sample.speed < 0.0 { -length } else { length };
+                    [1.0 + (out - path) / along, astern / along]
+                }
+                _ => NO_START,
+            };
             Some(Stamp {
                 x: sample.trail_x,
                 z: sample.trail_z,
                 right_x,
                 right_z,
                 width,
-                length: (SLICK_EVERY as f64 * SAMPLE_DISTANCE).max(width * 0.5),
+                length,
                 strength,
                 ring: false,
                 channel: 1,
                 across: [0.0, 1.0],
+                start,
             })
         };
+        // How far along her trail from its first sample each slick sample lies, while the fade can reach it.
+        let mut path = fade.map(|_| 0.0);
+        let mut last: Option<[f64; 2]> = None;
+        let mut along_trail = |sample: &WakeSample| {
+            let here = [sample.trail_x, sample.trail_z];
+            if let (Some(path), Some(last)) = (path.as_mut(), last) {
+                *path += (here[0] - last[0]).hypot(here[1] - last[1]);
+            }
+            last = Some(here);
+            path = path.filter(|&path| fade.is_some_and(|(.., reach)| path <= reach));
+            path
+        };
         for &i in &self.slick_samples {
-            stamps.extend(slick(&mut self.history[i]));
+            let sample = &mut self.history[i];
+            let path = along_trail(sample);
+            stamps.extend(slick(sample, path));
         }
         // The slick's samples lie further apart still: its head keeps up with the hull too.
         if let Some(head) = head.as_mut() {
-            stamps.extend(slick(head));
+            let path = along_trail(head);
+            stamps.extend(slick(head, path));
         }
         for s in stamps.drain(..) {
             self.stamp(
                 s.x, s.z, s.right_x, s.right_z, s.width, s.length, s.strength, s.ring, s.channel,
-                s.across,
+                s.across, s.start,
             );
         }
         self.stamp_room = stamps;
@@ -765,6 +848,7 @@ impl WakeFoam {
         ring: bool,
         channel: u8,
         across: [f64; 2],
+        start: [f64; 2],
     ) {
         if strength < 0.015 {
             return;
@@ -795,6 +879,7 @@ impl WakeFoam {
             ring,
             channel,
             across,
+            start,
         });
         self.collector.version += 1;
     }
@@ -1523,6 +1608,153 @@ mod tests {
                 }
             })
             .fold(0.0, f64::max)
+    }
+
+    /// The slick's coverage at a world point and where it lies across the slick there (its trail's start counted in),
+    /// as `stamps.wgsl` paints them before the atlas's texels; and whether a stamp reaching it fades it for the start,
+    /// and whether one the start does not reach also reaches it. A stamp says where the point lies as far as its quad
+    /// can reach (`stamps::paint`: at most a quarter of its extent, 4.5 m and a texel past it).
+    fn slick_at(collector: &StampCollector, texel: f64, x: f64, z: f64) -> (f64, f64, bool, bool) {
+        let mut coverage: f64 = 0.0;
+        let mut off: f64 = TRACK_RANGE;
+        let (mut fades, mut unfaded) = (false, false);
+        for s in collector.stamps.iter().filter(|s| s.channel == 1) {
+            let (dx, dz) = (x - s.x, z - s.z);
+            let across = (dx * s.right_x + dz * s.right_z) / s.width;
+            let along = (-dx * s.right_z + dz * s.right_x) / s.length;
+            let radius = across * across + along * along;
+            if radius < 1.0 {
+                coverage = coverage.max((1.0 - smooth(radius)) * s.strength);
+            }
+            let grown = |extent: f64| extent * 1.25 + 4.5 + texel;
+            let (ga, gl) = (
+                across * s.width / grown(s.width),
+                along * s.length / grown(s.length),
+            );
+            if ga * ga + gl * gl < 1.0 {
+                let behind = (s.start[0] + s.start[1] * along).max(0.0);
+                off = off.min(across.abs().hypot(behind));
+                fades |= behind > 0.0;
+                unfaded |= s.start == NO_START;
+            }
+        }
+        (coverage, off.min(TRACK_RANGE), fades, unfaded)
+    }
+
+    /// `stamps.wgsl`'s `TRACK_RANGE`: how far off the band's centreline its coordinate reaches.
+    const TRACK_RANGE: f64 = 1.3;
+
+    fn slick_stamps(foam: &WakeFoam) -> Vec<Stamp> {
+        foam.collector
+            .stamps
+            .iter()
+            .filter(|s| s.channel == 1)
+            .copied()
+            .collect()
+    }
+
+    #[test]
+    fn the_slick_fades_in_where_her_trail_starts() {
+        // A battleship put on the sea already under way, heading toward −z: her trail lies toward +z.
+        let resolution = 256;
+        let texel = SLICK_EXTENT / f64::from(resolution);
+        let mut foam = WakeFoam::new(resolution, bismarck());
+        let speed = 15.0;
+        for i in 0..=300 {
+            let t = f64::from(i) / 10.0;
+            foam.update(
+                Motion {
+                    x: 0.0,
+                    z: -t * speed,
+                    heading: 0.0,
+                    speed,
+                },
+                0.1,
+                0.05,
+            );
+        }
+        let slick = slick_stamps(&foam);
+        let first = slick[0];
+        // Her first stretch carries the start, and only it.
+        let carried = slick.iter().take_while(|s| s.start != NO_START).count();
+        assert!(
+            carried > 1 && slick[carried..].iter().all(|s| s.start == NO_START),
+            "{carried} of {} slick stamps",
+            slick.len()
+        );
+        let length = SLICK_START_LENGTH * first.width;
+        let (mut thinning, mut fading) = (0, 0.0);
+        for j in -(1.4 * length) as i32..=(2.0 * first.length) as i32 {
+            for i in -60..=60 {
+                let across = f64::from(i) * 0.02 * first.width;
+                let astern = f64::from(j);
+                let (coverage, off, fades, unfaded) =
+                    slick_at(&foam.collector, texel, first.x + across, first.z + astern);
+                // Every stamp reaching a point the start fades carries it: the atlas keeps the most central reading.
+                assert!(!(fades && unfaded), "{across} m across, {astern} m astern");
+                // Where the first stamp's coverage thins past the calm's threshold astern of the start, the slick has
+                // faded out by the coordinate, as at its sides (`wake.wgsl`: out at 1), even where its edge wanders in
+                // by a sixth.
+                if astern >= 0.0
+                    && across.abs() <= 0.7 * first.width
+                    && coverage > 0.0
+                    && coverage < 0.15
+                {
+                    assert!(
+                        off >= 1.2,
+                        "{off} at {across} m across, {astern} m astern ({coverage})"
+                    );
+                    thinning += 1;
+                }
+                if i == 0 && off > 0.45 && off < 1.0 {
+                    fading += 1.0;
+                }
+            }
+        }
+        assert!(
+            thinning > 100,
+            "{thinning} points on the first stamp's thinning coverage"
+        );
+        // Down her centreline the start fades in over some four of her slick's half-widths; its sides over half of one.
+        assert!(
+            fading > 4.0 * first.width && fading < 5.0 * first.width,
+            "{fading} m to fade in, {} m half-width",
+            first.width
+        );
+    }
+
+    #[test]
+    fn a_later_pass_over_her_start_lays_a_new_slick() {
+        // A battleship put on the sea already under way, steaming a circle to starboard 600 m across.
+        let mut foam = WakeFoam::new(256, bismarck());
+        let (speed, radius) = (15.0, 300.0);
+        let turn = speed / radius;
+        let run = |foam: &mut WakeFoam, from: u32, to: u32, offset: f64| {
+            for i in from..=to {
+                let t = f64::from(i) / 10.0;
+                let motion = Motion {
+                    x: radius * (1.0 - (turn * t).cos()) + offset,
+                    z: -radius * (turn * t).sin(),
+                    heading: turn * t,
+                    speed,
+                };
+                foam.update(motion, 0.1, 0.05);
+            }
+        };
+        // Two minutes on she passes over her start again: her new slick there is not faded, her first stretch is.
+        run(&mut foam, 0, 1400, 0.0);
+        let slick = slick_stamps(&foam);
+        let first = slick[0];
+        let over = |s: &&Stamp| (s.x - first.x).hypot(s.z - first.z) < 60.0;
+        let carried = slick.iter().take_while(|s| s.start != NO_START).count();
+        assert!(carried > 1 && slick[carried..].iter().all(|s| s.start == NO_START));
+        let new = slick[carried..].iter().filter(over).count();
+        assert!(new > 3, "{new} new slick stamps over her start");
+        // Once her first slick sample retires the start fades no more; a jump starts a new trail, whose start fades in.
+        run(&mut foam, 1401, 2500, 0.0);
+        assert!(slick_stamps(&foam).iter().all(|s| s.start == NO_START));
+        run(&mut foam, 2501, 2700, 5000.0);
+        assert_ne!(slick_stamps(&foam)[0].start, NO_START);
     }
 
     #[test]

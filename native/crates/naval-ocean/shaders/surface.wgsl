@@ -702,11 +702,13 @@ fn fragment(input: VertexOut, @builtin(front_facing) front: bool) -> @location(0
 #else
     let water = mix(bubble_cloud(body, aerated, foam_light, absorption), reflected, aerated_reflectance(reflectance, aerated));
 #endif
-    // The light through the waves leaves through the surface (what it does not reflect) and across into air.
+    // The light through the waves leaves through the surface (what it does not reflect) and across into air; the
+    // churned water heaped against a hull under way gives little of it back (`froth`).
     let swell = sample.swell_slope - wake.normal.xz / max(wake.normal.y, 0.05);
     let swell_up = normalize(vec3<f32>(-swell.x, 1.0, -swell.y));
     let through = wave_light(view, swell_up, sun_direction, sun_radiance, daylight * contact.sky_share, beam, absorption,
-        height, sample.swell_jacobian, aerated, footprint) * ((1.0 - reflectance) / REFRACTION_SQUARED);
+        height, sample.swell_jacobian, aerated, footprint) * ((1.0 - reflectance) / REFRACTION_SQUARED)
+        * (1.0 - wake.froth);
 #ifdef OIL
     var above = water + through * film.through + glint * beam * film.reflect;
 #else

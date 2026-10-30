@@ -42,6 +42,20 @@ pub fn curved(eye: Vec3, curvature: f32, world: Vec3) -> Vec3 {
     Vec3::new(world.x, world.y - curvature * (dx * dx + dz * dz), world.z)
 }
 
+/// A point given less the eye's position (the eye at full precision) to clip space, as `naval::camera::eye_to_clip`
+/// draws it: curved about the eye, turned by the view alone and projected. Past 16 km from the world's origin an f32
+/// world point steps by 2 mm and `view_projection * curved(world)` cancels kilometres against kilometres, which shakes
+/// a body seen from a few metres by pixels; a layer that keeps its positions about the eye draws them through this.
+pub fn eye_to_clip(camera: &CameraUniforms, offset: Vec3) -> glam::Vec4 {
+    let drawn = Vec3::new(
+        offset.x,
+        offset.y - camera.curvature * (offset.x * offset.x + offset.z * offset.z),
+        offset.z,
+    );
+    let turn = glam::Mat3::from_mat4(Mat4::from_cols_array(&camera.view));
+    Mat4::from_cols_array(&camera.projection) * (turn * drawn).extend(1.0)
+}
+
 /// [`curved`] in doubles, for the presentation's and the contract's world points.
 pub fn curved_f64(eye: glam::DVec3, curvature: f64, world: glam::DVec3) -> glam::DVec3 {
     let (dx, dz) = (world.x - eye.x, world.z - eye.z);
@@ -112,6 +126,19 @@ impl Camera {
     /// World to view. Like three's `Matrix4.lookAt`, a view straight along the
     /// up axis is nudged rather than left degenerate.
     pub fn view(&self) -> Mat4 {
+        let (forward, up) = self.looking();
+        glam::camera::rh::view::look_to_mat4(self.eye, forward, up)
+    }
+
+    /// World to view about the eye: [`Self::view`] without its translation, for a point given less the eye's position
+    /// (see [`eye_to_clip`]). Its turn is the same to the bit.
+    pub fn view_about_eye(&self) -> Mat4 {
+        let (forward, up) = self.looking();
+        glam::camera::rh::view::look_to_mat4(Vec3::ZERO, forward, up)
+    }
+
+    /// The unit direction the camera looks and the up it levels on.
+    fn looking(&self) -> (Vec3, Vec3) {
         let mut forward = self.target - self.eye;
         if forward.length_squared() < 1e-12 {
             forward = Vec3::NEG_Z;
@@ -124,7 +151,7 @@ impl Camera {
         } else {
             Vec3::Y
         };
-        glam::camera::rh::view::look_to_mat4(self.eye, forward, up)
+        (forward, up)
     }
 
     /// View to clip with reversed depth; see [`reversed_perspective`].
@@ -309,9 +336,17 @@ pub struct CameraMotion {
     /// The sub-pixel offset the camera's projection carries, in pixels (0 without temporal AA).
     pub jitter: [f32; 2],
     pub padding: [f32; 2],
+    /// [`Self::previous_view_projection`] for a point given less this frame's eye (the camera's own, as temporal AA's
+    /// resolve reprojects about it): the previous frame's projection times its turn, moved by the eye's step since,
+    /// taken in doubles.
+    pub previous_from_eye: [f32; 16],
+    /// The full-precision eye's step since the previous frame (`PrepareContext::eye`) less the camera's own eye's,
+    /// metres (xyz; millimetres at most). A layer that keeps its positions less the full-precision eye takes its
+    /// motion through `naval::motion::surface_motion_from_eye`, which adds it to the previous positions.
+    pub precise_step: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<CameraMotion>() == 144);
+const _: () = assert!(std::mem::size_of::<CameraMotion>() == 224);
 
 impl CameraUniforms {
     /// A block from explicit matrices (the sun's orthographic shadow cameras, a

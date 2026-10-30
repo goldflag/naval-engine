@@ -96,6 +96,34 @@ ping-pong every frame, so the hulls do not bind the field. The ocean evaluates t
   (`ShipLayer::set_sea_heights`); each frame the coupling places them, the band's crest follows the bow waves, and the
   band reads them only while the ocean is drawn (`ShipRenderer::read_sea_heights`; the layer switch off keeps them
   stale, so the flat sea then).
+- **The sides' memory** (`naval_ocean::hull_sides`, `hull_heights.wgsl`'s `sides_main`; native only, 2026-10-29): the
+  band followed the water as it stands, so a side dried the instant a crest fell back. The heights' pass also keeps,
+  for each hull it is handed (the nearest 16 to the camera, by her id: hers while she stays among them; a new hull, or
+  one that moved over 25 m or turned over 0.5 rad between two frames, starts dry), at 128 stations from her stem aft
+  over her design waterline on each side: where the water stands up her side now (the drawn sea, `drawn_height_at` +
+  `wake_height`, where her side meets her design waterline, taken into her frame up her side), the highest it has
+  lately climbed (dried downward at 0.12 m/s: a crest's metre stays wet some eight seconds) and the slap (its rise,
+  eased over 0.1 s; the fastest lately, fading over 2.5 s; m/s). It steps by the sea's own step (`dt × time_scale`), 0
+  in a second view and while paused, so a held picture stands. The history is the pass's own storage buffer (a vec4 per
+  slot, side and station: now, climb, slap, rise; `HullHeights::side_state`), copied each frame into the heights' last
+  layer (layer 16; texel (station + 128 × side, 4 × slot + channel), side 0 port; `SideChannel`). The ships know a hull
+  by her drawn origin (`SeaPatches.sides`: her pose's origin as the ocean took it, within 0.5 m) and read the climb at
+  their station and side (`side_climb`): plating below it stays wet (`remembered_wetness`) as damp paint (0.65 of the
+  band's darkening and gloss), with the band's own climb above it and the top 0.45 m broken into run-off: narrow tracks
+  of two octaves, each reaching its own height, blurred to their mean where one would fall under three pixels. The live
+  band is unchanged. The client hands `Ocean::set_hull_sides` the same nearest hulls as `set_hull_sea` (id, drawn pose,
+  preset waterline; `BattleEffects::couple_hull_sea`).
+- **The slap's white water** (`hull_foam` in `wake.wgsl`, 2026-10-29): the surface binds `side_state` read-only (group
+  1, binding 17; `OceanSurface::set_hull_sides`, a zeroed placeholder until the heights are enabled). Each frame before
+  the wakes' upload `HullContactFoam::find_sides` writes each contact slot's slap row: her slot in the memory plus one
+  (0: not remembered, nothing read) and how squarely the wind blows onto her starboard side (−1 onto her port side;
+  none under 1–5 m/s of wind). The fragment reads the slap at its station and side, between the two nearest stations.
+  Where the water has just rushed up her side, white water lies against her plating: none below 0.2 m/s and full from
+  0.8 at rest, 0.7 m/s higher for a hull at her full speed (her own heave and pitch keep the water working up her
+  sides); out 0.6 m from the plating at the start and 2 m at full; torn by the contact line's eddies into patches a
+  metre or two across that thin as it fades (at most 0.6 cover); her lee side half as white; the water it whitens holds
+  a little air (bubbles 0.12 of it). The slap fades over 2.5 s, so a crest's white water lasts two to four seconds. The
+  gains come from the slap measured in the client (the history's "The slap measured").
 
 Bound against the defaults, the ship fragment stage now holds 13 of 16 sampled textures and 8 of 12 uniform buffers
 (CORE_SHADOWS), so the field's own bindings (three more textures, two samplers, three uniforms and a 40 kB wake block)
@@ -103,9 +131,13 @@ were not needed.
 
 Checks: `naval-ocean/tests/hull_heights.rs` (a flat field and calm wake: every patch texel holds the CPU's
 `coupled_height` at its world point within 5 mm, two hulls, one partly in contact, at full resolution and thinned
-for a camera 6 km off; the unit tests cover the view test and the thinning) and `naval-ships/tests/sea_heights.rs`
-(a patch at the mean sea draws the flat band, a sea 3 m higher wets the hull 3 m higher, unread heights give the flat
-sea back).
+for a camera 6 km off; the unit tests cover the view test and the thinning), `naval-ocean/tests/hull_sides.rs` (a
+long sea past a hull at rest: the water up her side follows the drawn sea within 2 cm, the climb holds as it falls and
+dries at the rate, the slap shows while it rises and only fades while it falls, a paused frame holds every channel, the
+ships' copy is the history, a new hull in the slot starts dry; the unit tests cover the slots, a jump and her pose and
+stations) and `naval-ships/tests/sea_heights.rs` (a patch at the mean sea draws the flat band, a sea 3 m higher wets
+the hull 3 m higher, a remembered climb of 2.5 m keeps her wet above the band and one at the water adds nothing,
+unread heights give the flat sea back).
 
 Against the web (`compare.sh` with `LANE=wet-band`, `.build/native/wet-band/stills/`: web | master | branch, crops
 `*-crop3.png` web, master, branch and |master − branch| × 4):
@@ -431,9 +463,17 @@ the port; stills, a sheet, frame cost and the resume's steps and ticks in `.buil
 ## What is left
 
 - **The wet band beyond the patches**: a hull past the nearest 16 to the camera reads the flat sea (her band is a pixel
-  or two by then); the patches smooth away waves shorter than two texels (centimetres high). The band, like the web's,
-  follows the water as it stands: no memory of where it has just been (the web's bow spray wetness, `ShipWeather.spray`,
-  which does dry over seconds, is not ported).
+  or two by then) and keeps no memory of her sides (one that comes back among them starts dry); the patches smooth away
+  waves shorter than two texels (centimetres high). The web's bow spray wetness (`ShipWeather.spray`) is not ported:
+  the sides' memory keeps only where the water itself climbed.
+- **The slap's spray**: a hard slap whitens the water against her plating but throws nothing up her side; the water
+  spray pool (`PoolKind::Water`) could take its bursts from the same slap rows.
+- **The slap's windward side** follows the wind the sea is drawn with: a swell from another bearing slaps both sides
+  alike. Only the hulls with both a contact slot (the nearest 8, under way first) and a remembered side (the nearest
+  16) draw it.
+- **A fast hull's climbing water** still reads turquoise in low views at noon: the froth takes back the light through
+  the waves (`wave_light`) against her side, but most of that colour is her hull seen through the raised water (the
+  see-through, `surface.wgsl`'s column and body, lane `goldflag/hull-see-through-refraction`).
 - ~~**Fog on aircraft and effects**~~ (superseded: they take the aerial perspective, `haze.md`) still read the environment's sharpest level: switch them to `env_fog` (one line
   each, their lanes).
 - **Under water**, the aim overlay drawn after the composite is not fogged (the sky's shafts and veil, which ran

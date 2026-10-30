@@ -311,6 +311,7 @@ impl TorpedoTracks {
                 ring: false,
                 channel: 0,
                 across: crate::trail::NO_BAND,
+                start: crate::trail::NO_START,
             });
             count += 1;
         }

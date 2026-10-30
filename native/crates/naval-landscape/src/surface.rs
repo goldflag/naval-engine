@@ -2094,6 +2094,158 @@ pub fn cache() -> &'static Cache {
     &streamer().cache
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// WorldCover at full resolution over a small box (the GLO-30 relief's cover mask, `relief_glo30`).
+
+/// WorldCover's classes (10 m pixels, its full raster) over a box: [`cover::UNKNOWN`] where it has no tile.
+pub struct CoverPatch {
+    first: [i64; 2],
+    width: usize,
+    height: usize,
+    classes: Vec<u8>,
+}
+
+impl CoverPatch {
+    /// The class of the pixel holding (`lat`, `lon`), longitude unwrapped as the box's; unknown outside the box.
+    pub fn class_at(&self, lat: f64, lon: f64) -> u8 {
+        let p = cover_px(lat, lon, 0);
+        let (x, y) = (
+            p[0].floor() as i64 - self.first[0],
+            p[1].floor() as i64 - self.first[1],
+        );
+        if x < 0 || y < 0 || x >= self.width as i64 || y >= self.height as i64 {
+            return cover::UNKNOWN;
+        }
+        self.classes[y as usize * self.width + x as usize]
+    }
+}
+
+/// Full-resolution WorldCover tiles decoded, the most recently used last (a page reads one to four).
+static COVER_TILES: Mutex<Vec<([i64; 2], Option<Arc<Vec<u8>>>)>> = Mutex::new(Vec::new());
+const COVER_TILES_KEPT: usize = 12;
+
+/// WorldCover's full-resolution classes over `south..north` × `west..east` (degrees, longitude unwrapped), its headers
+/// and tiles fetched into the cache where it lacks them.
+pub fn cover_patch(south: f64, north: f64, west: f64, east: f64) -> Result<CoverPatch, FetchError> {
+    let cache = cache();
+    let (lo, hi) = (cover_px(north, west, 0), cover_px(south, east, 0));
+    let first = [lo[0].floor() as i64, lo[1].floor() as i64];
+    let last = [hi[0].floor() as i64, hi[1].floor() as i64];
+    let side = cover_side(0);
+    let per = cover_tiles_per_side(0);
+    let global = |p: i64| p.div_euclid(side) * per + p.rem_euclid(side) / COVER_TILE_PX;
+    let mut tiles = Vec::new();
+    for gy in global(first[1])..=global(last[1]) {
+        for gx in global(first[0])..=global(last[0]) {
+            tiles.push([gx, gy]);
+        }
+    }
+    let place = |g: [i64; 2]| {
+        let (sq, tile) = cover_tile_place(g[0], g[1], 0);
+        (
+            cover_square_at(sq[0], sq[1]),
+            (tile[1] * per + tile[0]) as usize,
+        )
+    };
+    // The headers, then the tiles the cache lacks.
+    let squares: BTreeSet<String> = tiles.iter().map(|&g| place(g).0).collect();
+    let wanted: Vec<Resource> = squares
+        .iter()
+        .map(|s| Resource::CoverHeader { square: s.clone() })
+        .filter(|r| !cache.holds(r))
+        .collect();
+    fetch_list(cache, &wanted, &HashMap::new(), &|_, _| {})?;
+    let headers: HashMap<String, Cog> = squares
+        .iter()
+        .filter_map(|s| {
+            let cog = cache.header(s).filter(|c| header_fits(c, s, 0))?;
+            Some((s.clone(), cog))
+        })
+        .collect();
+    let resource = |g: [i64; 2]| {
+        let (square, index) = place(g);
+        headers
+            .contains_key(&square)
+            .then_some(Resource::CoverTile {
+                square,
+                level: 0,
+                index,
+            })
+    };
+    let wanted: Vec<Resource> = tiles
+        .iter()
+        .filter_map(|&g| resource(g))
+        .filter(|r| !cache.holds(r))
+        .collect();
+    fetch_list(cache, &wanted, &headers, &|_, _| {})?;
+    // Each tile decoded (or kept from before), its pixels in the box copied out.
+    let (width, height) = (
+        (last[0] - first[0] + 1) as usize,
+        (last[1] - first[1] + 1) as usize,
+    );
+    let mut classes = vec![cover::UNKNOWN; width * height];
+    for &g in &tiles {
+        let kept = {
+            let mut kept = COVER_TILES.lock().unwrap_or_else(|e| e.into_inner());
+            kept.iter().position(|(k, _)| *k == g).map(|at| {
+                let entry = kept.remove(at);
+                let tile = entry.1.clone();
+                kept.push(entry);
+                tile
+            })
+        };
+        let tile = match kept {
+            Some(tile) => tile,
+            None => {
+                let tile = resource(g).and_then(|r| {
+                    let Resource::CoverTile { square, .. } = &r else {
+                        return None;
+                    };
+                    let stored = cache.read(&r)??;
+                    decode_cog_tile(&headers[square].levels[0], &stored)
+                        .ok()
+                        .map(Arc::new)
+                });
+                let mut kept = COVER_TILES.lock().unwrap_or_else(|e| e.into_inner());
+                kept.push((g, tile.clone()));
+                if kept.len() > COVER_TILES_KEPT {
+                    kept.remove(0);
+                }
+                tile
+            }
+        };
+        let Some(tile) = tile else {
+            continue;
+        };
+        // The tile's global pixels: its square's corner plus its place in the square.
+        let (sq, t) = cover_tile_place(g[0], g[1], 0);
+        let origin = [
+            sq[0] * side + t[0] * COVER_TILE_PX,
+            sq[1] * side + t[1] * COVER_TILE_PX,
+        ];
+        let tile_side = COVER_TILE_PX.min(side - t[0] * COVER_TILE_PX);
+        let tile_rows = COVER_TILE_PX.min(side - t[1] * COVER_TILE_PX);
+        let x0 = first[0].max(origin[0]);
+        let x1 = last[0].min(origin[0] + tile_side - 1);
+        let y0 = first[1].max(origin[1]);
+        let y1 = last[1].min(origin[1] + tile_rows - 1);
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                let k = ((y - origin[1]) * COVER_TILE_PX + (x - origin[0])) as usize;
+                if let Some(&c) = tile.get(k) {
+                    classes[(y - first[1]) as usize * width + (x - first[0]) as usize] = c;
+                }
+            }
+        }
+    }
+    Ok(CoverPatch {
+        first,
+        width,
+        height,
+        classes,
+    })
+}
+
 #[cfg(test)]
 #[path = "surface_tests.rs"]
 mod tests;

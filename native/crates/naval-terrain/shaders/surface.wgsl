@@ -21,7 +21,7 @@
 // `materials.wgsl`'s `cliff_rock`): coloured, blotched, streaked and bedded by height, its material read face on.
 #define_import_path naval_terrain::surface
 
-#import naval_terrain::bindings::{terrain, gradients, field_uv, relief_at, noise_tile, detail_tile, repeat_sampler, clamp_sampler, surface_albedo, surface_cover, surface_uv, surface_bound, country_test_mark}
+#import naval_terrain::bindings::{terrain, gradients, field_uv, relief_real_share, noise_tile, detail_tile, repeat_sampler, clamp_sampler, surface_albedo, surface_cover, surface_uv, surface_bound, country_test_mark}
 #import naval_terrain::features::{FeatureSite, feature_cover, feature_clearance}
 #import naval_terrain::hex::{HexTaps, hex_taps, hex_blend, corner_offset, corner_offset_fast}
 #import naval::math::modulo
@@ -2938,7 +2938,8 @@ fn terrain_surface(inputs_in: SurfaceInputs, features_at: FeatureSite) -> Surfac
     // cover, the snow, the rock faces), and the land's normal takes the steps (`out.slope`). Bare: the cover's bare
     // ground, and its grass, moss and lichen within 400-700 m of the snowline (the window's cover has the two in one
     // class), `exposed`; the steps also through shrubs and on steep grass, never through woods, fields, towns, snow and
-    // ice or water, nor where the land's own fine relief is drawn (`relief_at`: it has the real steps).
+    // ice or water, nor where a finer model's fine relief is drawn (`relief_real_share`: it has the real steps; a
+    // synthetic or GLO-30's page has none, so the beds stand under it).
     var place_rock: CliffRock;
     let unstepped = inputs.gradient;
     var steps = flat_steps(height, g.slope);
@@ -2957,7 +2958,7 @@ fn terrain_surface(inputs_in: SurfaceInputs, features_at: FeatureSite) -> Surfac
         }
         var weight = ramp(0.5, 0.75, place_rock.strata) * ramp(0.25, 0.45, g.slope) * clamp(open, 0.0, 1.0);
         if weight > 0.0 {
-            weight *= 1.0 - relief_at(inputs.chart).share;
+            weight *= 1.0 - relief_real_share(inputs.chart);
             let level = strata_level(height, g, place_rock.bed_m, strata_dip(inputs));
             let level_px = length(vec2<f32>(dot(unstepped, inputs.chart_dx), dot(unstepped, inputs.chart_dy)));
             steps = stepped(level, level_px, g.slope, g.grain, weight);

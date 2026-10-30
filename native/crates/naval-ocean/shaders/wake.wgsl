@@ -4,9 +4,9 @@
 // (the web game's `FleetWakeFoam.ts`, `evaluate`), the torpedo tracks (`TorpedoTrackFoam.ts`, `sample`) and the hull
 // contact foam (the web game's `HullContactFoam.ts`, `evaluate`).
 //
-// Its bindings join the surface's own group 1 (bindings 5–10): the surface already uses the four bind groups WebGPU
-// guarantees (camera, surface, waves, sky). One uniform buffer packs every system's arrays (the removed web game's
-// `PackedVec4Arrays` layout, which kept them under its per-stage uniform buffer limit).
+// Its bindings join the surface's own group 1 (bindings 5–10, and 17 for the contact foam's slap): the surface already
+// uses the four bind groups WebGPU guarantees (camera, surface, waves, sky). One uniform buffer packs every system's
+// arrays (the removed web game's `PackedVec4Arrays` layout, which kept them under its per-stage uniform buffer limit).
 
 #define_import_path naval_ocean::wake
 
@@ -25,8 +25,9 @@ const PROFILE_STATIONS: i32 = 32;
 const PROFILE_LEVELS: i32 = 7;
 const PROFILE_LEVEL_STEP: f32 = 2.0;
 const PROFILE_LOWEST: f32 = -6.0;
-const HULL_PROFILE: i32 = 7;
-const HULL_STRIDE: i32 = 263;
+const HULL_SLAP: i32 = 7;
+const HULL_PROFILE: i32 = 8;
+const HULL_STRIDE: i32 = 264;
 
 struct Wake {
     // The wake field's display textures: origin of display 0 (xy) and 1 (zw); weights, world size; w: how fast the
@@ -51,7 +52,7 @@ struct Wake {
     tiles: array<vec4<f32>, 320>,
     // Bow wave slots, section-major: pose, wave, hull, bend, entrance, course, stern.
     bow_slots: array<vec4<f32>, 56>,
-    hull_data: array<vec4<f32>, 2104>,
+    hull_data: array<vec4<f32>, 2112>,
     // The oil slicks (naval_ocean::oil, src/oil.rs): x slots in use, y and z the edges (m) of each slick's fine and
     // wide squares.
     oil: vec4<f32>,
@@ -93,6 +94,10 @@ fn mesh_spacing(xz: vec2<f32>) -> f32 {
 @group(1) @binding(8) var wake_sampler: sampler;
 @group(1) @binding(9) var trail_atlas: texture_2d<f32>;
 @group(1) @binding(10) var torpedo_field: texture_2d<f32>;
+// The water's memory against the remembered hulls' sides (`naval_ocean::hull_sides`, the heights' pass's own): per
+// slot, side (port, starboard) and station from her stem aft, (now, climb, slap, rise). A contact slot's slap row names
+// her slot in it; read by the fragment stage alone (`side_slap`).
+@group(1) @binding(17) var<storage, read> hull_side_state: array<vec4<f32>>;
 
 // ---- The wake field -------------------------------------------------------------------------------------------------
 
@@ -960,18 +965,66 @@ fn torpedo_foam(at: vec2<f32>) -> f32 {
 
 // ---- Hull contact foam ---------------------------------------------------------------------------------------------
 
+// The contact line and the side wash start at the plating: full against it and falling away outboard over these many
+// of their widths, so each reaches half strength about as far out as when it peaked a third (the line) and a half (the
+// wash) of a width from the side and left darker water between.
+const LINE_SPREAD: f32 = 1.3;
+const WASH_SPREAD: f32 = 1.6;
+// The slap: white water where the sides' memory says the water has just rushed up a hull's side (its slap, m/s), none
+// below SLAP_START and full from SLAP_FULL. The sea at rest in a 12 m/s wind rushes up a battleship's side at about
+// 0.3 m/s on the mean, 0.45–0.6 at the tenth highest stations and 0.9–1.2 at the hardest; a destroyer at 16 m/s, whose
+// own heave and pitch keep the water working up her sides, 0.9 on the mean, 1.1–1.8 at the tenth highest and 2–3.5 at
+// the hardest, so a hull under way whitens from SLAP_UNDERWAY m/s higher at her full speed. It lies against her
+// plating, SLAP_REACH metres out at the start and the second at full, torn by the contact line's eddies (SLAP_TEAR)
+// into patches a metre or two across that thin as it fades (at most SLAP_COVER). The side the wind blows onto takes
+// all of it, her lee side SLAP_LEE; the water it whitens holds air (SLAP_BUBBLES). It keeps to her plating: a station
+// with no crossing (beyond her stem and stern) reads a quarter of her half beam inside her centreline, near enough for
+// the slap's reach to cross it, so the slap is gone once the side's breadth falls SLAP_PLATING of her half beam inside
+// her centreline.
+const SLAP_START: f32 = 0.2;
+const SLAP_FULL: f32 = 0.8;
+const SLAP_UNDERWAY: f32 = 0.7;
+const SLAP_REACH: vec2<f32> = vec2<f32>(0.6, 2.0);
+const SLAP_TEAR: f32 = 1.6;
+const SLAP_COVER: f32 = 0.6;
+const SLAP_LEE: f32 = 0.5;
+const SLAP_BUBBLES: f32 = 0.12;
+const SLAP_PLATING: f32 = 0.05;
+// The water climbing a hull under way is churned against her plating and full of air, not glass: out to FROTH_REACH
+// of the wash's width from her side, from her stem to her waist, it holds up to FROTH_BUBBLES of bubbles in streaks
+// (the wash's lace) and takes back FROTH_DIM of the light through the waves (the surface's `wave_light`).
+const FROTH_REACH: f32 = 1.0;
+const FROTH_BUBBLES: f32 = 0.2;
+const FROTH_DIM: f32 = 0.7;
+// Stations along each remembered side (`naval_ocean::hull_sides::SIDE_STATIONS`).
+const MEMORY_STATIONS: u32 = 128u;
+
 struct HullFoamSample {
     contact: f32,
     wash: f32,
     bubbles: f32,
+    // How much of the light through the waves the churned water against a hull under way takes back (0 none, 1 all).
+    froth: f32,
+}
+
+// How hard the water has lately rushed up a remembered hull's side (m/s, the sides' memory's slap): `memory` her slot
+// there, `starboard` the side, `along` the share of her waterline's length aft of her stem; between the two nearest
+// stations.
+fn side_slap(memory: u32, starboard: bool, along: f32) -> f32 {
+    let s = clamp(along * f32(MEMORY_STATIONS) - 0.5, 0.0, f32(MEMORY_STATIONS - 1u));
+    let k = u32(s);
+    let row = (memory * 2u + select(0u, 1u, starboard)) * MEMORY_STATIONS;
+    let next = min(k + 1u, MEMORY_STATIONS - 1u);
+    return mix(hull_side_state[row + k].z, hull_side_state[row + next].z, s - f32(k));
 }
 
 // Foam coverage on the water where hulls meet it. `x`, `z` anchor the noise (the grid point); the hull test reads the
-// fragment's drawn position `world`. `HullContactFoam.evaluate`.
+// fragment's drawn position `world`. `HullContactFoam.evaluate`, with the slap and the froth of a hull under way.
 fn hull_foam(x: f32, z: f32, world: vec3<f32>) -> HullFoamSample {
     var foam = 0.0;
     var wash_foam = 0.0;
     var bubbles = 0.0;
+    var froth = 0.0;
     let point = vec4<f32>(world, 1.0);
     let eye = camera.position.xyz;
     let range = max(length(vec3<f32>(eye.x - x, eye.y, eye.z - z)), 1.0);
@@ -1013,13 +1066,36 @@ fn hull_foam(x: f32, z: f32, world: vec3<f32>) -> HullFoamSample {
         let breadth = mix(mix(below.xy, below.zw, along), mix(above.xy, above.zw, along), rise);
         // Metres outboard of the hull's side on this side of the centreline.
         let edge = select(-lx - breadth.y, lx - breadth.x, lx >= 0.0);
+        let starboard = lx >= 0.0;
+        // Every band is full against the plating and falls away outboard; inside the side, where the profile stands a
+        // little proud of the drawn hull, it fades over 0.6 m.
+        let inside = smoothstep(-0.6, 0.0, edge);
+        let out = max(edge, 0.0);
         let blurred = max(width, finest);
-        let across = (edge - blurred * 0.3) / blurred;
-        let line = exp(-(across * across)) * smoothstep(-0.6, 0.0, edge) * (width / blurred);
+        let across = out / (blurred * LINE_SPREAD);
+        let line = exp(-(across * across)) * inside * (width / blurred);
         let from_bow = max((lz - shape.w) / hull_length, 0.0);
         let strength = drive.x + drive.y * (1.0 - smoothstep(0.0, wake.hull.w, from_bow));
         let white = line * strength;
-        if white > 0.01 {
+        let underway = wake.hull_data[base + 6].z;
+        // The slap: the water has just rushed up her side here (the sides' memory, at her station on this side), and
+        // left white water against her plating, wider the harder it came, more on the side the wind blows onto.
+        let sides = wake.hull_data[base + HULL_SLAP];
+        var slap_white = 0.0;
+        if sides.x > 0.5 {
+            let slap = side_slap(u32(sides.x + 0.5) - 1u, starboard, (lz - shape.w) / hull_length);
+            let start = SLAP_START + SLAP_UNDERWAY * underway;
+            let share = smoothstep(start, start + SLAP_FULL - SLAP_START, slap);
+            let windward = mix(SLAP_LEE, 1.0, smoothstep(-0.5, 0.5, select(-sides.y, sides.y, starboard)));
+            let plating = smoothstep(-SLAP_PLATING * half, 0.0, select(breadth.y, breadth.x, starboard));
+            let reach = mix(SLAP_REACH.x, SLAP_REACH.y, share);
+            let slap_blurred = max(reach, finest);
+            let slap_across = out / slap_blurred;
+            slap_white = share * windward * plating * exp(-(slap_across * slap_across)) * inside
+                * (reach / slap_blurred);
+            bubbles = max(bubbles, slap_white * SLAP_BUBBLES);
+        }
+        if max(white, slap_white) > 0.01 {
             // World-anchored eddies: the water streams aft past a moving hull and churns slowly at rest.
             let time = wake.hull.y;
             let strands = mx_noise_float(vec3<f32>(x * 0.21, z * 0.21, time * 0.35));
@@ -1028,20 +1104,26 @@ fn hull_foam(x: f32, z: f32, world: vec3<f32>) -> HullFoamSample {
             let detail = 1.0 - smoothstep(1.5, 6.0, finest);
             let noise = (strands * 0.6 + flecks * 0.4) * detail;
             foam = max(foam, smoothstep(0.1, 0.7, white + noise * 0.6) * min(white, 0.55));
+            // The slap's white water tears into patches as it fades, never a painted stripe.
+            foam = max(foam, smoothstep(0.2, 0.6, slap_white + noise * SLAP_TEAR) * min(slap_white, SLAP_COVER));
         }
         // The narrow side wash uses the same actual breadth and full pose as the contact line. The bow wave's
         // yaw-only entrance approximation detached this band from tapered or heeled sides, and its clamped outboard
         // distance painted wash inside the hull too. Keep the original strength, width, downstream fade and lace.
-        let underway = wake.hull_data[base + 6].z;
         if wake.bow.x > 0.0 && underway > 0.001 {
             let a = lz - shape.w;
             let wash_blurred = max(wash_width, finest);
-            let wash_edge = (edge - wash_blurred * 0.5) / wash_blurred;
-            let wash = exp(-(wash_edge * wash_edge)) * smoothstep(-0.6, 0.0, edge)
-                * smoothstep(hull_length * 0.02, hull_length * 0.1, a)
-                * (1.0 - smoothstep(hull_length * 0.45, hull_length * 0.75, a))
+            let wash_edge = out / (wash_blurred * WASH_SPREAD);
+            let waist = 1.0 - smoothstep(hull_length * 0.45, hull_length * 0.75, a);
+            let wash = exp(-(wash_edge * wash_edge)) * inside
+                * smoothstep(hull_length * 0.02, hull_length * 0.1, a) * waist
                 * underway * wake.bow_knobs[2].y * (wash_width / wash_blurred);
-            if wash > 0.02 {
+            // The water her way heaps against her side, from the stem to her waist, is churned and full of air.
+            let near_reach = wash_width * FROTH_REACH;
+            let near = exp(-(out * out) / (near_reach * near_reach)) * inside
+                * smoothstep(0.0, hull_length * 0.04, a) * waist * underway;
+            froth = max(froth, near * FROTH_DIM);
+            if max(wash, near) > 0.02 {
                 let axis = wake.hull_data[base + 3];
                 let heading = normalize(vec2<f32>(-axis.x, axis.z));
                 let noise = bow_foam_noise(vec2<f32>(x, z), heading, finest);
@@ -1049,10 +1131,11 @@ fn hull_foam(x: f32, z: f32, world: vec3<f32>) -> HullFoamSample {
                     * min(wash, 0.85) * wake.bow_knobs[1].z;
                 wash_foam = max(wash_foam, covered);
                 bubbles = max(bubbles, wash * 0.22 * clamp(0.8 + noise * 0.4, 0.45, 1.0));
+                bubbles = max(bubbles, near * FROTH_BUBBLES * clamp(0.5 + noise * 0.8, 0.15, 1.0));
             }
         }
     }
-    return HullFoamSample(foam, wash_foam, bubbles);
+    return HullFoamSample(foam, wash_foam, bubbles, froth);
 }
 
 // ---- The sea beside hulls (shelter) ---------------------------------------------------------------------------------
@@ -1221,6 +1304,8 @@ struct WakeSurface {
     young: f32,
     // The slope variance of the bow waves' crests too short to draw (`BowWaveSample::variance`).
     variance: f32,
+    // How much of the light through the waves the churned water against a hull under way takes back (`hull_foam`).
+    froth: f32,
 }
 
 // Everything the fragment stage reads at grid point `xz` (the displaced point `world`); `footprint` from uniform flow.
@@ -1241,5 +1326,5 @@ fn wake_surface(xz: vec2<f32>, world: vec3<f32>, footprint: f32) -> WakeSurface 
     let young = select(select(1.0, bow_young, bow_foam > fresh), trail.young, trail.foam > other);
     // Boiling water is not stilled by the slick laid with it, and its chop roughens it.
     return WakeSurface(normal, max(other, trail.foam), max(max(trail.bubbles, bow.bubbles), hull.bubbles),
-        trail.slick * (1.0 - trail.boil.z), young, bow.variance + trail.boil.z * RELIEF_ROUGHNESS);
+        trail.slick * (1.0 - trail.boil.z), young, bow.variance + trail.boil.z * RELIEF_ROUGHNESS, hull.froth);
 }

@@ -110,6 +110,9 @@ pub struct OceanSurface {
     /// The depth copy's tiles holding a surface (`crate::reflection_tiles`), a placeholder that traces every ray until
     /// [`OceanSurface::set_reflection_table`].
     reflection_table: wgpu::Buffer,
+    /// The water's memory against the hulls' sides (`crate::hull_sides`, the heights' pass's), a zeroed placeholder until
+    /// [`OceanSurface::set_hull_sides`]: the contact foam's slap reads it.
+    hull_sides: wgpu::Buffer,
     group: wgpu::BindGroup,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
@@ -491,6 +494,17 @@ impl OceanSurface {
                 },
                 // The wakes' oil atlas (`crate::oil`, `shaders/oil.wgsl`), read by the oil variant alone.
                 filtered_texture(16, fragment),
+                // The water's memory against the hulls' sides (`crate::hull_sides`): the contact foam's slap.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 17,
+                    visibility: fragment,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(16),
+                    },
+                    count: None,
+                },
             ],
         });
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
@@ -554,6 +568,7 @@ impl OceanSurface {
         let scene = placeholder_scene(device);
         let probe = crate::underwater::probe_texture(device);
         let reflection_table = crate::reflection_tiles::placeholder_table(device);
+        let hull_sides = placeholder_hull_sides(device);
         // Until the clouds hand theirs over: no cloud shadow (a zeroed, disabled uniform).
         let cloud = placeholder_cloud_shadow(device);
         // Until a ship wake is attached: a calm one.
@@ -574,7 +589,7 @@ impl OceanSurface {
             &calm.bindings(),
             &wake_sampler,
             (&cloud.0, &cloud.1, &cloud.2),
-            (&probe.1, &reflection_table),
+            (&probe.1, &reflection_table, &hull_sides),
         );
 
         let defs = [
@@ -704,6 +719,7 @@ impl OceanSurface {
             wake_sampler,
             probe,
             reflection_table,
+            hull_sides,
             group,
             vertices,
             indices,
@@ -774,7 +790,7 @@ impl OceanSurface {
             &wgpu::Sampler,
             &wgpu::Buffer,
         ),
-        (probe, reflection_table): (&wgpu::TextureView, &wgpu::Buffer),
+        (probe, reflection_table, hull_sides): (&wgpu::TextureView, &wgpu::Buffer, &wgpu::Buffer),
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("ocean surface"),
@@ -848,6 +864,10 @@ impl OceanSurface {
                     binding: 16,
                     resource: wgpu::BindingResource::TextureView(wake.oil_atlas),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 17,
+                    resource: hull_sides.as_entire_binding(),
+                },
             ],
         })
     }
@@ -879,6 +899,15 @@ impl OceanSurface {
     /// built for the copy that call binds.
     pub fn set_reflection_table(&mut self, table: &wgpu::Buffer) {
         self.reflection_table = table.clone();
+    }
+
+    /// Read the water's memory against the hulls' sides (`crate::hull_sides`: `HullHeights::side_state`) for the
+    /// contact foam's slap from the next [`OceanSurface::set_wake`] on; `None`, none (no slap anywhere).
+    pub fn set_hull_sides(&mut self, device: &wgpu::Device, state: Option<&wgpu::Buffer>) {
+        self.hull_sides = match state {
+            Some(state) => state.clone(),
+            None => placeholder_hull_sides(device),
+        };
     }
 
     /// Shade the clouds' shadow (`naval_clouds::CloudShadow`: its map, linear repeat sampler and 64-byte uniforms), or
@@ -914,7 +943,7 @@ impl OceanSurface {
             wake.unwrap_or(&calm),
             &self.wake_sampler,
             (&self.cloud.0, &self.cloud.1, &self.cloud.2),
-            (&self.probe.1, &self.reflection_table),
+            (&self.probe.1, &self.reflection_table, &self.hull_sides),
         );
     }
 
@@ -1161,6 +1190,16 @@ fn buffer_with(
 }
 
 /// A 1×1 black colour and a 1×1 depth at the far plane (textures start zeroed; reversed depth 0 is far).
+/// No hull's sides remembered: one zeroed history (the slap rows name no slot, so none is read).
+fn placeholder_hull_sides(device: &wgpu::Device) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("ocean placeholder hull sides"),
+        size: 16,
+        usage: wgpu::BufferUsages::STORAGE,
+        mapped_at_creation: false,
+    })
+}
+
 fn placeholder_scene(device: &wgpu::Device) -> (wgpu::TextureView, wgpu::TextureView) {
     let texture = |label: &str, format: wgpu::TextureFormat| {
         device

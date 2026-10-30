@@ -1111,29 +1111,45 @@ fn night_readability_follows_the_hosts_sun_whatever_the_sky() {
 }
 
 #[test]
-fn by_moonlight_the_eye_sees_grey_and_fires_keep_their_colour() {
+fn by_starlight_the_eye_sees_grey_by_moonlight_a_little_colour_and_fires_keep_theirs() {
     let mut rig = Rig::new();
     rig.sky(NIGHT_SKY, 0.01);
-    // The moonlit sea's blue, dim enough for the rods alone, and a fire's orange, bright enough for the cones.
+    // The moonlit sea's blue, where the cones still see a little; the same blue by starlight, eight stops under it (a
+    // clear starlit sky's 0.001 lux against the full moon's 0.27; seen eight stops more open, so as bright on the
+    // screen), for the rods alone; and a fire's orange, bright enough for the cones.
     let (moonlit, fire) = ([0.004, 0.01, 0.03], [5.0, 1.6, 0.3]);
+    let starlit = moonlit.map(|channel| channel / 256.0);
     rig.renderer.set_sun_elevation(Some(30.0));
     let (day_moonlit, day_fire) = (rig.render_colour(moonlit, 0), rig.render_colour(fire, 1));
     rig.renderer.set_sun_elevation(Some(-28.0));
     let (night_moonlit, night_fire) = (rig.render_colour(moonlit, 2), rig.render_colour(fire, 3));
-    // The blue turns a faint cool grey (lifted by the night's grade, so brighter than by day): the photograph's sky,
-    // (46, 52, 60), is 0.23 saturated.
+    // Dusk keeps its colour: the blue hour is the cones'.
+    rig.renderer.set_sun_elevation(Some(-4.0));
+    let dusk = rig.render_colour(moonlit, 4);
+    rig.renderer.set_sun_elevation(Some(-28.0));
+    rig.renderer
+        .set_exposure_control(naval_render::post::ExposureControl::Fixed(8.0));
+    let night_starlit = rig.render_colour(starlit, 5);
+    // By starlight the blue turns a cool grey that keeps a tenth of its colour (lifted by the night's grade, so brighter
+    // than by day; the photograph's sky, (46, 52, 60), is 0.23 saturated). By moonlight it keeps some of its blue, well
+    // short of the day's.
     let saturation = |c: [u8; 3]| {
         let (low, high) = (c.iter().min().copied(), c.iter().max().copied());
         f32::from(high.unwrap() - low.unwrap()) / f32::from(high.unwrap().max(1))
     };
     assert!(saturation(day_moonlit) > 0.8, "{day_moonlit:?}");
     assert!(
-        saturation(night_moonlit) < 0.4,
-        "{night_moonlit:?} against {day_moonlit:?}"
+        saturation(night_starlit) < 0.55,
+        "{night_starlit:?} against {day_moonlit:?}"
     );
     assert!(
-        night_moonlit[0] < night_moonlit[1] && night_moonlit[1] < night_moonlit[2],
-        "{night_moonlit:?}"
+        night_starlit[0] < night_starlit[1] && night_starlit[1] < night_starlit[2],
+        "{night_starlit:?}"
+    );
+    assert!(
+        saturation(night_moonlit) > saturation(night_starlit) + 0.25
+            && saturation(night_moonlit) < saturation(day_moonlit) - 0.1,
+        "{night_moonlit:?} between {night_starlit:?} and {day_moonlit:?}"
     );
     for (night, day) in night_fire.into_iter().zip(day_fire) {
         assert!(
@@ -1141,9 +1157,6 @@ fn by_moonlight_the_eye_sees_grey_and_fires_keep_their_colour() {
             "the fire keeps its colour: {night_fire:?}, {day_fire:?}"
         );
     }
-    // Dusk keeps its colour: the blue hour is the cones'.
-    rig.renderer.set_sun_elevation(Some(-4.0));
-    let dusk = rig.render_colour(moonlit, 4);
     assert!(saturation(dusk) > 0.8, "{dusk:?} against {day_moonlit:?}");
 }
 

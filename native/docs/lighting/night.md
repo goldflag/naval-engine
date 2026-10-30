@@ -122,8 +122,12 @@ it was missing: by the moon and the stars the rods see, and they see no colour.
 
 The display pass (`display_pass.wgsl`, `night_vision`) now shows what the night leaves dim as a faint cool grey
 (`NIGHT_GREY`, (0.82, 1.03, 1.2): the photograph's sky and sea, its luminance one), keeping each pixel's luminance, while
-light bright enough for the cones keeps its colour: the grey gives way from 2^−5.5 of the scene's luminance to all colour
-at 2 (`CONES`), so fires, flashes, lamps and a star shell's light close by stay coloured. It comes in by the host's sun as
+light bright enough for the cones keeps its colour: the grey gives way from 2^−10 of the scene's luminance to all colour
+at 2^−2 (`CONES`), so fires, flashes, lamps and a star shell's light close by stay coloured. After dark the scene's unit
+is a candela a square metre, so the grey starts to give way at a thousandth of one, the foot of mesopic vision, and is
+gone by a quarter, sooner than the eye's. The full moon's sky and sea sit inside that span and keep some of their blue;
+the starlit night, eight stops under them, is grey. The grey never takes more than `RODS_MOST` (0.9), a game's choice
+over the eye's, so even the starlit night keeps a tenth of its colour. It comes in by the host's sun as
 the twilight's light falls under a full moon's (`post::night_vision_weight`, `daylight::RODS`): none at 10 lux (the sun
 some 5° down), 0.87 at a full moon's 0.27 lux (8.4° down), all of it from a tenth of a lux (9.4° down), so the blue hour
 keeps its colour; a host that gives no sun gets none. It is applied after the night's lift and photo mode's lens and
@@ -133,8 +137,15 @@ the scene ahead of the display and do not change. The same chase view now shows 
 after and the photograph). The photograph is brighter than the game's night (its sky some two and a half times on screen):
 the night's levels, tuned for play, are unchanged.
 
-`naval-render/tests/post.rs` checks it on the GPU: by moonlight a dim blue turns a faint cool grey while a fire's orange
-keeps its colour to a level, and the blue hour keeps its blue; and the weight's fade against the real twilight.
+That first grey (from 2^−5.5 to 2, no cap) took everything the full moon lit, so a moonlit night read as a black and
+white photograph: Bill asked whether the night was too monochrome (2026-10-29). Bismarck's chase view under a full moon
+went from a sky of (15, 20, 23) and a sea of (3, 5, 6) to (13, 20, 29) and (2, 5, 8), its clouds and the moon's path
+still silver; the moonless view stayed (3, 4, 6) on average. The grey's weight still follows the sun alone: the moon's
+light reaches it through each pixel's luminance, which is why `CONES` moved rather than the weight.
+
+`naval-render/tests/post.rs` checks it on the GPU: by starlight a dim blue turns a cool grey, by moonlight it keeps some
+of its blue, a fire's orange keeps its colour to a level, and the blue hour keeps its blue; and the weight's fade against
+the real twilight.
 
 ## The eye at night
 

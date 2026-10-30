@@ -191,6 +191,8 @@ struct TerrainUniforms {
     /// page each layer holds (two a vector; `relief::NO_PAGE` for none).
     relief: [f32; 4],
     relief_slots: [[i32; 4]; 32],
+    /// Which layers hold a real page (`ReliefPage::real`): layer k at bit k mod 32 of entry k / 32.
+    relief_real: [u32; 4],
     /// The period's country (`country::CountryLook::uniform`): its index, the months, a test's marks, 1 while drawn.
     country: [f32; 4],
     /// The bases' clearings (`TerrainLayer::set_clearings`, `bindings.wgsl`'s `cleared`): the groups held and the
@@ -2995,7 +2997,8 @@ impl TerrainLayer {
         u.low[3] = if aboard { 1.0 } else { 0.0 };
         u.shore[3] = if self.trees_cast_land { 1.0 } else { 0.0 };
         self.surface.near_uniforms(&mut u.near, &mut u.near_slots);
-        self.relief.uniforms(&mut u.relief, &mut u.relief_slots);
+        self.relief
+            .uniforms(&mut u.relief, &mut u.relief_slots, &mut u.relief_real);
         self.features
             .uniforms(&mut u.features, &mut u.feature_origin, &mut u.feature_slots);
         u.materials = [

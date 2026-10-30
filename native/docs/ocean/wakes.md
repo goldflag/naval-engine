@@ -298,6 +298,24 @@ Since (2026-10-05), against a wake that came out behind the stern in jerks and s
   Band stamps now write it at least 4.5 m and a texel past their coverage (`stamps.rs`, `TRACK_REACH`), coverage read
   where no band says where it lies counts as outside the band, and a slick there as past its edge.
 
+Since 2026-10-29, against a pale, straight-edged patch at the far end of a trail that began under way (where a
+battle starts, or after a jump of over 100 m; the [stand-in ship](../afloat.md)'s stills at 15 and 30 knots showed it):
+
+- **The slick fades in where it starts.** A trail's first stretch of slick is its oldest and widest, and the churned
+  water over it has thinned: seen low across the sea it stood out as a slab of pale, stilled water, ended by its first
+  stamp's coverage thresholded at `slick_full` (0.15) over the atlas's texels. The slick stamps of that stretch now
+  carry how far behind the start a point lies along her trail (`Stamp::start`, in the fade's lengths: at the stamp's
+  centre and per its half-length), and `stamps.wgsl` counts it into where the point lies across the band (the
+  hypotenuse of the two), so the slick narrows and fades in as its sides fade across it. The fade is 8 of the first
+  stamp's half-widths long (`SLICK_START_LENGTH`; 170 m for a destroyer's 30-second-old start), so down the
+  centreline the slick takes some 4.4 half-widths to come in; a fade as short as the sides' still showed the slab,
+  ending at a line, from a few hundred metres. It has faded out 0.8 of the first stamp's half-length less 0.3 of the
+  fade's length astern of its centre, where the coordinate reaches the end of its range before the coverage thins.
+  Every stamp whose quad reaches into the fade carries it (the atlas keeps the most central coordinate); a later pass
+  over the start lies too far along her trail and lays a new slick. It ends when her first slick sample retires
+  (`trail::tests::the_slick_fades_in_where_her_trail_starts`, `a_later_pass_over_her_start_lays_a_new_slick`). Each
+  stamp's quad is 80 bytes (was 64).
+
 **A splash's patch** (`trail.rs` impacts, `wake.wgsl`): a splash stamps one soft disc that spreads to about
 33 m × scale in 6 s and keeps growing slowly, its strength falling from about 0.9 to 0.45 in the first seconds and out
 between 6 s and 30 s (`IMPACT_LIFETIME`), and a brighter front ring for the first 10 s (the base surge). The shader

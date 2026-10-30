@@ -1,8 +1,10 @@
-//! Sample the real wake shader: side wash must follow the drawn hull through heave, pitch and roll.
+//! Sample the real wake shader: side wash must follow the drawn hull through heave, pitch and roll, from her plating
+//! out; the slap's white water comes from the sides' memory alone.
 use glam::{DMat4, DQuat, DVec3, EulerRot, Vec3};
 use native_offscreen::Gpu;
 use naval_ocean::{
     hull_profile::SimpleHull,
+    hull_sides::{HullSides, SIDE_STATIONS, SideHull},
     shaders::{self, Entry},
     ship_wake::{ShipWake, WakeCamera, WakeInputs, WakeShip},
 };
@@ -11,17 +13,30 @@ use std::borrow::Cow;
 use wgpu::util::DeviceExt;
 
 const SAMPLE: &str = r#"
-#import naval_ocean::wake::{wake_height, wake_surface}
+#import naval_ocean::wake::{wake_height, wake_surface, hull_foam}
 @group(2) @binding(0) var<storage, read> points: array<vec4<f32>>;
 @group(2) @binding(1) var<storage, read_write> samples: array<vec4<f32>>;
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= arrayLength(&points) { return; }
     let p = points[id.x];
-    samples[id.x] = vec4<f32>(wake_height(p.xz), wake_surface(p.xz, p.xyz, 0.05).foam, 0.0, 0.0);
+    let hull = hull_foam(p.x, p.z, p.xyz);
+    samples[id.x] = vec4<f32>(wake_height(p.xz), wake_surface(p.xz, p.xyz, 0.05).foam, hull.contact, hull.bubbles);
 }
 "#;
+/// At each point: the wake's height, its foam, the hull contact foam and its bubbles.
 fn sample(gpu: &Gpu, wake: &ShipWake, camera: &Camera, points: &[[f32; 4]]) -> Vec<[f32; 4]> {
+    sample_with(gpu, wake, camera, points, None)
+}
+
+/// [`sample`] with the sides' memory `sides` bound (`HullHeights::side_state`'s layout); none, a zeroed one.
+fn sample_with(
+    gpu: &Gpu,
+    wake: &ShipWake,
+    camera: &Camera,
+    points: &[[f32; 4]],
+    sides: Option<&wgpu::Buffer>,
+) -> Vec<[f32; 4]> {
     let d = &gpu.device;
     let module = shaders::naga_module(
         Entry {
@@ -66,6 +81,16 @@ fn sample(gpu: &Gpu, wake: &ShipWake, camera: &Camera, points: &[[f32; 4]]) -> V
         binding: 8,
         visibility: wgpu::ShaderStages::COMPUTE,
         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+        count: None,
+    });
+    entries.push(wgpu::BindGroupLayoutEntry {
+        binding: 17,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
         count: None,
     });
     let wake_layout = d.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -136,6 +161,13 @@ fn sample(gpu: &Gpu, wake: &ShipWake, camera: &Camera, points: &[[f32; 4]]) -> V
         }],
     });
     let b = wake.bindings();
+    let none = d.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 16,
+        usage: wgpu::BufferUsages::STORAGE,
+        mapped_at_creation: false,
+    });
+    let sides = sides.unwrap_or(&none);
     let sampler = d.create_sampler(&wgpu::SamplerDescriptor {
         mag_filter: wgpu::FilterMode::Linear,
         min_filter: wgpu::FilterMode::Linear,
@@ -168,6 +200,10 @@ fn sample(gpu: &Gpu, wake: &ShipWake, camera: &Camera, points: &[[f32; 4]]) -> V
             wgpu::BindGroupEntry {
                 binding: 10,
                 resource: wgpu::BindingResource::TextureView(b.torpedo_field),
+            },
+            wgpu::BindGroupEntry {
+                binding: 17,
+                resource: sides.as_entire_binding(),
             },
         ],
     });
@@ -286,7 +322,8 @@ fn side_wash_follows_the_drawn_hull() {
         let at = 14.0 + peak as f64 * 0.05;
         let rotation = DQuat::from_euler(EulerRot::YXZ, -heading, pitch, roll);
         let inverse = DMat4::from_rotation_translation(rotation, DVec3::from(position)).inverse();
-        let desired = 18.0 + wake.bow_waves.tuning.wash_width * 0.5;
+        // The wash starts at her plating: full against the side, falling away outboard.
+        let desired = 18.0;
         let expected =
             (desired - inverse.transform_point3(base).x) / inverse.transform_vector3(right).x;
         assert!(
@@ -459,4 +496,141 @@ fn a_fast_stern_raises_a_hollow_and_a_white_hump_behind_it() {
         .map(|v| v[0].abs().max(v[1]))
         .fold(0.0_f32, f32::max);
     assert!(calm < 0.02, "at 10 kn her stern barely stirs: {calm}");
+}
+
+#[test]
+fn the_slap_whitens_the_water_against_her_side() {
+    let gpu = Gpu::headless().expect("a GPU");
+    let d = &gpu.device;
+    let profile = SimpleHull::warship(115.0, 12.0, 4.0).profile();
+    let camera = Camera::look_at(Vec3::new(90.0, 40.0, 0.0), Vec3::ZERO);
+    // A hull at rest (heading 0: her bow along −z, her starboard side toward +x), her sides remembered in slot 0.
+    let ship = WakeShip {
+        id: "hull",
+        position: [0.0; 3],
+        heading: 0.0,
+        pitch: 0.0,
+        roll: 0.0,
+        speed: 0.0,
+        length: 115.0,
+        beam: 12.0,
+        draft: 4.0,
+        center_x: 0.0,
+        center_z: 0.0,
+        forward_speed: 18.0,
+        reverse_speed: 10.0,
+        profile: Some(&profile),
+        oil_leak_m3s: 0.0,
+    };
+    let mut sides = HullSides::default();
+    sides.place(&[SideHull {
+        id: "hull",
+        position: [0.0; 3],
+        heading: 0.0,
+        pitch: 0.0,
+        roll: 0.0,
+        profile: &profile,
+    }]);
+    assert_eq!(sides.slot("hull"), Some(0));
+    // Both sides of slot 0 rushing up at `slap` m/s at every station.
+    let memory = |slap: f32| {
+        let mut state = vec![[0.0f32; 4]; 16 * 2 * SIDE_STATIONS as usize];
+        for row in state.iter_mut().take(2 * SIDE_STATIONS as usize) {
+            *row = [0.0, 0.0, slap, 0.0];
+        }
+        d.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None,
+            contents: bytemuck::cast_slice(&state),
+            usage: wgpu::BufferUsages::STORAGE,
+        })
+    };
+    // The water from her centreline out past either side, along the middle of her length.
+    let points: Vec<[f32; 4]> = (0..120)
+        .flat_map(|i| {
+            let z = -40.0 + i as f32 * 0.7;
+            (0..48).flat_map(move |j| {
+                let x = 4.0 + j as f32 * 0.2;
+                [[x, 0.0, z, 0.0], [-x, 0.0, z, 0.0]]
+            })
+        })
+        .collect();
+    // The wind blows toward −x, onto her starboard side, or the memory is not hers to read.
+    let sample_at = |points: &[[f32; 4]], remembered: bool, state: &wgpu::Buffer| {
+        let mut wake = ShipWake::new(d, 0, 0.1);
+        wake.update(&WakeInputs {
+            ships: &[ship],
+            dt: 1.0 / 60.0,
+            splashes: &[],
+            torpedoes: &[],
+            sea_height: 0.0,
+            camera: WakeCamera {
+                eye: camera.eye.to_array().map(f64::from),
+                forward: [-1.0, 0.0, 0.0],
+                fov_y: 52_f64.to_radians(),
+                zoom: 1.0,
+                drawing_height: 800.0,
+            },
+        });
+        wake.hull_foam
+            .find_sides(remembered.then_some(&sides), 12.0, std::f64::consts::PI);
+        let mut encoder = d.create_command_encoder(&Default::default());
+        wake.encode(d, &gpu.queue, &mut encoder);
+        gpu.queue.submit([encoder.finish()]);
+        sample_with(&gpu, &wake, &camera, points, Some(state))
+    };
+    let run = |remembered: bool, state: &wgpu::Buffer| sample_at(&points, remembered, state);
+    // The contact foam and its bubbles summed on each side (starboard, port).
+    let sums = |values: &[[f32; 4]]| {
+        let mut out = [[0.0f64; 2]; 2];
+        for (i, v) in values.iter().enumerate() {
+            let side = i % 2;
+            out[side][0] += f64::from(v[2]);
+            out[side][1] += f64::from(v[3]);
+        }
+        out
+    };
+    let calm = memory(0.0);
+    let line = run(false, &calm);
+    assert!(sums(&line)[0][0] > 0.0, "no contact line at rest");
+    // No slap, or one too gentle to whiten the water, draws the contact line alone.
+    assert_eq!(run(true, &calm), line, "a still side changed the line");
+    assert_eq!(
+        run(true, &memory(0.15)),
+        line,
+        "a gentle slap whitened the water"
+    );
+    // A hard slap whitens and aerates the water against her side, more on the side the wind blows onto.
+    let hard = sums(&run(true, &memory(3.0)));
+    let still = sums(&line);
+    for side in 0..2 {
+        assert!(
+            hard[side][0] > still[side][0] * 1.5,
+            "{hard:?} against {still:?}"
+        );
+        assert!(hard[side][1] > still[side][1], "{hard:?} against {still:?}");
+    }
+    assert!(
+        hard[0][0] > hard[1][0] * 1.3,
+        "windward {:?}, lee {:?}",
+        hard[0],
+        hard[1]
+    );
+    // Read only from her own memory: the same slap, not named hers, draws the line alone.
+    assert_eq!(run(false, &memory(3.0)), line);
+    // Beyond her stem and her stern (4–9 m past either end of her waterline, about her centreline) her profile has no
+    // side: however hard her end stations slap, the open water there keeps the line alone.
+    let ends: Vec<[f32; 4]> = (0..11)
+        .flat_map(|i| {
+            let past = 4.0 + i as f32 * 0.5;
+            (0..17).flat_map(move |j| {
+                let x = -2.0 + j as f32 * 0.25;
+                [[x, 0.0, -57.5 - past, 0.0], [x, 0.0, 57.5 + past, 0.0]]
+            })
+        })
+        .collect();
+    assert_eq!(
+        sample_at(&ends, true, &memory(3.0)),
+        sample_at(&ends, true, &calm),
+        "white water beyond her ends"
+    );
 }

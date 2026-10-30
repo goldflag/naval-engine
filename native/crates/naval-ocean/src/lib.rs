@@ -34,6 +34,7 @@ pub mod hull_foam;
 pub mod hull_heights;
 pub mod hull_profile;
 pub mod hull_sea;
+pub mod hull_sides;
 pub mod hull_slice;
 pub mod ocean;
 pub mod oil;

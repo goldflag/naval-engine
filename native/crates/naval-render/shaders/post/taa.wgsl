@@ -23,11 +23,13 @@
 #import naval::output::{perceptual, perceptual_inverse}
 
 struct TaaParams {
-    // This frame's and the previous frame's unjittered view-projections.
+    // This frame's and the previous frame's unjittered view-projections, for a point given less this frame's eye
+    // (the previous moved by the eye's step): reprojecting about the eye keeps a close body's history still far from
+    // the world's origin, where world positions step by millimetres.
     current: mat4x4<f32>,
     previous: mat4x4<f32>,
-    // The jittered projection's inverse and the camera's world matrix, which the
-    // depth was drawn with.
+    // The jittered projection's inverse, which the depth was drawn with, and the view's turn back to the world (no
+    // translation: to a point less the eye).
     projection_inverse: mat4x4<f32>,
     camera_world: mat4x4<f32>,
     inverse_size: vec2<f32>,

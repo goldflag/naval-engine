@@ -88,13 +88,15 @@ impl ReliefGrid {
 }
 
 /// One page's levels (f16 bits, row 0 at the smallest z; level `k` of side `PAGE_TEXELS >> k`), each level's slopes
-/// (two [`encode_slope`] bytes a texel, ∂/∂x then ∂/∂z), and the largest residual on its own texels (m), which the
-/// selection widens a patch's bounds by.
+/// (two [`encode_slope`] bytes a texel, ∂/∂x then ∂/∂z), the largest residual on its own texels (m), which the
+/// selection widens a patch's bounds by, and whether a finer model measured it (`real`, the default: its ledges are
+/// the ground's, so the land draws none of its own stepped beds under it) or it was made (a synthetic page, GLO-30's).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReliefPage {
     pub levels: Vec<Vec<u16>>,
     pub slopes: Vec<Vec<u8>>,
     pub peak: f32,
+    pub real: bool,
 }
 
 /// A slope (m/m) as a signed byte: `g / (1 + |g|)` (fine near level ground, where a step in the shading shows, and up
@@ -179,6 +181,7 @@ impl ReliefPage {
             levels,
             slopes,
             peak,
+            real: true,
         }
     }
 
@@ -483,11 +486,13 @@ impl ReliefTextures {
     }
 
     /// The land's entries: page (0, 0)'s chart corner, the texel and the slots (0 with none, or hidden); the page each
-    /// layer holds, two an entry (layer k at entry k / 2, .xy when k is even, .zw when odd).
-    pub fn uniforms(&self, relief: &mut [f32; 4], slots: &mut [[i32; 4]; 32]) {
+    /// layer holds, two an entry (layer k at entry k / 2, .xy when k is even, .zw when odd); and which layers hold a
+    /// real page ([`ReliefPage::real`]), a bit each (layer k at bit k mod 32 of `real[k / 32]`).
+    pub fn uniforms(&self, relief: &mut [f32; 4], slots: &mut [[i32; 4]; 32], real: &mut [u32; 4]) {
         for entry in slots.iter_mut() {
             *entry = [NO_PAGE; 4];
         }
+        *real = [0; 4];
         let Some(grid) = self.grid.filter(|_| self.shown) else {
             *relief = [0.0; 4];
             return;
@@ -499,11 +504,14 @@ impl ReliefTextures {
             grid.slots as f32,
         ];
         for (k, page) in self.held.iter().enumerate() {
-            if let Some(([i, j], _)) = page {
+            if let Some(([i, j], page)) = page {
                 let entry = &mut slots[k / 2];
                 let at = (k % 2) * 2;
                 entry[at] = *i;
                 entry[at + 1] = *j;
+                if page.real {
+                    real[k / 32] |= 1 << (k % 32);
+                }
             }
         }
     }

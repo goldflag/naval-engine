@@ -66,6 +66,10 @@ pub struct PrepareContext<'a> {
     /// Mutable so a layer can make [`crate::resources::Lifetime::Frame`] resources.
     pub resources: &'a mut Resources,
     pub camera: &'a CameraUniforms,
+    /// The eye at full precision ([`crate::Renderer::set_eye`]; `camera.position` rounds it). A layer that draws close
+    /// bodies kilometres from the world's origin keeps their positions less this eye, in doubles until the subtraction,
+    /// and draws them with `naval::camera::eye_to_clip` and `naval::motion::surface_motion_from_eye`.
+    pub eye: glam::DVec3,
     /// Group 0 of the scene pass (the camera, the sun's shadow maps, the aerial volume), for a layer's own pass drawn
     /// with pipelines from [`crate::RenderContext::add_scene_pipeline_into`]. Before the scene pass it holds this
     /// frame's camera, though the aerial volume is written only by the sky's `prepare`: read it at a copy point.

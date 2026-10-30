@@ -20,8 +20,9 @@ const TRACK_MARGIN: f64 = 0.25;
 /// warp's two sways (1.5), with room.
 const TRACK_REACH: f64 = 4.5;
 
-/// One quad (box, axes, shape) as `WakeFoamGpu.paint` lays it, and where the stamp lies across its band
-/// ([`crate::trail::Stamp::across`] in xy, the quad's growth past the stamp across and along it in zw).
+/// One quad (box, axes, shape) as `WakeFoamGpu.paint` lays it, where the stamp lies across its band
+/// ([`crate::trail::Stamp::across`] in xy, the quad's growth past the stamp across and along it in zw), and how far
+/// behind its trail's start it lies ([`crate::trail::Stamp::start`] in xy).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable, PartialEq)]
 pub struct StampQuad {
@@ -29,6 +30,7 @@ pub struct StampQuad {
     pub axes: [f32; 4],
     pub shape: [f32; 4],
     pub across: [f32; 4],
+    pub start: [f32; 4],
 }
 
 /// One collector's quads for its tile (`WakeFoamGpu.paint`): each stamp's texel-aligned bounding quad in the atlas's
@@ -103,6 +105,7 @@ pub fn paint(
                 grow_across as f32,
                 grow_along as f32,
             ],
+            start: [stamp.start[0] as f32, stamp.start[1] as f32, 0.0, 0.0],
         });
     }
 }
@@ -162,11 +165,13 @@ fn stamp_pipeline(
 ) -> wgpu::RenderPipeline {
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("wake stamps"),
-        layout: Some(&device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("wake stamps"),
-            bind_group_layouts: &[],
-            immediate_size: 0,
-        })),
+        layout: Some(
+            &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("wake stamps"),
+                bind_group_layouts: &[],
+                immediate_size: 0,
+            }),
+        ),
         vertex: wgpu::VertexState {
             module,
             entry_point: Some("vertex"),
@@ -174,7 +179,9 @@ fn stamp_pipeline(
             buffers: &[Some(wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<StampQuad>() as u64,
                 step_mode: wgpu::VertexStepMode::Instance,
-                attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4],
+                attributes: &wgpu::vertex_attr_array![
+                    0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4
+                ],
             })],
         },
         fragment: Some(wgpu::FragmentState {

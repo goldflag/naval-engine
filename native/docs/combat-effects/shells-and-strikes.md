@@ -136,7 +136,10 @@ parts, and a torpedo's mark two metres down crosses the boot-topping onto her si
 only the part it landed on, so a torpedo's lay wholly under the sea). A fresh wound's torn steel glows and cools (`MARK_COOLING_S` 1.4 s to 1/e) on the fleet's scorch clock
 (`Fleet::scorch_advance`); a host that never runs it keeps its marks cold. The glow reads each pixel's place from the
 wound from the vertices (`MarkVertex`'s last pair, `wear.zw` in `fs_decal`). `cargo run -p naval-ships --example
-impact_atlas` writes the atlas over grey paint to `.build/native/marks/atlas.png`.
+impact_atlas` writes the atlas over grey paint to `.build/native/marks/atlas.png`. The damage view's scars wear the
+same atlas from the renderer's one upload (`ShipRenderer::impact_atlas`, `outline.rs`), each laid as `project` laid
+its mark: a mark keeps the way up its tile runs and whether it was mirrored (`Mark::up`, `mirrored`, carried on
+`MarkSpot`). A crater's fragment chips are one draw (`chips`) for its paint (`pock`) and its relief (below).
 
 **Holes** (naval-ships `holes.rs`, since 2026-10-20). Close up, a large wound's decal read as paint: its torn tongues
 and dark opening lay flat on the plate, lit as the plate was and still however the camera moved. A wound that opens her
@@ -231,6 +234,16 @@ Such a mark now presses her plate in: the same cut as a hole's, over its outline
   no light of their own; each is opaque a little past its dent's outline, so a dent, which wears its tile opaque, never
   shows paint the tile leaves clear. The atlas's colours are carried twelve texels out into its clear texels (`bleed`),
   so filtered and mipped a mark's edge fades to its own colour, not to black.
+- **Her scars' relief** (`marks::scar_relief`, since 2026-10-29, for the damage view's scars, `outline.wgsl`'s
+  `textured`): the same profiles pressed into a second atlas in the impact atlas's layout, baked once on the CPU and
+  uploaded as half floats (`Rg16Float`, mipped by box filter): the height in r, in half-widths of its tile and negative
+  into her plate, each kind at its mean depth (a dish 0.1, a gouge's furrow 0.024, a crater's scoop 0.0115, its pit as
+  deep again), with the fine relief no dent's mesh carries: a dish's bowl scored from its middle out, its broken face in
+  little stepped facets and grain, paint still hanging on standing proud and its cap's fragments' pocks along the
+  splash's rays; a gouge's furrow scratched along its length and its shoved-up steel torn raw; a crater's floor scored
+  and pitted, and its fragments' chips pressed where `pock` paints them. Bare steel in g (scoured, flaked, scraped or
+  chipped to the steel, as the tile paints it): what glints there. Only the held kinds' six tiles have any; the rest,
+  and every tile's border, are flat. A deck's dish wears the side's profile, and a teak deck's crater the steel's.
 - **The mesh** (`press`): 48 spokes, one through each of the outline's samples, and ten rings and more where its
   profile turns; each point on her surface (its offset off the plate's plane a quadric from the wound's to the outline's
   sample, so it follows a barbette's curve and her side's flare), pressed by its profile, with its tile's uv, and a

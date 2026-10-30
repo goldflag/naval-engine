@@ -1,10 +1,12 @@
 # engine-example
 
 The game's engine crates on their own, with no simulation: a window with a fly camera over the sky (its atmosphere,
-clouds and weather), the sea, a coast cut from a land release, and a few combat effects, each a
-`naval_render::SceneLayer` on one renderer; and the round Earth from space, the theatre chart's globe. It is the
-template another project copies: `src/world.rs` builds and feeds every layer, `src/coast.rs` cuts the coast,
-`src/globe.rs` draws the globe, `src/main.rs` is the window, the still and the frame loop.
+clouds and weather), the sea, a coast cut from a land release, a few combat effects and, with `--ship`, ships from any
+glTF file afloat with their wakes and smoke, each a `naval_render::SceneLayer` on one renderer; and the round Earth
+from space, the theatre chart's globe. It is the template another project copies: `src/world.rs` builds and feeds
+every layer, `src/coast.rs` cuts the coast, `src/ship.rs` loads and draws the ships' models, `src/join.rs` turns a
+model's numbers into a hull afloat and her pose afloat back into the model's, `src/afloat.rs` sails the ships (and a
+stand-in, `--afloat`), `src/globe.rs` draws the globe, `src/main.rs` is the window, the still and the frame loop.
 
 ```sh
 # From the repository root (the native workspace's Cargo with packaging's environment).
@@ -13,6 +15,16 @@ bun run cargo -- run -p engine-example --profile dev-client -- --still "$PWD/.bu
 # The globe: the window starting on it, or its still (the whole Earth over the North Atlantic).
 bun run cargo -- run -p engine-example --profile dev-client -- --globe
 bun run cargo -- run -p engine-example --profile dev-client -- --still "$PWD/.build/engine-example/globe.png" --globe
+# A ship from a glTF file and its setup (naval-vessel) afloat at 15 knots, in the window; two abreast at 28 knots; a
+# still of her at 5 knots in a rough sea; one at night.
+bun run cargo -- run -p engine-example --profile dev-client -- --ship "$PWD/ships/my-ship.vessel.json"
+bun run cargo -- run -p engine-example --profile dev-client -- --ship "$PWD/ships/my-ship.vessel.json" --ship "$PWD/ships/other.vessel.json" --knots 28
+bun run cargo -- run -p engine-example --profile dev-client -- --still "$PWD/.build/engine-example/ship.png" --ship "$PWD/ships/my-ship.vessel.json" --knots 5 --wind 15
+bun run cargo -- run -p engine-example --profile dev-client -- --still "$PWD/.build/engine-example/night.png" --ship "$PWD/ships/my-ship.vessel.json" --hour 22
+# A stand-in ship (a destroyer's numbers, no model) sailing a circle at 15 knots, in the window or a still of her in a
+# 15 m/s wind.
+bun run cargo -- run -p engine-example --profile dev-client -- --afloat 15
+bun run cargo -- run -p engine-example --profile dev-client -- --still "$PWD/.build/engine-example/afloat.png" --afloat 15 --wind 15
 ```
 
 (`bun run cargo` runs Cargo in `native/`, so a relative path lands under it.)
@@ -24,7 +36,28 @@ HE burst, a shell on the coast and a smoke screen ahead. O shows the round Earth
 the globe under the pointer, the wheel zooms about it; `--globe` starts there). Escape quits; `--exit-after <seconds>`
 closes it by itself. `--still <out.png>` renders one frame offscreen from the window's first view (700 m up, 2.5 km off
 the coast) in fixed conditions (15:00, partly cloudy, the effects 1.2 s old), writes it and exits; `--size <w>x<h>` sets
-either's size. The coast is the theatre's 96 km window of the synthetic release on its peninsula's south shore.
+either's size, `--hour <h>` the hour both start at. The coast is the theatre's 96 km window of the synthetic release on
+its peninsula's south shore.
+
+`--ship <setup.json>` reads a ship's setup file and the glTF or GLB it names (beside it) and puts her to sea 2.3 km off
+the coast, heading 250° along it at `--knots` (15 without it), sailing straight on. Her hull is her model's numbers
+(`src/join.rs`): she rides the sea as drawn, trails her wake and foam, pushes her bow waves, throws her bow's spray and
+smokes from her funnels, each scaled with her speed and size ([naval-afloat](../../docs/afloat.md)). Each further
+`--ship` sails abreast of the first to starboard, a length and a half of the longest apart. `naval-vessel inspect
+<model.glb> --write` writes a starter setup beside a model ([the vessel page](../../docs/vessel.md): what it draws, what
+it refuses, the setup's fields).
+
+`--afloat <knots>` puts a stand-in ship to sea, a model's numbers without the model: a fleet destroyer's (114 m by 12,
+4 m draft, 2,500 t, two funnels) sailing a 600 m circle to starboard before the first view, her proxy hull drawn grey.
+
+With ships afloat the window starts on the chase camera, off the first's port bow looking aft along her side at
+distances of her length; a fly key or a look leaves it where it is, C takes it back, Tab follows the next ship. `[`
+and `]` take the ship followed a knot slower and faster, `,` and `.` five (0–36, in the title), and R puts her about:
+half a turn to starboard on a circle of 2.5 of her lengths (with no way on she does not turn). With `--still`, the frame
+is the chase camera's after 30 s under way at 30 frames a second (about 30 s to render; her wake then streams 230 m
+astern at 15 knots), the combat effects not spawned; `--wind <m/s>` sets the still's wind (9 m/s a moderate sea, 15 a
+rough one). Each ship put to sea prints her hull's numbers (given and guessed) and natural periods, and a still prints
+each ship's heave, pitch and roll every 5 s with their root mean square over those 5 s.
 
 ## The crates
 
@@ -38,6 +71,8 @@ either's size. The coast is the theatre's 96 km window of the synthetic release 
 | `naval-terrain` | The land and its trees from a heightfield; `naval_terrain::release` cuts one from a land release | `native/crates/naval-terrain` |
 | `naval-effects` | Gas, fire and smoke (blasts, bursts, strikes, smoke screens), shells, blast waves | `native/crates/naval-effects` |
 | `naval-water-effects` | Splashes, the spray of gun blasts and bows | `native/crates/naval-water-effects` |
+| `naval-vessel` | A ship from any glTF 2.0 file, lit by the sky (sun, environment, shadows, haze, night, lamps), placed by a setup file; `naval-vessel inspect` | `native/crates/naval-vessel` |
+| `naval-afloat` | A hull on the drawn sea: heave, pitch and roll from the sea under her, and the inputs of her wake, bow waves, bow spray and funnel smoke | `native/crates/naval-afloat` |
 | `naval-globe` | The round Earth seen from space: an orthographic, north-up globe, its picking and its grab, and the world chart on it (Natural Earth's land, coasts, reefs and depth bands) | `native/crates/naval-globe` |
 | `naval-land-format` | Land releases' formats, and the `synthetic` release (a coastal world made in code) | `crates/naval-land-format` |
 | `native-offscreen` | A headless device and PNG read-back, for stills (optional) | `native/crates/native-offscreen` |
@@ -63,6 +98,8 @@ naval-terrain = { path = "<checkout>/native/crates/naval-terrain" }
 naval-effects = { path = "<checkout>/native/crates/naval-effects" }
 naval-water-effects = { path = "<checkout>/native/crates/naval-water-effects" }
 naval-globe = { path = "<checkout>/native/crates/naval-globe" }
+naval-vessel = { path = "<checkout>/native/crates/naval-vessel" }
+naval-afloat = { path = "<checkout>/native/crates/naval-afloat" }
 naval-land-format = { path = "<checkout>/crates/naval-land-format", features = ["synthetic"] }
 native-offscreen = { path = "<checkout>/native/crates/native-offscreen" }
 # The same majors as the crates' (`<checkout>/native/Cargo.toml`, [workspace.dependencies]): their types cross.
@@ -104,7 +141,9 @@ wgpu-hal = { path = "<checkout>/native/vendor/wgpu-hal" }
   then draw from BC7). `Renderer::new(device, queue, width, height, format)` with the output's format (sRGB: the
   display transform writes display-referred colour). Bloom, the eye's adaptation, its sky mean and the shadows' quality
   are the renderer's settings (`set_bloom`, `set_eye_adaptation`, `set_sky_mean`, `set_shadow_settings`). Each layer is
-  built on `renderer.context()`.
+  built on `renderer.context()`. Each frame the eye follows the sky as the game's client has it (`World::set_eye`):
+  `set_sun_elevation`, `set_night_lift`, `set_night_light` and `set_night_share`; without the last the bloom takes a
+  lamp's whole light after dark and a ship's masthead light veils her.
 - **The camera and the frame**: each frame a `naval_render::Camera` (eye, target, vertical field of view, near, far,
   `camera::EARTH_CURVATURE`), a `FrameTime` (seconds since the start, the frame's dt, its index) and the output's view;
   `renderer.set_sun(Sun::new(light.direction, centre))` with the sky's light (`GameSky::light`) and where the sun's
@@ -150,6 +189,16 @@ wgpu-hal = { path = "<checkout>/native/vendor/wgpu-hal" }
   the turrets that fired (`gun_blasts`, from `CombatEffects::turret_blasts`) and `update(&EffectsFrame { camera,
   events: &[WaterEvent], ships, sea, waves, crest, lighting })`; a `WaterEvent` of kind `Splash` throws a shell's
   column (`position` on the sea, the shell's `velocity` and `caliber_m`).
+- **A ship** (`naval-vessel`, `src/ship.rs`): a `VesselModel` from the GLB's bytes and its `Setup` (the crate's
+  `files::load` reads both from disk; on wasm32 the host hands `VesselModel::load` the bytes and a resolver for any
+  external buffers and images), a `VesselLayer::new` with the sky's environment and a `VesselLighting`, each model
+  through `add_model`, and a `VesselInstance` per ship (`VesselPose::transform()`: her place, heading, pitch, roll and
+  heave). Each frame `lighting.follow(&sky.sky, ambient, flash)` and the scene's fog. It draws after the land and
+  before the sea, into the sun's shadow maps too.
+- **A ship afloat** (`naval-afloat`, `src/afloat.rs`): a `Hull` (waterline length, beam, draft; optionally
+  displacement, freeboard, full speed, metacentric height, funnels' rims in ship space) in an `Afloat`, fed to the sea
+  and the effects each frame; [any glTF ship afloat](#any-gltf-ship-afloat) below, step by step. `Afloat::new` refuses
+  a hull with a non-positive or non-finite dimension (`Hull::check`).
 - **The globe** (`naval-globe`, `src/globe.rs`; drawn instead of the scene, not as a layer): the world chart's bytes
   (`public/theatre/world/world-v1.bin` in the checkout, about 3.7 MB; or a host's own, `world::encode`) to
   `WorldStore::from_bytes`, which makes its meshes on a thread (under two seconds; the globe is a disc of sea until they
@@ -160,6 +209,61 @@ wgpu-hal = { path = "<checkout>/native/vendor/wgpu-hal" }
   covers the output. `Globe::inverse` picks the point under a pixel and `Globe::grab` turns the globe so a point stays
   under the pointer. It draws no sun: no terminator, the day side and the night side alike.
 
-Left out here, though the crates have them: ships, aircraft and wildlife (other crates), the land beyond the window
+Left out here, though the crates have them: the game's own ships (`naval-ships`, built on the simulation's
+definitions; `--afloat` sails a stand-in's proxy), aircraft and wildlife (other crates), the land beyond the window
 (`HorizonLayer`), buildings, roads and night lights, ground materials, shells in flight (`ShellLayer`), blast waves
 (`ShockLayer`) and the underwater view (`naval_ocean::underwater`).
+
+## Any glTF ship afloat
+
+How `--ship` floats a model downloaded from anywhere (Sketchfab's GLBs included), in the order `src/world.rs` and
+`src/afloat.rs` do it. Ship space, for the setup file and both crates: metres, x to starboard, y up from her waterline,
+z aft (her bow toward −z), the origin on her waterline amidships (the middle of her bounds' length and breadth). Her
+pose, for both: heading in radians clockwise from north (−z) seen from above, pitch bow up, roll starboard side up,
+heave up, turned as three's Euler YXZ of −heading, pitch and roll.
+
+1. **The setup file.** `naval-vessel inspect <model.glb> --write` writes `<model>.vessel.json` beside it from a guess at
+   her axes. Set `length` to her real length overall (the model is scaled to it), check `up` and `forward`, and give
+   her `waterline` (the model's own coordinate there) or `draft` (metres from it down to her lowest point): the
+   waterline is where the sea meets her, the one number the floating needs most. Add her `funnels` (`at` each mouth's
+   middle in ship space, `smoke` 0 for a dummy to 1, `radius` of its mouth) and her navigation `lights`
+   ([the vessel page](../../docs/vessel.md#the-setup-file)). For example, a destroyer's:
+
+   ```json
+   {
+     "version": 1,
+     "model": "jervis.glb",
+     "length": 108.66,
+     "waterline": 0,
+     "funnels": [{ "name": "funnel", "at": [0, 12.0, -2.8], "smoke": 1, "radius": 1.4 }],
+     "lights": [{ "name": "steaming", "at": [0, 15.85, -8.8], "kind": "masthead" }]
+   }
+   ```
+
+2. **Load and draw her** (`src/ship.rs`): `naval_vessel::files::load(setup)` (or `VesselModel::load` with the bytes),
+   `VesselLayer::add_model`; the `Vessel` it resolves to holds her numbers.
+3. **Her hull from her model** (`src/join.rs`, `join::hull(&vessel)`, the glue a host copies): the waterline's length,
+   breadth and middle where her surfaces cross y = 0 (her bounds' where none does), her draft to her lowest point, and
+   her funnels' mouths (round, of the setup's radius or 0.15 of her beam across) with their smoke. naval-afloat
+   guesses the rest (displacement as a block of 0.55, freeboard, full speed from her length up to 31 knots, metacentric
+   height 0.07 of her beam); set any of them on the `Hull` before `Afloat::new(id, hull)` if known.
+4. **Before the first frame**: `Ocean::enable_wake_in` and `enable_hull_heights_in` (the wakes, and the sea's heights
+   about hulls for the floating to read back), and a `naval_afloat::DrawnSea`.
+5. **Each frame, before the renderer's** (`Fleet::advance`): `sea = naval_afloat::swell(&ocean.parameters.waves)`;
+   `drawn.read(device, queue, heights)` once (last frame's heights about each hull, copied back without waiting, less
+   the sines they were drawn on); for each ship `afloat.update(course, &drawn.surface(id, &sea), now)` with her x, z,
+   heading and speed (the host steers her: `src/afloat.rs`'s `Helm` sails straight and puts about, or round a circle);
+   then for all of them at once `Ocean::set_hull_sea(ocean_waves(&sea), now, &hull_footprints(&sea_hulls, eye, 16),
+   eye)` with each `stir.sea_hull()`, `drawn.couple` with each ship's id and her footprint among those, and
+   `ShipWake::update` with each `stir.wake_ship()`, the one the camera follows first.
+6. **The effects**: each `stir.ship_frame()` in the combat effects' `ships` (her funnels' smoke) and each
+   `stir.effect_ship()` in the water effects' (her bow's spray, with `sea: Some((sea, now))` and `crest` from
+   `ShipWake::bow_waves`).
+7. **Her model where she floats**: `join::pose(&afloat.pose())` is her `VesselPose` (the same place, heading, pitch and
+   roll; her origin's height her heave), its `transform()` her `VesselInstance`'s.
+
+Not there: no hull mask, so the sea is not cut out of her hull: a wave washes over a low deck and the sea shows inside
+an open or low hull (a well deck, an open boat, a hull modelled without plating below the waterline). No heel in a
+turn: she stays upright through it (the game heels its ships from their turn). Her hull's numbers are guessed from her
+model, not her lines: a sonar dome or screws below her keel deepen her draft, and her proxy's warship lines shape her
+bow waves and spray, not her own. Morph targets, skins and animations are not read (rest pose).

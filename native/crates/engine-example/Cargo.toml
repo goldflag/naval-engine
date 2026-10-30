@@ -17,8 +17,12 @@ naval-ocean.workspace = true
 naval-terrain = { path = "../naval-terrain" }
 naval-effects.workspace = true
 naval-water-effects = { path = "../naval-water-effects" }
+# The stand-in ship (`--afloat`): a hull riding the drawn sea, and the wake, spray and smoke she stirs.
+naval-afloat.workspace = true
 # The coast: the synthetic land release, cut into the land's heightfield by `naval_terrain::release`.
 naval-land-format = { workspace = true, features = ["synthetic"] }
+# Any glTF ship on the sea (`--ship <setup.json>`).
+naval-vessel.workspace = true
 # The round Earth from space (O, `--globe`): the world chart on the globe.
 naval-globe.workspace = true
 # The still's headless device and PNG read-back.

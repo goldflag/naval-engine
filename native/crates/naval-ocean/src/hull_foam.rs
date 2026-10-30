@@ -2,11 +2,14 @@
 //! circle, the world-to-hull transform of the drawn pose, the hull's waterline profile ([`crate::hull_profile`]) and
 //! what drives the line (rest, sea, speed, the bow). The surface shader reads it (`hull_foam` in `shaders/wake.wgsl`) and
 //! finds the hull's breadth where the water actually stands against it, so the line hugs the drawn hull at any heave,
-//! pitch and roll. The same slots carry each side's height for the shelter the sides give the water beside them (`hull_shelter`).
+//! pitch and roll. The same slots carry each side's height for the shelter the sides give the water beside them (`hull_shelter`),
+//! and where the hull's sides are remembered ([`crate::hull_sides`]), which slot of that memory is hers and which of her
+//! sides faces the wind, for the white water the water leaves where it has just rushed up her side (the slap).
 
 use glam::{DMat4, DQuat, DVec3, EulerRot};
 
 use crate::hull_profile::{PROFILE_LEVELS, PROFILE_STATIONS, WaterlineProfile};
+use crate::hull_sides::HullSides;
 
 /// Hulls with contact foam and wash at once; underway hulls take priority, then camera distance.
 pub const HULL_FOAM_SLOTS: usize = 8;
@@ -14,16 +17,19 @@ pub const HULL_FOAM_SLOTS: usize = 8;
 const REACH: f64 = 4000.0;
 /// Empty stations read as this share of the half beam inside the centreline.
 const EMPTY: f32 = 0.25;
-/// Per slot: a bounding circle, three rows of the world-to-hull matrix, the shape, the drive, the shelter, one vec4 per
-/// level and station (that station's and the next one's starboard and port half-breadths), one per station (its and the
-/// next one's side heights).
-pub const PROFILE: usize = 7;
+/// Per slot: a bounding circle, three rows of the world-to-hull matrix, the shape, the drive, the shelter, the slap, one
+/// vec4 per level and station (that station's and the next one's starboard and port half-breadths), one per station (its
+/// and the next one's side heights).
+pub const SLAP: usize = 7;
+pub const PROFILE: usize = 8;
 pub const SIDES: usize = PROFILE + PROFILE_LEVELS * PROFILE_STATIONS;
 pub const STRIDE: usize = SIDES + PROFILE_STATIONS;
 /// Distances from a hull's side, in heights of the side above the water, over which its shelter fades out.
 const SHELTER_REACH: f64 = 5.0;
 /// Share of `REACH` beyond which the shelter fades out with the camera's range.
 const SHELTER_RANGE_FADE: f64 = 0.75;
+/// Wind speeds (m/s) over which one side of a hull comes to face it: in a calm neither side is the windward one.
+const WINDWARD_WIND: [f64; 2] = [1.0, 5.0];
 /// Heels (radians, from upright) over which the shelter fades out: past them a side is no longer a wall standing over
 /// the water but lies along it, and a capsized hull's sides are under it.
 const SHELTER_HEEL: [f64; 2] = [
@@ -95,6 +101,8 @@ pub struct HullContactFoam {
     pub values: Vec<[f32; 4]>,
     pub count: usize,
     speeds: Vec<(String, f64)>,
+    /// The hull in each slot in use, by id.
+    held: Vec<String>,
 }
 
 impl Default for HullContactFoam {
@@ -110,6 +118,7 @@ impl Default for HullContactFoam {
             values: vec![[0.0; 4]; HULL_FOAM_SLOTS * STRIDE],
             count: 0,
             speeds: Vec::new(),
+            held: Vec::new(),
         }
     }
 }
@@ -167,6 +176,7 @@ impl HullContactFoam {
                 .then_with(|| a.2.total_cmp(&b.2))
         });
         let mut slot = 0;
+        self.held.clear();
         for (ship, speed, _, surface) in candidates {
             if slot >= HULL_FOAM_SLOTS {
                 break;
@@ -222,6 +232,9 @@ impl HullContactFoam {
                 },
                 0.0,
             ];
+            // Her place in the sides' memory and the wind's side: `HullContactFoam::find_sides`, at the upload.
+            self.values[base + SLAP] = [0.0; 4];
+            self.held.push(ship.id.to_owned());
             // Every open-water pixel tests these circles alone; only water near a hull reads the rest.
             let mid = f64::from(profile.start)
                 + f64::from(profile.spacing) * (PROFILE_STATIONS as f64 - 1.0) / 2.0;
@@ -240,6 +253,35 @@ impl HullContactFoam {
             slot += 1;
         }
         self.count = slot;
+    }
+
+    /// The slap row of each slot in use (`hull_foam`'s slap in `shaders/wake.wgsl`): x her slot in the sides' memory
+    /// plus one (0: her sides are not remembered, as with no `sides`), y how squarely her starboard side faces the wind
+    /// (1 it blows straight onto it, −1 onto her port side, 0 along her or in a calm), the wind blowing toward
+    /// `wind_direction` (radians from +x toward +z, `WaveParameters::wind_direction`) at `wind_speed` (m/s). The ocean
+    /// calls it after the frame's update and before the wakes' upload, so the slots named are the ones the sides' pass
+    /// steps this frame.
+    pub fn find_sides(&mut self, sides: Option<&HullSides>, wind_speed: f64, wind_direction: f64) {
+        let (toward_z, toward_x) = wind_direction.sin_cos();
+        let windy = smoothstep(WINDWARD_WIND[0], WINDWARD_WIND[1], wind_speed);
+        for (slot, id) in self.held.iter().enumerate().take(self.count) {
+            let base = slot * STRIDE;
+            let memory = sides.and_then(|sides| sides.slot(id));
+            // The world-to-hull matrix's first row is her starboard axis in the world.
+            let [x, _, z, _] = self.values[base + 1].map(f64::from);
+            let level = x.hypot(z);
+            let lean = if level > 1e-6 && windy > 0.0 {
+                -(x * toward_x + z * toward_z) / level * windy
+            } else {
+                0.0
+            };
+            self.values[base + SLAP] = [
+                memory.map_or(0.0, |memory| (memory + 1) as f32),
+                lean as f32,
+                0.0,
+                0.0,
+            ];
+        }
     }
 
     /// A line this far off spans a small share of the three pixels the fragment stage needs.
@@ -281,6 +323,7 @@ impl HullContactFoam {
 
     pub fn reset(&mut self) {
         self.speeds.clear();
+        self.held.clear();
         self.count = 0;
     }
 }
@@ -324,6 +367,62 @@ mod tests {
                 -ships[slot - 1].position[2] as f32
             );
         }
+    }
+
+    #[test]
+    fn each_slot_names_her_sides_memory_and_the_side_the_wind_blows_onto() {
+        let profile = SimpleHull::warship(115.0, 12.0, 4.0).profile();
+        let ship = |id, z: f64, heading: f64| ContactShip {
+            id,
+            position: [0.0, 0.0, z],
+            heading,
+            pitch: 0.0,
+            roll: 0.0,
+            speed: 0.0,
+            beam: 12.0,
+            draft: 4.0,
+            forward_speed: 18.0,
+            profile: &profile,
+        };
+        // Heading 0 her bow lies along −z and her starboard side faces +x; at a quarter turn it faces +z.
+        let ships = [
+            ship("near", 0.0, 0.0),
+            ship("far", 300.0, std::f64::consts::FRAC_PI_2),
+        ];
+        let mut foam = HullContactFoam::default();
+        foam.update(&ships, 0.0, Some(([0.0, 40.0, -100.0], 0.8)), 1000.0);
+        assert_eq!(foam.count, 2);
+        let row = |foam: &HullContactFoam, slot: usize| foam.values[slot * STRIDE + SLAP];
+        // Nothing remembered: no slot named, whatever the wind.
+        foam.find_sides(None, 12.0, 0.0);
+        assert_eq!((row(&foam, 0)[0], row(&foam, 1)[0]), (0.0, 0.0));
+        // Only the far hull is remembered, in the memory's second slot (a stranger holds the first).
+        let side = |id| crate::hull_sides::SideHull {
+            id,
+            position: [0.0, 0.0, 0.0],
+            heading: 0.0,
+            pitch: 0.0,
+            roll: 0.0,
+            profile: &profile,
+        };
+        let mut sides = HullSides::default();
+        sides.place(&[side("stranger"), side("far")]);
+        // The wind blows toward +x: onto the near hull's port side, along the far one.
+        foam.find_sides(Some(&sides), 12.0, 0.0);
+        assert_eq!(row(&foam, 0)[0], 0.0);
+        assert_eq!(row(&foam, 1)[0], 2.0);
+        assert!((row(&foam, 0)[1] + 1.0).abs() < 1e-5, "{:?}", row(&foam, 0));
+        assert!(row(&foam, 1)[1].abs() < 1e-5, "{:?}", row(&foam, 1));
+        // Toward −z: onto the far hull's starboard side, along the near one.
+        foam.find_sides(Some(&sides), 12.0, -std::f64::consts::FRAC_PI_2);
+        assert!(row(&foam, 0)[1].abs() < 1e-5);
+        assert!((row(&foam, 1)[1] - 1.0).abs() < 1e-5, "{:?}", row(&foam, 1));
+        // In a calm neither side faces the wind.
+        foam.find_sides(Some(&sides), 0.5, 0.0);
+        assert_eq!((row(&foam, 0)[1], row(&foam, 1)[1]), (0.0, 0.0));
+        // A new frame's update forgets the rows until the next upload names them again.
+        foam.update(&ships, 0.0, Some(([0.0, 40.0, -100.0], 0.8)), 1000.0);
+        assert_eq!(row(&foam, 1), [0.0; 4]);
     }
 
     /// The shelter a hull at `roll` gives the water beside her.

@@ -194,7 +194,9 @@ With it on, a frame goes: the camera jittered by the web's 16 Halton (2, 3) offs
 since the web resolves its display frame) → **resolve** into `taa.resolved` → **present** onto
 the output (decoding sRGB first for an sRGB target). The resolve is the web's line for line: camera
 motion reconstructed from the nearest depth of each 3 × 3 neighbourhood plus the surface's own
-motion, a five-tap Catmull-Rom history, variance clipping (γ 0.75–1.25 by speed), luminance
+motion (about the camera's eye: the depth turned back without the eye's position and reprojected by the previous
+view-projection moved by the eye's step, taken in doubles, so a surface a few metres off holds its history kilometres
+from the origin; `frame.md`, "Drawing about the eye"), a five-tap Catmull-Rom history, variance clipping (γ 0.75–1.25 by speed), luminance
 weighting, and no history where the pixel is off screen, disoccluded (history alpha keeps view
 depth; off by more than 5 %) or asks for none. Output alpha is view depth, negative where the pixel
 took no history, which the output pass smooths with FXAA as the web does (FXAA and SMAA are ported by the aa-tracers

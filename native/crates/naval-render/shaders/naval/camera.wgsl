@@ -44,6 +44,17 @@ fn world_to_clip(world: vec3<f32>) -> vec4<f32> {
     return camera.view_projection * vec4<f32>(curved(world), 1.0);
 }
 
+// A point given less the eye's position, as `world_to_clip` draws the world point (`naval_render::camera::eye_to_clip`):
+// curved about the eye, turned by the view alone and projected. A layer that keeps its positions about the eye (the
+// aircraft, `PrepareContext::eye`) draws them through this: past 16 km from the world's origin an f32 world point steps
+// by 2 mm and `view_projection * world` cancels kilometres against kilometres, which shook a plane seen from a few
+// metres by pixels.
+fn eye_to_clip(offset: vec3<f32>) -> vec4<f32> {
+    let drawn = vec3<f32>(offset.x, offset.y - camera.curvature * dot(offset.xz, offset.xz), offset.z);
+    let turn = mat3x3<f32>(camera.view[0].xyz, camera.view[1].xyz, camera.view[2].xyz);
+    return camera.projection * vec4<f32>(turn * drawn, 1.0);
+}
+
 // NDC (x right, y up, both -1..1) of a framebuffer position (pixels, y down),
 // such as a fragment's @builtin(position).xy.
 fn ndc_from_pixel(pixel: vec2<f32>) -> vec2<f32> {

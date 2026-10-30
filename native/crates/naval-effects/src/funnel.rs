@@ -283,6 +283,10 @@ impl FunnelSmoke {
                 std::mem::take(&mut self.emitters.get_mut(&ship.id).expect("inserted").funnels);
             for emitter in &mut funnels {
                 let outlet = &emitter.outlet;
+                // This funnel's share of her smoke: fewer, fainter billows and a fainter trail (a dummy funnel none).
+                let own = outlet.smoke.clamp(0.0, 1.0);
+                let power = power * own;
+                let thickness = thickness * own.sqrt();
                 let origin = ship.place(outlet.position);
                 let travel = velocity.length() * step + 100.0;
                 if !emitter.initialized
@@ -1435,6 +1439,22 @@ mod tests {
         DVec3,
         Vec<GasPuff>,
     ) {
+        steam_share(speed, 1.0, look)
+    }
+
+    /// [`steam_with`], her funnel making `own` of her smoke.
+    #[allow(clippy::type_complexity)]
+    fn steam_share(
+        speed: f64,
+        own: f64,
+        look: impl FnOnce(&mut FunnelSmoke),
+    ) -> (
+        FunnelSmoke,
+        Vec<GasPuff>,
+        FunnelPublish,
+        DVec3,
+        Vec<GasPuff>,
+    ) {
         let profile = std::sync::Arc::new(crate::ships::ShipEffectsProfile {
             hull_length: 240.0,
             hull_beam: 36.0,
@@ -1446,6 +1466,7 @@ mod tests {
                 width: 8.0,
                 length: 10.0,
                 bearing_rad: None,
+                smoke: own,
             }],
             ..Default::default()
         });
@@ -1501,6 +1522,7 @@ mod tests {
                 width: 8.0,
                 length: 10.0,
                 bearing_rad: None,
+                smoke: 1.0,
             }],
             ..Default::default()
         });
@@ -1529,6 +1551,25 @@ mod tests {
             .iter()
             .map(|s| spine.rim.x - s.position.x)
             .fold(0.0, f64::max)
+    }
+
+    #[test]
+    fn a_funnel_smokes_its_share() {
+        // Her funnel making all of her smoke, half of it and none: its billows' opacity summed, and its trail's.
+        let smoke = |own: f64| {
+            let (_, _, publish, _, _) = steam_share(14.0, own, |_| {});
+            let billows: f32 = publish.billows.iter().map(|b| b.color[3]).sum();
+            (billows, publish.ribbon_indices.len())
+        };
+        let (whole, half, none) = (smoke(1.0), smoke(0.5), smoke(0.0));
+        assert!(whole.0 > 0.0 && whole.1 > 0, "{whole:?}");
+        assert!(
+            half.0 > 0.2 * whole.0 && half.0 < 0.8 * whole.0,
+            "half her smoke's billows {:.1} against {:.1}",
+            half.0,
+            whole.0
+        );
+        assert_eq!(none, (0.0, 0), "a dummy funnel smokes");
     }
 
     #[test]

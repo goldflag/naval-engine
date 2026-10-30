@@ -1,0 +1,35 @@
+[package]
+name = "naval-afloat"
+description = "A hull on the drawn sea, visual only: heave, pitch and roll from the sea under her waterplane, and the inputs of the wake, foam, bow waves, bow spray and funnel smoke she stirs, from a plain hull description (no model, no simulation)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# A portable crate: `bun run check` checks it for wasm32-unknown-unknown (native/AGENTS.md).
+# One test program for every file in tests/ (tests/all.rs).
+autotests = false
+[package.metadata.native]
+portable = true
+
+[dependencies]
+native-unify.workspace = true
+glam.workspace = true
+# The effect crates whose inputs a hull feeds, and nothing of the game's simulation: the combat sea's sines and the
+# funnels' exhaust (naval-effects), the sea around hulls, the wakes and the proxy hull's waterline (naval-ocean), the
+# bow spray (naval-water-effects).
+naval-effects.workspace = true
+naval-ocean.workspace = true
+naval-water-effects = { path = "../naval-water-effects" }
+# The drawn sea's heights about a hull, copied back without waiting (`drawn.rs`).
+wgpu.workspace = true
+bytemuck.workspace = true
+
+[dev-dependencies]
+# The drawn sea read back from the GPU (`tests/drawn_sea.rs`).
+native-offscreen.workspace = true
+naval-render.workspace = true
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

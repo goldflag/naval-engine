@@ -365,8 +365,9 @@ lies on the benches), the faces and the ground materials (the cliff read face on
 normal takes it as a slope added to the land's gradient (`Surface::slope`). Where: rock with beds of 0.5 and more
 (sandstone and red sandstone fully, limestone 0.9, basalt a tenth; never chalk or granite), slopes from 0.25 to 0.45 (14-24°) up,
 on bare ground, shrubs (0.8), steep grass (0.6 from 0.6 to 0.9 of slope) and unknown cover, never woods, fields,
-towns, snow and ice or water, nor where the fine relief is drawn (its pages hold the real steps within a few km of
-the camera in the United States, England, Norway, New Zealand and Japan). Each package's cliff runs out along the wall
+towns, snow and ice or water, nor where a finer model's fine relief is drawn (its pages hold the real steps within a few
+km of the camera in the United States, England, Norway, New Zealand and Japan; a synthetic, GLO-30 or combined page holds
+none, so the steps stay under it: `ReliefPage::real`, `bindings.wgsl`'s `relief_real_share`). Each package's cliff runs out along the wall
 here and there (where the 210 m noise is under a cut of its own, 0.1-0.5, a quarter more on walls steeper than 0.8),
 so no band rings a mountain. The steps fade into the slope as a pixel spans a cliff band (from two pixels to 0.6).
 Cost: the cliff grid's four cells read on every slope over 0.2 (they were read only on a face), two noise reads for
@@ -495,10 +496,232 @@ land.clear_relief(&mut ctx);
 | New Zealand | the same tiles: LINZ's 8 m DEM | 8 m |
 | Japan | the Geospatial Information Authority's elevation tiles: `dem5a_png` (5 m, airborne laser) at zoom 15, `dem_png` (10 m) at zoom 14 where the 5 m has no tile | 5-10 m |
 
-Elsewhere none: the Terrain Tiles there are SRTM's 30-90 m, no finer than the window. Malta, Gibraltar, the rest of the
-Mediterranean, Scotland (Orkney's Old Man of Hoy), the Solomons and the Philippines keep the window's 40 m. Spain's
-IGN MDT05 and Italy's TINITALY are free (CC BY 4.0) but come as downloads, not tiles a client can read near the camera;
-Malta and Gibraltar have no open national model.
+Elsewhere no finer model: the Terrain Tiles there are SRTM's 30-90 m, no finer than the window (Malta, Gibraltar, the
+rest of the Mediterranean, Scotland, the Alps, Taiwan, the Solomons, the Philippines). Spain's IGN MDT05 and Italy's
+TINITALY are free (CC BY 4.0) but come as downloads, not tiles a client can read near the camera; Malta and Gibraltar
+have no open national model. There the pages are **synthetic** (naval-landscape `relief_synth`), made from the window's own
+heights:
+
+- *The base*: Catmull-Rom between the window's samples rather than bilinear, so crests and valleys bend between them.
+- *Gullies* down the fall lines, four octaves from 240 m to 30 m: phacelle stripes (four cells' waves across the slope,
+  their phases blended and made unit, so stripes stay whole and fork where the cells disagree), each octave turned by
+  the slope the coarser ones leave so the finer branch off them (after Rune Skovbo Johansen's erosion filter), cut as a
+  V notch a quarter of the wavelength wide with the ground between a little rounded. Each octave 10 % of its
+  wavelength deep, 0.42 of the last, times how steep the slope is (from 0.1 to full at 0.6), how much the land rises
+  within 320 m (from 15 m to full at 200 m) and a patchiness (value noise three wavelengths across, from a fifth to
+  all of it), so the gullies do not flute a whole slope evenly; none on flats, valley floors, lakes and below 4 m (full
+  from 40 m).
+- *Beds*: the smooth heights stepped along their contours into benches and risers (two sets, 90 and 156 m apart, their
+  surfaces undulating, a riser three times the slope's mean), in patches a few hundred metres across, full where GLiM's
+  rock is sedimentary and Köppen's climate dry (the canyons' cliff bands), a quarter of that in sedimentary rock under a
+  wet climate (soil and forest: Taiwan's beds drawn full were white ladders of rock across its forests), a twentieth
+  elsewhere; the rock and climate read at a page's corners so they blend between pages.
+- *The same residual* as a finer model's: the synthetic heights less the lattice's bilinear surface through them, so a
+  page is zero at the samples; the noise is a function of the theatre's metres, so neighbours agree in their gutters.
+  A page is made only where a bounds block over it rises 20 m (`page_has_relief`), and dropped when it holds under 5 cm.
+
+`NAVAL_RELIEF_SOURCE` picks the source: `auto` (a finer model where one covers, else the combined, below; the synthetic
+alone offline), `real`, `synthetic`
+(everywhere, over a finer model too, to compare with it), `glo30` (a test, below), `combined` (below) or `off`; `NAVAL_RELIEF_SYNTH`
+overrides the generator's parameters (`amplitude=0.1,slope=0.15:0.7`, `relief_synth::Params::parse`). Against the real
+where one covers (the ignored `relief_report` test: the same pages, plain, real and synthetic; its hillshades in
+`.build/synth-relief/pages/`), a page's relief by band of wavelength, RMS (m) over the land:
+
+| 4 km about | Source | Steeper than 30°, 45° | 40-160 m | 16-40 m | 4-16 m |
+| --- | --- | --- | --- | --- | --- |
+| Geiranger and Dalsnibba | the window | 36.7 %, 13.1 % | | | |
+| | Kartverket's 10 m | 36.8 %, 14.1 % | 2.0 | 1.1 | 0.6 |
+| | synthetic | 43.9 %, 17.5 % | 1.6 | 1.1 | 0.8 |
+| The Inner Gorge and Zoroaster Temple | the window | 48.1 %, 16.2 % | | | |
+| | 3DEP | 47.5 %, 18.9 % | 3.6 | 2.4 | 1.5 |
+| | synthetic | 52.5 %, 21.9 % | 2.2 | 1.5 | 1.0 |
+| The Eiger and Lauterbrunnen | the window | 46.3 %, 20.3 % | | | |
+| | synthetic | 52.3 %, 24.3 % | 1.6 | 1.2 | 0.9 |
+| Taroko and the Qingshui cliffs | the window | 72.3 %, 24.1 % | | | |
+| | synthetic | 75.8 %, 31.7 % | 1.9 | 1.4 | 1.0 |
+
+The real relief broadens the slopes (the canyon's benches and cliffs) and leaves their mean; the synthetic's gullies cut
+across the slope and steepen it a little more, and its beds are fainter than the canyon's cliff bands (its 40-160 m band
+three fifths of 3DEP's). Kartverket's model is smooth below 10 m, so Norway's finer bands are its own, not the
+fjords'. A synthetic page takes 100-115 ms on the `dev-client` build (opt-level 1, other sessions building; four a
+batch on four threads), a real one 15-18 ms from its tiles. The GPU's cost is the relief's own (the table below): the
+frame 5.55 ms median at the Eiger's face without, 5.6 ms with (dev client, 1920 × 1080, the user's settings).
+
+**GLO-30, a test** (`NAVAL_RELIEF_SOURCE=glo30`, naval-landscape `relief_glo30`; never chosen by `auto`): Copernicus's 30 m
+surface model, its cells' blocks and filling masks read by range from the AWS copy (kept under the relief's cache),
+through the same residual. A surface model measures the canopy and the roofs, so its detail is kept only on WorldCover's
+open classes (grass, crops, bare, snow and ice, water, wetland, moss): none within 40 m of a tree, shrub, roof or
+mangrove pixel (a lattice cell, so no sample the window's surface is taken through stands on a canopy), all of it 60 m
+further in (a chamfer distance, a smoothstep). Heights the filling mask says came from another model (ASTER, SRTM and
+the rest, under radar shadow and layover) are closed ground too; `NAVAL_RELIEF_GLO30=fills` keeps them.
+`NAVAL_RELIEF_GLO30=band` lets GLO-30 replace the window's heights at wavelengths under about 330 m (GLO-30 less the
+window, less that blurred by two passes of a 164 m box) instead of only adding what lies between the samples: the
+samples then move, by metres to tens of metres on the crests, which the simulation does not see. Against the synthetic
+on the same pages (the ignored `report_glo30_against_synthetic` test; its hillshades in `.build/glo30-relief/pages/`):
+
+| 4 km about | Source | Steeper than 30°, 45° | 40-160 m | 16-40 m | 4-16 m | Kept, filled |
+| --- | --- | --- | --- | --- | --- | --- |
+| The Eiger and Lauterbrunnen | the window | 46.3 %, 20.3 % | | | | |
+| | GLO-30, unmasked | 46.9 %, 20.5 % | 1.3 | 0.6 | 0.4 | |
+| | GLO-30 | 46.5 %, 20.4 % | 0.3 | 0.15 | 0.1 | 18 %, 47 % |
+| | GLO-30, band | 47.0 %, 20.5 % | 1.5 | 0.3 | 0.2 | |
+| | GLO-30, band with the fills | 46.2 %, 20.8 % | 3.8 | 0.6 | 0.5 | 47 %, kept |
+| | synthetic | 52.3 %, 24.3 % | 1.6 | 1.2 | 0.9 | |
+| Rinjani's cone and north rim | the window | 47.3 %, 14.8 % | | | | |
+| | GLO-30, unmasked | 50.2 %, 15.2 % | 1.1 | 0.55 | 0.35 | |
+| | GLO-30 | 48.8 %, 14.8 % | 0.5 | 0.25 | 0.15 | 35 %, 31 % |
+| | GLO-30, band | 52.4 %, 15.0 % | 2.4 | 0.4 | 0.3 | |
+| | GLO-30, band with the fills | 53.3 %, 16.1 % | 3.9 | 0.6 | 0.5 | 64 %, kept |
+| | synthetic | 57.9 %, 20.2 % | 1.7 | 1.3 | 1.0 | |
+
+Through the residual GLO-30 adds next to nothing: its pixels are hardly finer than the lattice's 40 m, so what lies
+between the samples is mostly their beat (a faint plaid in the hillshade), and the window's smooth crests stay at the
+samples. The faces the look wants are where it is filled: 47 % of the Alps' land (the Eiger's faces among it), 31 % of
+Rinjani's; with the fills and the canopy masked, a fifth of the Alps' land keeps any. GLO-30 and the window differ by
+7-42 m RMS a page (10-33 m at the best shift: the window's smoothing more than an offset; Rinjani's best shift is 12-24
+m south throughout), and GLO-30's highest point lies more than 20 m from the window's on half the crest crossings, yet
+under 3 % of the crests are doubled (6 % with the fills; the synthetic's notches 40 %): the residual is too faint for a
+second crest. A page takes 39 ms (the band 25 ms more; `dev-client`, other sessions building) and 60-400 ms to read its
+blocks, masks and cover the first time; the frame at the Eiger's face is the synthetic's (5.65-5.8 ms median against
+5.6-5.9 off).
+
+In the stills (`.build/glo30-relief/`, the tour's views within the pages' reach: the Eiger's face and Lauterbrunnen,
+Rinjani's cone from north and south and its caldera), GLO-30 through the residual is the window again, a little softer;
+its band draws moraines, ledges and the cone's ribs where it is kept, but the Eiger's face is filled and stays the
+window's dome. With the fills kept the band changes the mountain's shape (a notched summit, buttresses and couloirs on
+the face), the couloirs smooth rounded troughs: the fills' own 30-90 m. No step shows at a forest's or a mask's edge.
+GLO-30's 30 m cannot draw what the look misses below about 60 m (the ledges, flutes and gullies the synthetic draws);
+the window's smoothness above it is what GLO-30 can fix, and only by moving the samples.
+
+**Combined** (`NAVAL_RELIEF_SOURCE=combined`, naval-landscape `relief_combined`): GLO-30's band with its fills kept for the
+shapes from about 60 to 330 m, the synthetic's detail under 60 m on top. A page reads GLO-30's cells, filling masks and
+WorldCover as the test source does (`Inputs::load_with`), and lays a base over its texels and 16 more each way (every
+sample its residual stands on): the mask's weight (open ground, GLO-30 held, no void), the band and its slopes. The
+synthetic (`relief_synth::residuals_on`) then stands on it: where the weight is 1 its smooth part is the band rather than
+Catmull-Rom's, its gullies run down the band's slopes and follow its heights, and its octaves longer than 60 m and its
+beds fade out (`Params::under_m`, `under_kept`: GLO-30's own shape stands for them); where the weight is 0 (the canopy,
+roofs, GLO-30's voids, a page GLO-30 cannot be read for offline) it is the synthetic whole, the two blended over the
+mask's 60 m fade. Its gullies are a residual as before (zero at the samples), so only the band moves them. Two options
+(`relief_combined::Options`, `NAVAL_RELIEF_COMBINED="cap=35,seam=60"`):
+
+- *The samples held*: the band moves the window's samples by up to 106 m (Lauterbrunnen's walls, where the window and
+  GLO-30 put the cliff's top in different places); what it would move a sample past a soft 35 m (`capped`, near
+  unchanged under half of it) is taken off as the bilinear surface through the samples (`hold_samples`), so the band's
+  shape between them stays. It costs a tenth of the 40-160 m band in the Alps (4.0 m to 3.6 m RMS), a twentieth
+  elsewhere.
+- *The fills' edges*: where GLO-30's heights meet its fills, the two models can step. Within 12 m of such an edge the
+  band's 16-40 m and 4-16 m bands are 1.1-2 times as strong as 80 m from one (Norway's twice); within 60 m of one the
+  band eases to a 60 m box mean, which takes Rinjani's edges to the far ground's and the Alps' and Norway's halfway.
+
+**Held to the simulation and off the water** (naval-landscape `relief_limit`, every made page: synthetic, GLO-30 and its
+band, combined). The simulation flies its aircraft over the release's heights, a bilinear surface on its 2.25″ lattice
+(naval-sim `land::release`, `DataSquare::height` and `Block::bilinear_m`), keeping 60 m and 1.25 times their
+pull-out's height above the highest of three lanes of their track read every 20 m (`aviation::aircraft_terrain`'s
+`CLEARANCE_M`, `terrain::RAY_STEP_M`); the window is that surface resampled at 40 m. A made page may stand at most
+4 m above the window at any texel (`RAISE_M`): a fifteenth of the clearance, under what a real page or the window's own
+resampling already puts above the release (below). A page is made 18 texels past its own (`MARGIN`, the beds' rock
+read at the nine pages' corners) so two pages agree where they meet, then held (`hold`):
+
+- *A broad excess lowered whole*: the excess over 4 m where it covers most of the 52 m about a texel (a crest the band
+  raises) is spread 24 m, blurred within that and taken off, so the crest keeps its shape a few metres lower and its
+  flanks are carved a little more.
+- *The rest eased*: what then stands above 2.5 m (a lip a Catmull-Rom curve throws over a cliff's top, a gully's
+  rounding, a crest's very top) eases toward 4 m and never reaches it (`ease`, its slope continuous). Below the window
+  a page carves as before.
+- *Off the water*: no made detail on WorldCover's water nor on the waterways and water areas the features draw
+  (rivers, canals, riverbanks, docks), nor on OpenStreetMap's lakes and ponds (`Water`, read with the page from the
+  surface's and the map's caches), coming in over 50 m from them (15 m from a stream, drain or ditch); and none at
+  the sea's level, all of it 50 m up (`SHORE_M`), so a fjord's foot keeps the window's slope.
+
+Against the release itself (the report's `release` heights, the simulation's own reads at every texel), the window
+already stands up to 9-71 m above it at a few texels (its summits raised to the lattice's, its 40 m chords across
+cliffs) and a real page up to 108 m (a 3DEP or Kartverket cliff's top between two samples); the held pages add at most
+the allowance to that. The drawn land less the window at the samples (all, crests, 0-50 m up: mean, RMS, 99th
+percentile and largest of the size) and its highest over the window and over the release at any texel, with the share
+of the land standing more than 4 m over the release (the ignored `report_combined` test, 2 × 2 pages about two places
+a region):
+
+| 4 km about | Source | All samples | Crests | 0-50 m up | Over the window, the release (m) | Over the release by 4 m |
+| --- | --- | --- | --- | --- | --- | --- |
+| The Eiger and Lauterbrunnen | the window | | | | 0, 18.7 | 0.27 % |
+| | synthetic, unheld | 0.0, 0.5, 1.7, 6.2 | +0.2, 0.6, 1.6, 4.5 | | 19.0, 21.2 | 4.4 % |
+| | synthetic | -0.1, 0.6, 2.5, 11 | 0.0, 0.9, 4.4, 11 | | 4.0, 16.3 | 1.3 % |
+| | combined, unheld | 0.0, 6.5, 27, 39 | +1.9, 9.6, 31, 37 | | 72.3, 71.4 | 14.8 % |
+| | combined | -2.2, 5.4, 23, 42 | -3.8, 7.2, 25, 36 | | 4.0, 16.3 | 0.76 % |
+| Rinjani's cone and north rim | the window | | | | 0, 9.1 | 0.23 % |
+| | combined, unheld | +0.1, 6.1, 21, 33 | +2.2, 7.8, 27, 33 | | 45.7, 47.2 | 19.3 % |
+| | combined | -2.5, 5.1, 18, 33 | -3.0, 5.3, 17, 28 | | 4.0, 9.0 | 0.67 % |
+| Taroko and the Qingshui cliffs | the window | | | | 0, 13.4 | 0.60 % |
+| | combined, unheld | 0.0, 0.8, 2.2, 18 | +0.2, 0.6, 1.9, 9.7 | | 22.4, 24.5 | 6.9 % |
+| | combined | -0.2, 0.9, 3.7, 18 | -0.1, 1.1, 4.4, 15 | | 4.0, 14.2 | 2.3 % |
+| The Inner Gorge and Zoroaster | the window | | | | 0, 29.7 | 1.6 % |
+| | 3DEP | 0.0, 1.0, 3.7, 7.7 | +0.4, 1.2, 4.4, 7.6 | | 102.9, 99.2 | 10.5 % |
+| | combined, unheld | 0.0, 3.2, 15, 36 | +0.1, 3.4, 16, 31 | | 38.1, 46.2 | 12.0 % |
+| | combined | -1.1, 3.0, 13, 31 | -1.5, 3.7, 15, 31 | | 4.0, 19.1 | 2.9 % |
+| Geiranger and Dalsnibba | the window | | | | 0, 70.5 | 1.2 % |
+| | Kartverket's 10 m | 0.0, 0.6, 2.6, 10 | +0.2, 0.5, 2.0, 5.6 | -0.5, 1.3, 5.0, 6.3 | 107.8, 107.7 | 3.5 % |
+| | combined, unheld | 0.0, 2.1, 7.3, 34 | +0.7, 2.8, 8.6, 34 | -0.8, 3.9, 19, 34 | 41.3, 64.1 | 4.8 % |
+| | combined | -0.4, 2.1, 8.0, 32 | -0.4, 2.8, 13, 32 | 0.0, 0.2, 0.8, 1.8 | 4.0, 59.1 | 1.2 % |
+
+The held band lowers more samples than it raises (a mean 1-2.5 m down, 3.8 on the Alps' crests): what it would have
+raised is gone, what it carves stays. GLO-30's band alone, held, is the same (its highest over the window 4.0 m
+everywhere). What reads the window rather than the land drawn: the simulation (the aircraft over the land, the ships,
+the guns' line of sight in the simulation), `theatre_landHeight`, the bases' runways and aprons (`Ground::height`). What
+reads the land drawn: the camera's clearance (raised only: `relief_heights` never lowers it below the window's), the
+sight's ray on the land, the trees, lamps, casters, buildings and infrastructure. So an aircraft the simulation flies
+low over a crest has the 60 m it keeps less at most 4 m of made rock (a real page's cliff can still stand higher); the
+camera never goes into the land.
+
+The held pages' shape against the unheld (the same report; the RMS by band of wavelength, m, over the land; a page's
+time on the `dev-client` build, other sessions running):
+
+| 4 km about | Source | Steeper than 30°, 45° | 40-160 m | 16-40 m | 4-16 m | ms a page |
+| --- | --- | --- | --- | --- | --- | --- |
+| The Eiger and Lauterbrunnen | synthetic, unheld | 52.3 %, 24.3 % | 1.57 | 1.18 | 0.86 | 117 |
+| | synthetic | 51.9 %, 23.9 % | 1.45 | 1.11 | 0.82 | 169 |
+| | band with the fills, unheld | 46.2 %, 20.8 % | 3.84 | 0.60 | 0.52 | 61 |
+| | band with the fills | 46.0 %, 20.3 % | 2.51 | 0.60 | 0.43 | |
+| | combined, unheld | 51.2 %, 23.1 % | 3.56 | 1.04 | 0.82 | 179 |
+| | combined | 50.6 %, 22.4 % | 2.42 | 1.00 | 0.76 | 247 |
+| Rinjani's cone and north rim | synthetic, unheld | 57.9 %, 20.2 % | 1.66 | 1.26 | 0.95 | 118 |
+| | synthetic | 57.2 %, 19.7 % | 1.56 | 1.20 | 0.91 | 167 |
+| | combined, unheld | 59.7 %, 18.3 % | 3.83 | 1.02 | 0.84 | 177 |
+| | combined | 56.9 %, 17.5 % | 2.57 | 0.98 | 0.78 | 239 |
+| Taroko and the Qingshui cliffs | combined, unheld (forest: the synthetic) | 75.8 %, 31.7 % | 1.89 | 1.40 | 1.01 | 188 |
+| | combined | 75.4 %, 30.8 % | 1.72 | 1.29 | 0.95 | 254 |
+| The Inner Gorge and Zoroaster | 3DEP | 47.5 %, 18.9 % | 3.64 | 2.42 | 1.48 | |
+| | combined, unheld | 52.3 %, 21.4 % | 2.75 | 1.38 | 0.97 | 191 |
+| | combined | 51.7 %, 20.2 % | 2.10 | 1.23 | 0.88 | 255 |
+| Geiranger and Dalsnibba | Kartverket's 10 m | 36.8 %, 14.1 % | 2.02 | 1.05 | 0.60 | |
+| | combined, unheld | 41.4 %, 16.4 % | 1.99 | 0.95 | 0.71 | 161 |
+| | combined | 41.2 %, 15.9 % | 1.50 | 0.88 | 0.67 | 225 |
+
+Holding costs the band a third of its 40-160 m relief (the half that raised, less what the lowering keeps), the finer
+bands 5-10 % (the rivers' and streams' fades, the eased tops) and the synthetic under a tenth. A held page takes 45-65
+ms more: its wider grid 15 ms, the water's distances and the shore 19 ms, the hold 15 ms (`times_of_the_parts`); the
+water's reads 1-9 ms. A combined page took 150-180 ms unheld on a quiet machine, the synthetic 100-115.
+
+In the stills (`.build/combined-relief/`: a sheet a region, full-size rows in `rows/`), the combined keeps the band's
+buttresses and couloirs on the Eiger and the radial ribs and notched top of Rinjani's cone, the synthetic's fine
+gullies over them, and loses most of the synthetic's 240 m and 120 m combing on the faces GLO-30 holds. Taroko and the
+Qingshui cliffs (forest) are the synthetic. No step shows at a fill's edge (each region's `seam` view, within a
+kilometre of its pages' sharpest edge), with or without the easing. Against Kartverket's and 3DEP's pages at Geiranger
+and the Inner Gorge it draws the same walls and benches more softly, and moves them a little where GLO-30 and the
+window disagree. The frame at the Eiger's face is unchanged (median 5.60 ms off, 5.69 ms combined: three runs of 120
+frames, `dev-client`, 1920 × 1080). So `auto` takes the combined where no finer model covers (the synthetic alone
+offline). What it leaves: the broad cones above the band's 330 m stay the window's (the tops are notched, the domes'
+mass stands); before the hold above, the synthetic's gullies crossed a river's bed as glossy ripples (the Colorado in
+the Inner Gorge, the synthetic alone as well) and left a pale rocky apron along a fjord's foot (Geiranger; not the
+real page's).
+
+Held, in the stills (`.build/relief-safety/`: unheld | held, the combined forced, a sheet a region, full-size rows in
+`rows/`): the Colorado in the Inner Gorge is one smooth surface, its ripples and the rock standing through them gone.
+The Eiger keeps its buttresses and couloirs, shallower, the lower face's ribs softer (the band's lost third); Rinjani's
+cone and rim and Geiranger's walls barely change. The pale apron along Geiranger's foot stays, its edge a little
+smoother: the land drawn there is the window's (0-50 m up, 0.2 m RMS off it), so the apron is the window's gentle foot
+under the ground's shading, not made rock, where a real page's cliff runs steeper into the water. The frame at the
+Eiger's face is unchanged (median 5.86-5.91 ms unheld, 5.77-5.84 held: three runs of 120 frames each, `dev-client`,
+1920 × 1080); the hold costs the worker, not the frame.
 
 **A page** is 512² texels of 4 m (504² of its own, a gutter of 4 from each neighbour), 2,016 m a side, fixed in the
 theatre's metres; the host holds 8 × 8 about the camera (about 8 km each way) and makes only those over the window's
@@ -515,8 +738,9 @@ in a signed byte (`relief::encode_slope`: steps under 0.005 near level ground, c
 tree, lamp and caster shaders): the residual heights (`R16Float`, 44 MB with their levels) for every stage, their
 slopes (`Rg8Snorm`, 44 MB) for the land's fragments. Page (i, j) lies in layer (j mod 8) · 8 + (i mod 8);
 `terrain.relief` holds page (0, 0)'s chart corner, the texel and the slots, `terrain.relief_slots[32]` the page each
-layer holds (two a vector), and the land reads a layer only where its entry names the page at the point, fading out over
-a page's outer 15 % toward a neighbour not held. The layer takes them on the High setting (`TerrainQuality::relief`) on
+layer holds (two a vector), `terrain.relief_real` which layers hold a finer model's page (a bit each: the stepped beds
+stand only under the others), and the land reads a layer only where its entry names the page at the point, fading out
+over a page's outer 15 % toward a neighbour not held. The layer takes them on the High setting (`TerrainQuality::relief`) on
 a device allowing two more sampled textures a stage than the land without them (18 to 20; the client's devices ask for
 24); Medium neither binds nor compiles any of it. Pages upload in `prepare`, up to 2 MB a frame (1.4 MB a page), and a
 page coming in or going marks the trees for placing again and its rectangle of the forest's shade for baking, with
@@ -583,9 +807,10 @@ disk cache under 512 MB (166 MB after the seven places' stills below). Pages tak
 **Checked.** `bun run rust:test -- --native -p naval-terrain --lib relief` (a page's levels, its slopes and their
 encoding, its NaNs, the grid's layers and texels), `-p naval-terrain backends` (the shaders with `RELIEF` on every
 backend), `-p naval-terrain gpu fine_relief` (ridges finer than the field's samples change the land close up, patches
-are drawn dense, hidden the land is as before, and Medium refuses a grid), `--native -p naval-client --lib relief` (the GSI's encoding, the sources' boxes, the pages' tiling, a plane
+are drawn dense, hidden the land is as before, and Medium refuses a grid), `--native -p naval-landscape --lib relief` (the GSI's encoding, the sources' boxes, the pages' tiling, a plane
 has no relief and a wall between samples stands out, the sea and missing tiles are none, the lattice's key, pages only
-over land, the cache's bound). Stills: 32 views of seven places (Palos Verdes and Malibu; Hakone, Izu, Miura; Diamond
+over land, the cache's bound; the synthetic's: a page the same each time, neighbours equal in their gutters, nothing at
+the samples, none on flats, the shore and the sea, its depth bounded, its parameters' spec). Stills: 32 views of seven places (Palos Verdes and Malibu; Hakone, Izu, Miura; Diamond
 Head and the Pali; Bergen; Dover; Malta; Gibraltar) and three close views, from a ship's bridge, binoculars and planes
 at 150, 500 and 1,500 m, before and after in `.build/land-lanes/stills/FR/` (the lead session's checkout). Point Vicente
 and Dover's cliffs stand as faces with a sharp top edge and the gullies of the finer model; Diamond Head's crater rim
@@ -594,5 +819,10 @@ and its ribs are crisp; Izu's sea cliffs are rock; Malta and Gibraltar are uncha
 **Open.** Buildings stand on the relief since 2026-10-14 (buildings.md, "Buildings", "Footing"); the window's heights still carry
 them past its reach. On Dover's chalk the finer model's ledges take grass by their slope, as green bands across the face. Beyond 3 km
 (binoculars) the relief is in the shading only. The cliff lines (OpenStreetMap's `natural=cliff`) are not used yet.
+The synthetic alone cannot change the land at the window's samples, so under it a summit's silhouette and a face's
+broad shape stay the window's (a dome stays a dome, fluted; the combined's band moves them below 330 m, by up to its
+soft 35 m, which the simulation does not follow); its beds are fainter and more regular than real cliff bands, and its
+gullies never meet in a drainage network (each octave runs down the slope it is given, nothing routes water). Its pages
+cost six times a real page's CPU; a coarser grid for the 240 m and 120 m octaves would halve it.
 
 History (measurements, stills, reviews and the lanes): [docs/archive/terrain-history.md](../../../docs/archive/terrain-history.md).

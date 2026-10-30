@@ -20,6 +20,9 @@ struct StampIn {
     // The stamp's centre across its band and its half-width there, in the band's half-widths (y 0: no band); z and w how
     // far the quad reaches past the stamp across and along it (its coordinates are in that grown extent).
     @location(3) band: vec4<f32>,
+    // How far behind its trail's start the stamp lies along the trail, in the start's fade lengths: at its centre and
+    // per its half-length along it (zero for every stamp the start does not reach).
+    @location(4) start: vec4<f32>,
 }
 
 struct StampOut {
@@ -29,6 +32,7 @@ struct StampOut {
     @location(1) axes: vec4<f32>,
     @location(2) shape: vec4<f32>,
     @location(3) band: vec4<f32>,
+    @location(4) start: vec4<f32>,
 }
 
 @vertex
@@ -47,6 +51,7 @@ fn vertex(input: StampIn) -> StampOut {
     output.axes = input.axes;
     output.shape = input.shape;
     output.band = input.band;
+    output.start = input.start;
     return output;
 }
 
@@ -66,7 +71,11 @@ fn fragment(input: StampOut) -> @location(0) vec4<f32> {
     let coverage = select(0.0, profile * input.shape.z, radius < 1.0);
     // How central the point is in the band: the same for every stamp of a band at a point; written over the grown
     // quad's ellipse.
-    let off_centre = abs(input.band.x + across * input.band.y);
+    // Behind its trail's start a slick reads as lying further off its centreline, so it fades in there as it fades out
+    // across its sides (naval_ocean::trail's `Stamp::start`).
+    let off_band = abs(input.band.x + across * input.band.y);
+    let behind = max(input.start.x + input.start.y * along, 0.0);
+    let off_centre = select(off_band, length(vec2<f32>(off_band, behind)), behind > 0.0);
     let reached = dot(grown, grown) < 1.0 && input.band.y > 0.0;
     let track = select(0.0, TRACK_ZERO + (1.0 - TRACK_ZERO) * (1.0 - min(off_centre / TRACK_RANGE, 1.0)), reached);
     return vec4<f32>(select(coverage, 0.0, slick), select(0.0, coverage, slick), select(track, 0.0, slick), select(0.0, track, slick));

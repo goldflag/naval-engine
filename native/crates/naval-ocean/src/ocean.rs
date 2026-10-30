@@ -400,6 +400,9 @@ impl Ocean {
             MakePipelines::Deferred(&placeholders),
         );
         heights.register(ctx, &waves)?;
+        // The surface reads the sides' memory for the slap's white water (bound with the wake, at the next frame's).
+        self.surface
+            .set_hull_sides(ctx.device, Some(heights.side_state()));
         self.hull_heights = Some(heights);
         self.wake_bound = None;
         if self.placeholders.is_none() {
@@ -521,6 +524,13 @@ impl Ocean {
             // The oil drifts with the surface, downwind of the wind the sea is drawn with (from the next update on).
             let waves = &self.parameters.waves;
             wake.set_wind(waves.wind_speed, waves.wind_direction);
+            // The contact foam's slap reads each hull's sides' memory, in the slots the heights' pass steps this frame.
+            let sides = self
+                .hull_heights
+                .as_ref()
+                .map(crate::hull_heights::HullHeights::sides);
+            wake.hull_foam
+                .find_sides(sides, waves.wind_speed, waves.wind_direction);
             wake.encode_timed(device, uploads, encoder, timer);
         }
         // Oil on the water: the surface draws its oil variant.
@@ -552,6 +562,16 @@ impl Ocean {
             .extend(hulls.iter().map(|hull| (hull.x, hull.z)));
         if let Some(heights) = &mut self.hull_heights {
             heights.place(hulls);
+        }
+    }
+
+    /// The hulls whose sides the sea remembers from the next frame on, with [`Ocean::enable_hull_heights_in`]: how high
+    /// the water has lately climbed each side (the wet band's memory) and how hard it rushes up it
+    /// ([`crate::hull_sides`]). The client hands the hulls [`Ocean::set_hull_sea`] couples, as drawn; each keeps her
+    /// history while she stays among them.
+    pub fn set_hull_sides(&mut self, hulls: &[crate::hull_sides::SideHull<'_>]) {
+        if let Some(heights) = &mut self.hull_heights {
+            heights.place_sides(hulls);
         }
     }
 
@@ -791,14 +811,21 @@ impl SceneLayer for Ocean {
             };
         }
         self.prepare_wake_timed(ctx.device, &mut uploads, ctx.encoder, timer);
-        // The sea about each coupled hull, for the hulls' wet band (drawn after this, in the opaque phase).
+        // The sea about each coupled hull, for the hulls' wet band (drawn after this, in the opaque phase), and the water's
+        // memory against their sides, stepped once a frame by the sea's own step (a second view holds it).
         if let Some(heights) = &mut self.hull_heights {
+            let step = if self.second {
+                0.0
+            } else {
+                f64::from(ctx.time.dt) * self.time_scale
+            };
             heights.encode(
                 ctx.device,
                 &mut uploads,
                 ctx.encoder,
                 ctx.camera,
                 self.field.surface_bind_group(),
+                step,
                 timer,
             );
         }

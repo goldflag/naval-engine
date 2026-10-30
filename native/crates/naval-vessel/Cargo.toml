@@ -1,0 +1,37 @@
+[package]
+name = "naval-vessel"
+description = "Any glTF or GLB ship drawn on the sea as a visual only (no weapons, no internals): its setup file resolved into a Vessel (length, beam, draft, the waterline, funnels and lamps in ship space), its PBR materials lit by the scene's sun, sky, shadows, haze and night, several ships each at its own pose"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# A portable crate: `bun run check` checks it for wasm32-unknown-unknown (native/AGENTS.md). The library reads bytes
+# the host hands it; `files` (native only) and the `naval-vessel` command read a setup file and its model from disk.
+# One test program for every file in tests/ (tests/all.rs).
+autotests = false
+[package.metadata.native]
+portable = true
+
+[dependencies]
+native-unify.workspace = true
+wgpu.workspace = true
+glam.workspace = true
+bytemuck.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+gltf.workspace = true
+# Sketchfab's textures are PNG and JPEG.
+image = { workspace = true, features = ["jpeg"] }
+# The renderer core: `SceneLayer`, the camera, the sun's shadow maps, the point lights, the haze and the motion pass.
+naval-render.workspace = true
+# The sky's environment lighting and its light (the sun or the moon).
+naval-sky.workspace = true
+
+[dev-dependencies]
+native-offscreen.workspace = true
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

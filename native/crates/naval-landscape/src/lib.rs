@@ -9,8 +9,9 @@
 //!   share (`surface::get`, `surface::Cache`, `surface::parallel_map`).
 //! - **Map features on the ground** ([`osm`], [`features`]): OpenStreetMap's roads, railways and waters as distance-field
 //!   pages, in a past period only where they stood; the lamps along them at night ([`lamps`]).
-//! - **Relief, trees and the horizon** ([`relief`], [`canopy`], [`horizon`]): finer elevation pages near the camera, the
-//!   canopy height pages, the horizon ring's maps.
+//! - **Relief, trees and the horizon** ([`relief`], [`canopy`], [`horizon`]): finer elevation pages near the camera
+//!   (real, synthetic [`relief_synth`], GLO-30's [`relief_glo30`] or the two combined [`relief_combined`], held to the
+//!   window and off the water [`relief_limit`]), the canopy height pages, the horizon ring's maps.
 //! - **The period's ground** ([`period_land`]): the country a past period's land cover marks, and whether a place's
 //!   ground stood then.
 //! - **The sea's colour** ([`water`]): an atlas of coastal waters.
@@ -34,5 +35,9 @@ pub mod osm;
 pub mod period_land;
 pub mod power;
 pub mod relief;
+pub mod relief_combined;
+pub mod relief_glo30;
+pub mod relief_limit;
+pub mod relief_synth;
 pub mod surface;
 pub mod water;

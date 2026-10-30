@@ -31,7 +31,7 @@
 //! drawn after the chain.
 
 use bytemuck::{Pod, Zeroable};
-use glam::{Mat4, Vec2};
+use glam::{DVec3, Mat4, Vec2};
 
 use crate::Camera;
 use crate::frame::{DEPTH_FORMAT, SCENE_DEPTH};
@@ -244,6 +244,16 @@ const STILL_PX: f32 = 0.01;
 pub(crate) struct TaaFrame {
     pub jitter: Vec2,
     pub previous_view_projection: Mat4,
+    /// This frame's unjittered view-projection about its eye (`Camera::view_about_eye`), and the previous frame's for
+    /// a point given less this frame's eye: the previous projection and turn, moved by the eye's step since, taken in
+    /// doubles. The eye is the camera's own (f32), which the layers that draw world positions draw about, so the
+    /// resolve reprojects their surfaces exactly however far from the world's origin.
+    pub current_from_eye: Mat4,
+    pub previous_from_eye: Mat4,
+    /// The full-precision eye's step since the previous frame less the camera's own eye's (metres; millimetres at
+    /// most): a layer that draws about the full-precision eye (`PrepareContext::eye`) adds it to its previous
+    /// positions (`naval::motion::surface_motion_from_eye`), so its history lines up with the resolve's.
+    pub precise_step: glam::Vec3,
     /// The first render of a new frame (not a capture of it again, nor a held frame repeating it).
     pub new_frame: bool,
     /// The clock frame this render resolves: the last new frame's, which a capture or a held frame draws again.
@@ -263,6 +273,9 @@ pub(crate) struct TaaHistory {
     frame: Option<u64>,
     current: Mat4,
     previous: Mat4,
+    /// The same about each one's eye, the camera's own eye and the full-precision one: [`TaaFrame::previous_from_eye`].
+    current_about: (Mat4, DVec3, DVec3),
+    previous_about: (Mat4, DVec3, DVec3),
     camera: Option<Camera>,
     /// The unjittered view-projection the last new frame was drawn with, which a held picture
     /// keeps repeating while the camera stays on it.
@@ -281,7 +294,7 @@ impl TaaHistory {
     /// is the last frame drawn again, its jitter and history, so a paused picture stands to the
     /// byte as it does without temporal AA (the jitter stepping on had the sea, which takes no
     /// history, dance by a sub-pixel). A camera that turns, zooms or jumps away from the last
-    /// frame's is a cut ([`TaaFrame::cut`]).
+    /// frame's is a cut ([`TaaFrame::cut`]). `eye` is the camera's eye at full precision (its own rounds to it).
     pub(crate) fn begin(
         &mut self,
         frame: u64,
@@ -289,7 +302,14 @@ impl TaaHistory {
         unjittered_view_projection: Mat4,
         viewport: (u32, u32),
         held: bool,
+        eye: DVec3,
     ) -> TaaFrame {
+        let about = (
+            camera.projection(viewport.0 as f32 / viewport.1.max(1) as f32)
+                * camera.view_about_eye(),
+            camera.eye.as_dvec3(),
+            eye,
+        );
         let begun = self.frame.is_some();
         let still_view = begun && still(self.anchor, unjittered_view_projection, viewport);
         let new_frame = self.frame != Some(frame) && !(held && still_view);
@@ -299,15 +319,16 @@ impl TaaHistory {
         // camera stands now.
         let cut = self.camera.is_some_and(|last| cuts(&last, camera));
         if new_frame {
-            self.previous = if begun && !cut {
-                self.current
+            (self.previous, self.previous_about) = if begun && !cut {
+                (self.current, self.current_about)
             } else {
-                unjittered_view_projection
+                (unjittered_view_projection, about)
             };
             self.frame = Some(frame);
             self.anchor = unjittered_view_projection;
         }
         self.current = unjittered_view_projection;
+        self.current_about = about;
         self.camera = Some(*camera);
         let phases = if self.phases == 0 {
             FULL_SCALE_PHASES
@@ -317,12 +338,25 @@ impl TaaHistory {
         TaaFrame {
             jitter: jitter_of(self.frame.unwrap_or(frame), phases),
             previous_view_projection: self.previous,
+            current_from_eye: about.0,
+            previous_from_eye: previous_from_eye(self.previous_about, about.1),
+            precise_step: ((about.2 - self.previous_about.2) - (about.1 - self.previous_about.1))
+                .as_vec3(),
             new_frame,
             frame: self.frame.unwrap_or(frame),
             cut,
             motion_holds: new_frame || still_view,
         }
     }
+}
+
+/// A view-projection about its eye (`about`: it, that eye) for a point given less `eye`: moved by the step between
+/// them, taken in doubles, so a camera kilometres from the world's origin keeps its millimetres.
+pub(crate) fn previous_from_eye(
+    (view_projection, from, _): (Mat4, DVec3, DVec3),
+    eye: DVec3,
+) -> Mat4 {
+    view_projection * Mat4::from_translation((eye - from).as_vec3())
 }
 
 /// The camera cut from `last` to `now`: its lens changed by more than [`LENS_CUT`], its view
@@ -567,6 +601,7 @@ impl Taa {
     }
 
     /// See [`TaaHistory::begin`]; the jitter takes `phases` ([`jitter_phases`]).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn begin(
         &mut self,
         frame: u64,
@@ -575,10 +610,17 @@ impl Taa {
         viewport: (u32, u32),
         held: bool,
         phases: u64,
+        eye: DVec3,
     ) -> TaaFrame {
         self.history.phases = phases;
-        self.history
-            .begin(frame, camera, unjittered_view_projection, viewport, held)
+        self.history.begin(
+            frame,
+            camera,
+            unjittered_view_projection,
+            viewport,
+            held,
+            eye,
+        )
     }
 
     /// The resolve: `display.frame` (this frame) against the history into `taa.resolved`.
@@ -593,7 +635,6 @@ impl Taa {
         timer: &GpuTimer,
         frame: &TaaFrame,
         camera: &crate::CameraUniforms,
-        camera_motion: &crate::CameraMotion,
     ) {
         let texture = |name| resources.texture(name).expect("made by ensure_targets");
         let (beauty, depth, motion, resolved, history) = (
@@ -632,11 +673,16 @@ impl Taa {
         // Below full render scale the resolve reconstructs the output from the smaller scene.
         let upscaling = (output.width, output.height) != (width, height);
         let scale = width as f32 / output.width.max(1) as f32;
+        // The camera's motion is reprojected about its own eye, which the world's layers draw about: the view's turn
+        // back to the world without the eye's position, and the view-projections for a point given less it
+        // (`TaaFrame::previous_from_eye`).
+        let mut turn_back = Mat4::from_cols_array(&camera.inverse_view);
+        turn_back.w_axis = glam::Vec4::W;
         let uniforms = TaaUniforms {
-            current: camera_motion.unjittered_view_projection,
-            previous: frame.previous_view_projection.to_cols_array(),
+            current: frame.current_from_eye.to_cols_array(),
+            previous: frame.previous_from_eye.to_cols_array(),
             projection_inverse: camera.inverse_projection,
-            camera_world: camera.inverse_view,
+            camera_world: turn_back.to_cols_array(),
             inverse_size: [1.0 / width as f32, 1.0 / height as f32],
             history_weight: if self.history_valid && !frame.cut {
                 1.0
@@ -749,16 +795,16 @@ mod tests {
         );
         let camera = Camera::default();
         let mut history = TaaHistory::default();
-        let first = history.begin(5, &camera, a, VIEWPORT, false);
+        let first = history.begin(5, &camera, a, VIEWPORT, false, camera.eye.as_dvec3());
         assert!(first.new_frame);
         assert_eq!(
             first.previous_view_projection, a,
             "no history: its own camera"
         );
-        let again = history.begin(5, &camera, b, VIEWPORT, false);
+        let again = history.begin(5, &camera, b, VIEWPORT, false, camera.eye.as_dvec3());
         assert!(!again.new_frame);
         assert_eq!(again.previous_view_projection, a);
-        let next = history.begin(6, &camera, c, VIEWPORT, false);
+        let next = history.begin(6, &camera, c, VIEWPORT, false, camera.eye.as_dvec3());
         assert_eq!(
             next.previous_view_projection, b,
             "the latest render of the last frame is the one its history holds"
@@ -770,15 +816,15 @@ mod tests {
         let camera = Camera::look_at(glam::Vec3::new(0.0, 20.0, 300.0), glam::Vec3::ZERO);
         let vp = view_projection(&camera);
         let mut history = TaaHistory::default();
-        history.begin(10, &camera, vp, VIEWPORT, false);
-        let running = history.begin(11, &camera, vp, VIEWPORT, false);
+        history.begin(10, &camera, vp, VIEWPORT, false, camera.eye.as_dvec3());
+        let running = history.begin(11, &camera, vp, VIEWPORT, false, camera.eye.as_dvec3());
         assert!(
             running.new_frame,
             "a still camera in a running scene steps on"
         );
         // Paused: frames 12, 13, … repeat frame 11, its jitter and its history.
         for frame in 12..40 {
-            let held = history.begin(frame, &camera, vp, VIEWPORT, true);
+            let held = history.begin(frame, &camera, vp, VIEWPORT, true, camera.eye.as_dvec3());
             assert!(!held.new_frame && !held.cut);
             assert_eq!(held.jitter, running.jitter);
             assert_eq!(
@@ -788,17 +834,38 @@ mod tests {
         }
         // The camera turned a little under the pause: the picture follows it, the jitter steps on.
         let turned = Camera::look_at(camera.eye, glam::Vec3::new(1.0, 0.0, 0.0));
-        let moved = history.begin(40, &turned, view_projection(&turned), VIEWPORT, true);
+        let moved = history.begin(
+            40,
+            &turned,
+            view_projection(&turned),
+            VIEWPORT,
+            true,
+            turned.eye.as_dvec3(),
+        );
         assert!(moved.new_frame && !moved.cut);
         assert_eq!(moved.jitter, jitter(40));
         // It settles: held frames repeat the new picture.
-        let settled = history.begin(41, &turned, view_projection(&turned), VIEWPORT, true);
+        let settled = history.begin(
+            41,
+            &turned,
+            view_projection(&turned),
+            VIEWPORT,
+            true,
+            turned.eye.as_dvec3(),
+        );
         assert!(!settled.new_frame);
         assert_eq!(settled.jitter, jitter(40));
         // Running again: every frame is new.
         assert!(
             history
-                .begin(42, &turned, view_projection(&turned), VIEWPORT, false)
+                .begin(
+                    42,
+                    &turned,
+                    view_projection(&turned),
+                    VIEWPORT,
+                    false,
+                    turned.eye.as_dvec3()
+                )
                 .new_frame
         );
     }
@@ -807,7 +874,14 @@ mod tests {
     fn a_lens_change_or_a_sharp_turn_is_a_cut() {
         let camera = Camera::look_at(glam::Vec3::new(0.0, 20.0, 300.0), glam::Vec3::ZERO);
         let step = |history: &mut TaaHistory, frame, to: &Camera| {
-            history.begin(frame, to, view_projection(to), VIEWPORT, false)
+            history.begin(
+                frame,
+                to,
+                view_projection(to),
+                VIEWPORT,
+                false,
+                to.eye.as_dvec3(),
+            )
         };
         let mut history = TaaHistory::default();
         assert!(
@@ -846,6 +920,65 @@ mod tests {
         let elsewhere = Camera::look_at(glam::Vec3::new(50.0, 20.0, 300.0), glam::Vec3::ZERO);
         let again = step(&mut history, 8, &elsewhere);
         assert!(!again.new_frame && again.cut);
+    }
+
+    #[test]
+    fn far_from_the_origin_a_close_body_reprojects_about_the_eye() {
+        // A camera 30 km out riding 2 m off a plane flying at 82 m/s, sixty frames a second, on a 3300 × 1856 screen (the
+        // gallery's close look), its eye given at full precision. A still surface beside the plane, drawn about the
+        // camera's own eye as the world's layers draw, is reprojected into the frame before as the resolve does: about
+        // the eye it lands within a thousandth of a pixel of the doubles' answer; through world positions (the resolve
+        // before) it missed by pixels. A point on the plane, drawn about the full-precision eye, comes back to where the
+        // frame before drew it with the precise step added to its previous position.
+        let mut history = TaaHistory::default();
+        let pixels = |ndc: glam::DVec2| ndc * glam::DVec2::new(1650.0, 928.0);
+        let project = |m: Mat4, p: glam::Vec3| {
+            let clip = m * p.extend(1.0);
+            pixels((clip.truncate().truncate() / clip.w).as_dvec2())
+        };
+        let (mut still, mut world, mut plane_point) = (0.0_f64, 0.0_f64, 0.0_f64);
+        let mut last: Option<(Camera, DVec3, DVec3)> = None;
+        for frame in 0..60_u64 {
+            let t = frame as f64 / 60.0;
+            let plane = DVec3::new(-29_650.0 + 82.0 * t, 90.0, 12_310.0 + 9.0 * t);
+            let eye = plane + DVec3::new(-1.4, 0.5, 1.3);
+            let camera = Camera::look_at(eye.as_vec3(), plane.as_vec3());
+            let begun = history.begin(
+                frame,
+                &camera,
+                view_projection(&camera),
+                VIEWPORT,
+                false,
+                eye,
+            );
+            let wall = plane + DVec3::new(0.4, 0.3, -0.6);
+            let on_plane = DVec3::new(0.2, 0.9, -1.1);
+            if let Some((before, before_eye, before_plane)) = last {
+                // The doubles' answers: by the frame before's turn and lens, the surface less the eye it was drawn about.
+                let lens = (before.projection(16.0 / 9.0) * before.view_about_eye()).as_dmat4();
+                let truth = |offset: DVec3| {
+                    let clip = lens * offset.extend(1.0);
+                    pixels(clip.truncate().truncate() / clip.w)
+                };
+                let rounded = camera.eye.as_dvec3();
+                let resolved = project(begun.previous_from_eye, (wall - rounded).as_vec3());
+                still = still.max(resolved.distance(truth(wall - before.eye.as_dvec3())));
+                let drawn = project(begun.previous_view_projection, wall.as_vec3());
+                world = world.max(drawn.distance(truth(wall - before.eye.as_dvec3())));
+                // The plane's point a frame ago, less this frame's precise eye, moved by the precise step.
+                let previous = (before_plane + on_plane - eye).as_vec3() + begun.precise_step;
+                let resolved = project(begun.previous_from_eye, previous);
+                plane_point =
+                    plane_point.max(resolved.distance(truth(before_plane + on_plane - before_eye)));
+            }
+            last = Some((camera, eye, plane));
+        }
+        assert!(still < 1e-3, "a still surface about the eye: {still} px");
+        assert!(
+            plane_point < 1e-3,
+            "the plane about the precise eye: {plane_point} px"
+        );
+        assert!(world > 1.0, "through world positions: {world} px");
     }
 
     #[test]

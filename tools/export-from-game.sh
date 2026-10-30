@@ -41,6 +41,8 @@ NATIVE_CRATES=(
   native/crates/naval-land-bake
   native/crates/naval-globe
   native/crates/naval-landscape
+  native/crates/naval-vessel
+  native/crates/naval-afloat
   native/crates/engine-example
   native/crates/native-unify
   native/crates/native-offscreen
@@ -72,6 +74,8 @@ DOCS=(
   native/docs/combat-effects
   native/docs/render-core
   native/docs/lighting
+  native/docs/vessel.md
+  native/docs/afloat.md
 )
 
 # The workspaces' manifests and lockfiles: exported, then rewritten below.

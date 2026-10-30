@@ -4,9 +4,10 @@ The sky, atmosphere, clouds, ocean, terrain and combat effects from the naval ga
 [wgpu](https://wgpu.rs): a physically based sky with the sun, moon and stars, volumetric clouds and weather, an FFT
 ocean with foam and wakes, real-elevation land with trees, and gun blasts, splashes, fire and smoke; the round Earth
 they stand on (latitude and longitude, the sun's and the moon's places) and the bake that turns the world's elevation
-and coastline data into land. None of it needs the game's simulation; `engine-example` is a window that draws them all.
+and coastline data into land. Ships from any glTF file float on that sea with their wakes and smoke. None of it needs the game's simulation;
+`engine-example` is a window that draws them all.
 
-Exported from the game at <!-- exported-commit -->`eaf2835938c9824e862fe0d1cd51f83f5387aa0c`.
+Exported from the game at <!-- exported-commit -->`01c6c45aad682b2aa98bb2d745505e78c0b33aa3`.
 
 ## Where changes go
 
@@ -32,6 +33,8 @@ This repository is an export. The crates live in the game's repository, and chan
 | `naval-overture` | Overture Maps' infrastructure (GeoParquet): power lines, towers and masts over a box |
 | `naval-land-bake` | The bake's host and the `naval-land-bake` command: makes a land release and bakes its squares into a store, fetching the elevation tiles over the network ([its README](native/crates/naval-land-bake/README.md)) |
 | `naval-landscape` | The real world's look on the land, fetched from open sources, cached on disk and made on worker threads: Sentinel-2 colour and land cover (NAIP in the United States), OpenStreetMap's roads, railways and waters, finer relief, tree canopy, the horizon's land, and the buildings, ports, bridges, airfields, bases and power lines on it |
+| `naval-vessel` | Any glTF/GLB ship lit by the scene (sun, sky light, shadows, haze, night, navigation lamps), from a `<model>.vessel.json` setup giving its length, axes, waterline, funnels and lamps; `naval-vessel inspect <file.glb> --write` starts one ([native/docs/vessel.md](native/docs/vessel.md)) |
+| `naval-afloat` | A hull riding the drawn sea (heave, pitch and roll from the ocean's own waves) and what it stirs: its wake, bow waves, bow spray and funnel smoke ([native/docs/afloat.md](native/docs/afloat.md)) |
 | `naval-globe` | The round Earth seen from space: an orthographic globe with the world chart's land, coasts, reefs, depth bands and graticule, drawn on the GPU |
 | `engine-example` | A window with a fly camera over the sky, clouds, sea, a coast and a few effects: the template a host copies |
 | `native-offscreen` | A headless device and PNG read-back, for stills and tests |
@@ -79,6 +82,23 @@ renders the window's first view (700 m up, 2.5 km off the coast) in fixed condit
 <w>x<h>` sets either's size. The coast is cut from the `synthetic` land release, so nothing is downloaded. O switches
 the window to the globe and back (a drag turns it, the wheel zooms about the pointer); `--globe` starts there, and with
 `--still` renders the whole Earth over the North Atlantic.
+
+## Ships from any glTF file
+
+Download a ship (a GLB from Sketchfab, say), write its setup and sail it:
+
+```sh
+cd native
+cargo run -p naval-vessel -- inspect <dir>/ship.glb --write     # prints its bounds and axes, writes ship.vessel.json
+# Edit ship.vessel.json: her length in metres, which way is up and ahead, her waterline, funnels and lamps.
+cargo run -p engine-example --profile dev-client -- --ship <dir>/ship.vessel.json --knots 20
+```
+
+`--ship` may be given several times. In the window `[` and `]` change her speed by a knot (`,` and `.` by five), R puts
+her about, Tab follows the next ship and C brings the chase camera back. `engine-example`'s README ("Any glTF ship
+afloat") shows the glue a host copies: a `Vessel` to a `naval_afloat::Hull`, and her motion to a `VesselPose`. Not
+there yet: the sea is not masked out of the hull, so it can show inside an open or low hull, and she does not heel in a
+turn. Models with Draco or meshopt compression, KTX2 or WebP textures are refused with advice to re-export them.
 
 ## Baking real land
 

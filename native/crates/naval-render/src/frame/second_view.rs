@@ -82,7 +82,11 @@ impl Renderer {
             previous_view_projection: unjittered.to_cols_array(),
             jitter: [0.0; 2],
             padding: [0.0; 2],
+            previous_from_eye: (input.camera.projection(aspect) * input.camera.view_about_eye())
+                .to_cols_array(),
+            precise_step: [0.0; 4],
         };
+        let eye = self.frame_eye(input.camera);
         self.uploads
             .write_buffer(&self.camera.motion, 0, bytes_of(&motion));
         self.uploads
@@ -129,6 +133,7 @@ impl Renderer {
                 pipelines: &self.pipelines,
                 resources: &mut self.resources,
                 camera: &uniforms,
+                eye,
                 camera_group: &self.camera.group,
                 time: input.time,
                 motion_frame: input.time.frame,
@@ -188,6 +193,7 @@ impl Renderer {
                             pipelines: &self.pipelines,
                             resources: &mut self.resources,
                             camera: &uniforms,
+                            eye,
                             camera_group: &self.camera.group,
                             time: input.time,
                             motion_frame: input.time.frame,

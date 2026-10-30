@@ -432,6 +432,7 @@ mod tests {
                     width: 8.0,
                     length: 12.0,
                     bearing_rad: None,
+                    smoke: 1.0,
                 },
                 FunnelOutlet {
                     id: "aft-funnel".into(),
@@ -439,6 +440,7 @@ mod tests {
                     width: 8.0,
                     length: 12.0,
                     bearing_rad: None,
+                    smoke: 1.0,
                 },
             ],
             funnel_bases: vec![12.0, 12.0],

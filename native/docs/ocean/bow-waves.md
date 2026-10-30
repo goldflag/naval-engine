@@ -264,6 +264,22 @@ wash peak 0.56 m away from the tilted hull's band; the corrected peak follows th
 Underway hulls take the contact slots before stopped hulls, with camera distance deciding within each group, so nearer
 stopped hulls cannot displace an underway hull's side wash.
 
+Both bands start at the plating (2026-10-29). The contact line peaked a third of its width outboard of the side
+(`blurred * 0.3`) and the wash half of its (`* 0.5`), which left darker water against the plating, most of all from
+above, where her shadow falls on it. Each is now full against the side and falls away outboard, the line over 1.3 of
+its width and the wash over 1.6 of its, so each still reaches half strength about where it did; inside the side
+(where the profile stands proud of the drawn hull) both fade over 0.6 m as before. `side_wash_follows_the_drawn_hull`
+finds the wash's peak on the side within 0.12 m through heave, pitch and roll.
+
+The water a fast hull heaps against her side read as glass: clean water under the wash, lit through by `wave_light`.
+From her stem to her waist (the wash's own downstream fade), out to the wash's width from her side (3.5 m, falling as
+a Gaussian), the water of a hull under way holds bubbles in the wash's streaks (up to 0.2, `FROTH_BUBBLES`) and gives
+back 0.7 of the light through the waves (`HullFoamSample.froth` into `WakeSurface.froth`, which the surface multiplies
+into `through`). From above the band against her side reads as aerated water with the wash's lace reaching her
+plating; in low views at noon her bow wave's turquoise dome changes little, since most of that colour is the hull seen
+through the raised water (the see-through, another lane's). The white water a slap leaves against her side, at rest
+or under way, comes from the sides' memory ([sea-sky.md](../sea-sky.md), "The slap's white water").
+
 The analytic Kelvin interior attenuated its shaded slopes but displaced the full wave. Height now takes that same
 attenuation, retaining the cusp's existing height. Around length Froude 0.45 (eased over 0.43–0.46), `stem_crest`
 bounds the crest line to half the draft and the Kelvin source to 0.15 of the draft; its shaded amplitude takes the

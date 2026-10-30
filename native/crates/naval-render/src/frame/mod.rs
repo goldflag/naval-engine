@@ -422,6 +422,8 @@ pub struct Renderer {
     /// (the last new frame's step), which its shutter scales by.
     play_camera: Option<crate::play_camera::PlayCamera>,
     motion_interval: f32,
+    /// The camera's eye at full precision, from the host ([`Renderer::set_eye`]).
+    precise_eye: Option<glam::DVec3>,
     /// The game's look (the Graphics menu's Look); photo mode's replaces it while photo mode is up.
     look: crate::photo::Look,
     /// The look the last frame was graded with: temporal AA's history holds its colours.
@@ -574,6 +576,7 @@ impl Renderer {
             photo_bodies: Vec::new(),
             play_camera: None,
             motion_interval: 0.0,
+            precise_eye: None,
             look: crate::photo::Look::Natural,
             drawn_look: crate::photo::Look::Natural,
             clip_planes: [0.5, 60_000.0],

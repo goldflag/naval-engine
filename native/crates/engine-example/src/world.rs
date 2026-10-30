@@ -1,7 +1,7 @@
 //! The scene: every engine layer built on one renderer, in the conditions `naval-conditions` resolves, and the effects
 //! a host spawns through the effect crates' own inputs. What each layer needs from its host is in README.md.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use glam::{DVec3, Vec3};
@@ -19,15 +19,34 @@ use naval_sky::{SkyMeanLayer, SkyQuality};
 use naval_terrain::textures::DETAIL_PHOTOS;
 use naval_terrain::{TerrainLayer, TerrainLight, TerrainSettings};
 use naval_water_effects::fixture::{WaterEvent, WaterEventKind};
-use naval_water_effects::{EffectsFrame, GunBlast, WaterEffects};
+use naval_water_effects::{CrestShape, EffectShip, EffectsFrame, GunBlast, WaterEffects};
 
+use crate::afloat::{Fleet, Helm};
 use crate::coast;
+use crate::join;
+use crate::ship::Ships;
 
 /// The weathers the weather key steps through (`naval_conditions::weather_presets`, less the map's own).
 pub const WEATHERS: [&str; 5] = ["clear", "partly-cloudy", "overcast", "fog", "storm-clouds"];
 
 /// A smoke screen's life, seconds: it spreads, then thins away.
 const SMOKE_LIFE_S: f64 = 90.0;
+
+/// Where the first ship from a glTF file puts to sea: 2.3 km off the coast below the window's first view, heading
+/// west-south-west along it (the afternoon's sun behind the chase camera off her port bow). The others sail abreast of
+/// her to starboard, a length and a half of the longest apart.
+const SHIPS_AT: (f64, f64) = (-1800.0, 2300.0);
+const SHIPS_HEADING_DEG: f64 = 250.0;
+const ABREAST: f64 = 1.5;
+
+/// What sails: the stand-in at her knots (`--afloat`), and the ships whose setup files are named (`--ship`) at
+/// `knots` (`--knots`).
+#[derive(Clone, Debug, Default)]
+pub struct Sail {
+    pub stand_in: Option<f64>,
+    pub ships: Vec<PathBuf>,
+    pub knots: f64,
+}
 
 /// The conditions a host chooses: the hour, a weather and the wind that raises the sea (m/s; `None` keeps the
 /// weather's own).
@@ -62,18 +81,23 @@ pub struct World {
     ocean: Ocean,
     water: WaterEffects,
     effects: EffectsLayer,
+    /// The ships from glTF files (`--ship`), if any: their models, drawn where the fleet has them.
+    pub ships: Option<Ships>,
     /// What the host spawned since the last frame: the combat effects' events and the water's.
     events: Vec<CombatEvent>,
     splashes: Vec<WaterEvent>,
     /// The smoke screens laid, with the time each was laid.
     smoke: Vec<(ScreenSmoke, f64)>,
+    /// Every ship afloat: the ships from glTF files first, in their models' order, then the stand-in.
+    pub fleet: Fleet,
     sequence: u64,
     now: f64,
 }
 
 impl World {
-    /// Every layer on `renderer`'s device, in `conditions`, over the synthetic release's coast.
-    pub fn new(renderer: &mut Renderer, conditions: Conditions) -> Result<Self> {
+    /// Every layer on `renderer`'s device, in `conditions`, over the synthetic release's coast, with what `sail` names
+    /// afloat.
+    pub fn new(renderer: &mut Renderer, conditions: Conditions, sail: &Sail) -> Result<Self> {
         renderer.set_bloom(Some(BloomSettings::default()));
         renderer.set_eye_adaptation(EyeAdaptationSettings {
             enabled: true,
@@ -154,6 +178,9 @@ impl World {
         effects.set_splash_cover(Some(water.cover()));
         // The clouds stop at the sea's surface seen from under it.
         sky.set_underwater_probe(Some(probe));
+        let ships = (!sail.ships.is_empty())
+            .then(|| Ships::new(renderer, &sky, &sail.ships))
+            .transpose()?;
 
         let mut world = Self {
             conditions,
@@ -165,14 +192,63 @@ impl World {
             ocean,
             water,
             effects,
+            ships: None,
             events: Vec::new(),
             splashes: Vec::new(),
             smoke: Vec::new(),
+            fleet: Fleet::new(),
             sequence: 0,
             now: 0.0,
         };
         world.apply_fog();
+        world.sail(renderer, ships, sail.stand_in, sail.knots)?;
         Ok(world)
+    }
+
+    /// Put `ships` to sea at `knots`, each her model's hull (`crate::join::hull`), and the stand-in at hers, before
+    /// the first frame: the sea's wakes and its heights about hulls on, and the stand-in's proxy's layer.
+    fn sail(
+        &mut self,
+        renderer: &mut Renderer,
+        ships: Option<Ships>,
+        stand_in: Option<f64>,
+        knots: f64,
+    ) -> Result<()> {
+        let models = ships.as_ref().map_or(&[][..], |s| &s.models[..]);
+        if models.is_empty() && stand_in.is_none() {
+            return Ok(());
+        }
+        let mut ctx = renderer.context();
+        self.ocean
+            .enable_wake_in(&mut ctx)
+            .map_err(|e| anyhow!("the wakes' shaders: {e:?}"))?;
+        self.ocean
+            .enable_hull_heights_in(&mut ctx)
+            .map_err(|e| anyhow!("the hull heights' shader: {e:?}"))?;
+        let heading = SHIPS_HEADING_DEG.to_radians();
+        let spacing = ABREAST
+            * models
+                .iter()
+                .map(|(_, v)| f64::from(v.length))
+                .fold(0.0, f64::max);
+        // Her starboard beam (world x, z).
+        let (sin, cos) = heading.sin_cos();
+        for (i, (_, vessel)) in models.iter().enumerate() {
+            let out = spacing * i as f64;
+            let helm = Helm::Straight {
+                x: SHIPS_AT.0 + cos * out,
+                z: SHIPS_AT.1 + sin * out,
+                heading,
+                turn: 0.0,
+            };
+            self.fleet
+                .launch(&vessel.name, join::hull(vessel), knots, helm)?;
+        }
+        if let Some(knots) = stand_in {
+            self.fleet.stand_in(&mut ctx, knots)?;
+        }
+        self.ships = ships;
+        Ok(())
     }
 
     /// Change the conditions: the sky, the sea and the fog every layer takes follow.
@@ -289,6 +365,30 @@ impl World {
             })
     }
 
+    /// The eye as the game's client sets it each frame (`naval-client`'s scene and session): the night grade follows
+    /// the sun the sky draws; after dark the eye may close by the night's lift on real light, opens for the night's
+    /// light at the sea, and the bloom takes no more than `naval_render::post::bloom_limit` from a pixel, so a lamp of
+    /// real candela (a ship's masthead light) glows about itself instead of veiling the view.
+    fn set_eye(&self, renderer: &mut Renderer) {
+        let sky = &self.sky.sky;
+        let elevation = sky.sun_direction().y.clamp(-1.0, 1.0).asin().to_degrees();
+        let full_moon = naval_render::lights::full_moon_scene(
+            naval_sky::model::moonlight_at(f64::from(elevation)) as f32,
+            naval_sky::model::moon_grade::TRANSMITTANCE as f32,
+            naval_sky::model::sky_grade::GAIN as f32,
+            naval_sky::state::moon_tint().as_vec3(),
+        );
+        renderer.set_sun_elevation(Some(elevation));
+        renderer.set_night_lift(naval_render::lights::night_lift(elevation, full_moon));
+        // The scene's units a lux are its intensity for a real candela (a lux at a metre).
+        let per_lux = naval_render::lights::candela_scale(elevation, full_moon).max(1e-12);
+        let sea = sky.sea_level();
+        renderer.set_night_light(
+            naval_render::lights::luminance((sea.sun + sea.moon + sea.sky).as_vec3()) / per_lux,
+        );
+        renderer.set_night_share(naval_sky::model::night_share(f64::from(elevation)) as f32);
+    }
+
     /// Step the scene `dt` seconds for a frame of `camera` at `width` × `height`: the light every layer takes from
     /// the sky, and the effects.
     pub fn advance(
@@ -303,12 +403,21 @@ impl World {
         let flash = self.sky.lightning().flash;
         // The sun's shadow maps centre where the camera looks.
         renderer.set_sun(Some(Sun::new(light.direction, camera.target)));
+        self.set_eye(renderer);
         let ambient = self.scene.ambient;
         self.terrain.set_light(&TerrainLight {
             light,
             ambient: ambient as f32,
             flash,
         });
+        if let Some(ships) = self.ships.as_mut() {
+            ships.advance(
+                &self.sky,
+                ambient as f32,
+                flash,
+                self.scene.ocean.fog.into(),
+            );
+        }
 
         // The effects' light: the sky's sun or moon, its ambient lifted by a lightning flash.
         let (color, direction) = (light.color.as_dvec3(), light.direction.as_dvec3());
@@ -361,11 +470,37 @@ impl World {
             })
             .collect();
 
+        // The ships sail on: the sea they ride and their wakes to the ocean, the stand-in's proxy posed, the models
+        // drawn at their poses afloat.
+        let sea = naval_afloat::swell(&self.ocean.parameters.waves);
+        let ctx = renderer.context();
+        self.fleet.advance(
+            ctx.device,
+            ctx.queue,
+            dt,
+            self.now,
+            &sea,
+            &mut self.ocean,
+            camera,
+            (width, height),
+        );
+        self.fleet.draw(ctx.device, ctx.queue, &light, ambient);
+        if let Some(ships) = self.ships.as_mut() {
+            ships.place(
+                self.fleet
+                    .ships
+                    .iter()
+                    .map(|s| join::pose(&s.afloat.pose())),
+            );
+        }
+
         let view = CameraView::from_render(camera, width, height);
         let events = std::mem::take(&mut self.events);
+        // Their funnels' smoke with the combat effects'.
+        let funnels = self.fleet.ship_frames();
         self.effects
             .effects
-            .update(dt, self.now, &view, &events, &[]);
+            .update(dt, self.now, &view, &events, &funnels);
         // The turrets that fired lay their sheets of spray on the sea under the guns.
         let blasts: Vec<GunBlast> = self
             .effects
@@ -382,29 +517,43 @@ impl World {
             .collect();
         self.water.gun_blasts(&blasts);
         let splashes = std::mem::take(&mut self.splashes);
+        // Their bows' spray, off the crests the ocean's bow waves draw, on the sea they ride.
+        let ships: Vec<EffectShip<'_>> = self.fleet.effect_ships();
+        let crest = self
+            .ocean
+            .wake
+            .as_ref()
+            .map(|w| CrestShape::from(&w.bow_waves.tuning));
         self.water.update(&EffectsFrame {
             dt,
             camera: view,
-            ships: &[],
+            ships: &ships,
             events: &splashes,
-            sea: None,
+            sea: (!ships.is_empty()).then_some((sea, self.now)),
             waves: self.ocean.parameters.waves.significant_height,
-            crest: None,
+            crest,
             lighting: self.water.lighting,
         });
     }
 
     /// The layers in draw order: the sky first (its prepare refilters the environment the others read this frame),
-    /// its mean for the eye, the land, the sea over the opaque scene, then the transparent effects.
-    pub fn layers(&mut self) -> [&mut dyn SceneLayer; 6] {
-        [
-            &mut self.sky,
-            &mut self.mean,
-            &mut self.terrain,
-            &mut self.ocean,
+    /// its mean for the eye, the land (and the stand-in ship's proxy), the ships, the sea over the opaque scene, then
+    /// the transparent effects.
+    pub fn layers(&mut self) -> Vec<&mut dyn SceneLayer> {
+        let mut layers: Vec<&mut dyn SceneLayer> =
+            vec![&mut self.sky, &mut self.mean, &mut self.terrain];
+        if let Some(proxy) = self.fleet.layer() {
+            layers.push(proxy);
+        }
+        if let Some(ships) = self.ships.as_mut() {
+            layers.push(&mut ships.layer);
+        }
+        layers.extend([
+            &mut self.ocean as &mut dyn SceneLayer,
             &mut self.water,
             &mut self.effects,
-        ]
+        ]);
+        layers
     }
 }
 

@@ -18,6 +18,10 @@ struct CameraMotion {
     // The sub-pixel offset the camera's projection carries, in pixels.
     jitter: vec2<f32>,
     padding: vec2<f32>,
+    // The previous view-projection for a point given less this frame's eye (the camera's own), and the full-precision
+    // eye's step less the camera's own eye's (xyz): `surface_motion_from_eye`.
+    previous_from_eye: mat4x4<f32>,
+    precise_step: vec4<f32>,
 }
 
 @group(0) @binding(5) var<uniform> camera_motion: CameraMotion;
@@ -30,4 +34,15 @@ fn surface_motion(current_world: vec3<f32>, previous_world: vec3<f32>, response:
 
 fn motion_response(response: f32) -> vec4<f32> {
     return vec4<f32>(0.0, 0.0, response, 0.0);
+}
+
+// `surface_motion` for positions given less this frame's full-precision eye (`naval_render::PrepareContext::eye`,
+// `eye_to_clip`), the previous ones too: they keep their precision far from the world's origin, where the world
+// positions' 2 mm steps moved a close body's history by pixels. The resolve reprojects the camera's motion about the
+// camera's own (rounded) eye, as the world's layers draw; the previous position takes the difference between the two
+// eyes' steps, so the whole lands where the frame before drew it.
+fn surface_motion_from_eye(current: vec3<f32>, previous: vec3<f32>, response: f32) -> vec4<f32> {
+    let now = camera_motion.previous_from_eye * vec4<f32>(current, 1.0);
+    let before = camera_motion.previous_from_eye * vec4<f32>(previous + camera_motion.precise_step.xyz, 1.0);
+    return vec4<f32>(now.xy / now.w - before.xy / before.w, response, 1.0);
 }
