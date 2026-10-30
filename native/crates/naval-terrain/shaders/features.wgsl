@@ -276,12 +276,16 @@ fn feature_cover(site: FeatureSite, height: f32, below: vec3<f32>, below_roughne
 // How much a tree standing at `chart` would stand on a road, railway or river (with a couple of metres' margin): the
 // trees keep off them. No derivatives: callable from the trees' placement.
 fn feature_clearance(chart: vec2<f32>) -> f32 {
+    return feature_clearance_by(chart, 2.0);
+}
+
+// As `feature_clearance`, with `margin` metres past the feature's edge.
+fn feature_clearance_by(chart: vec2<f32>, margin: f32) -> f32 {
     if !features_bound() {
         return 0.0;
     }
     let lv = feature_level(chart, 0.0);
     let s = feature_sample(lv.level, chart);
-    let margin = 2.0;
     let paved = 1.0 - feature_ramp(0.0, margin, s.distance.x);
     let unpaved = 1.0 - feature_ramp(0.0, margin, s.distance.y);
     let rail = 1.0 - feature_ramp(BALLAST_HALF_M, BALLAST_HALF_M + margin, abs(s.distance.z));

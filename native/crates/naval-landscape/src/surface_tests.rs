@@ -375,13 +375,19 @@ fn naips_colour_is_matched_to_sentinel_2s_at_the_broad_scale() {
         .collect();
     let (cells, ratios) = match_ratios(size, &s2, &naip);
     assert_eq!(cells, 2);
-    // Every square's ratio is Sentinel-2's mean over NAIP's: the right half's measured, the left half's filled from it.
+    // Every square takes Sentinel-2's brightness and keeps NAIP's hue but for `MATCH_HUE` of Sentinel-2's (in the
+    // logarithm): the right half's measured, the left half's filled from it.
+    let luminance = |v: [f32; 3]| 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+    let hue = crate::naip::MATCH_HUE as f32;
     for r in &ratios {
+        let matched = [0.2 * r[0], 0.16 * r[1], 0.15 * r[2]];
         assert!(
-            (r[0] - 0.5).abs() < 0.01 && (r[1] - 0.5).abs() < 0.01,
+            (luminance(matched) / luminance([0.10, 0.08, 0.05]) - 1.0).abs() < 0.01,
             "{r:?}"
         );
-        assert!((r[2] - 1.0 / 3.0).abs() < 0.01, "{r:?}");
+        let blue_green = (0.15f32 / 0.16).powf(1.0 - hue) * (0.05f32 / 0.08).powf(hue);
+        assert!((matched[2] / matched[1] - blue_green).abs() < 0.01, "{r:?}");
+        assert!((matched[0] / matched[1] - 1.25).abs() < 0.01, "{r:?}");
     }
     // A ratio past four is held at four; none measured anywhere is none (1).
     let dark: Vec<Option<[f32; 3]>> = vec![Some([0.001, 0.001, 0.001]); size * size];

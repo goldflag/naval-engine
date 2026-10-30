@@ -21,7 +21,7 @@
 // them stands too, so its shadow falls into the view, and the patches past the drawn ones (`view.shadow.zw`) are
 // level-0 patches inside the maps that the view left out, carrying such trees only.
 #import naval_terrain::bindings::{terrain, gradients, attributes, open_sky, clamp_sampler, repeat_sampler, surface_albedo, height_at, field_uv, coarse_uv, chart_origin, chart_offset, cleared, cleared_within, surface_uv, surface_bound}
-#import naval_terrain::features::{feature_clearance}
+#import naval_terrain::features::{feature_clearance, feature_clearance_by, feature_level, feature_sample}
 #import naval_terrain::cells::cell_hash
 #import naval_terrain::impostor::{LEAN_MOST, PALM_LEAN_MOST, PALM_FORM}
 #import naval_terrain::surface::{cover_raw, SurfaceInputs, TreeCover, CoverShares, Ground, Parcels, tree_cover, ground_of, ramp, noise_r, parcels, cover_shares, near_cover_shares, mixed_shares, near_bound, near_share, near_uv, surface_inside, climate_snow, boreal_treeline, birch_belt, spruce_native, boreal_conifers, LUMA, TREE_PALM, TREE_CONIFER, TREE_BARE, CountryField, country_field, country_region, COUNTRY_WEST, COUNTRY_EAST, COUNTRY_BRITAIN, COUNTRY_EUROPE, COUNTRY_JAPAN, COUNTRY_TROPICS, COUNTRY_NORDIC, COUNTRY_MEDITERRANEAN, FIELD_ORCHARD, FIELD_PADDY, FIELD_GARDEN, FIELD_PALMS, FIELD_WOOD, FIELD_OLIVES, FIELD_ROUGH, FIELD_PASTURE, FIELD_YARD}
@@ -180,6 +180,29 @@ const CANOPY_WOOD: f32 = 0.5;
 // under CANOPY_BARE of it under canopy 2 m or taller (a clearing, a lawn, an airfield's paving and grass).
 const CANOPY_BARE: f32 = 0.1;
 const CANOPY_BARE_M: f32 = 32.0;
+// How close to a road's, railway's or river's edge a measured crown may stand (m): a street tree's trunk stands a metre
+// or so from the kerb, its crown over the pavement and the street.
+const MEASURED_MARGIN: f32 = 0.5;
+// Street trees in North America's towns (`street_trees`), where the canopy map measures none: a trunk this far past the
+// drawn road's edge (m; a road is drawn at its class's width, a street's kerb a metre or two past that, so the trunk
+// stands in the pavement's tree pits or the parkway's strip), at most one a place, a slot's cell cut into places about
+// STREET_TREE_M along (at most STREET_PARTS a side, so an air window's wide slots plant fewer), STREET_PLANTED of them
+// planted (the gaps: a driveway, a hydrant, a tree lost). None within STREET_CLEAR_M (m, a square) of a measured
+// crown, nor under the measured canopy.
+const STREET_SETBACK_M: f32 = 2.5;
+const STREET_TREE_M: f32 = 10.0;
+const STREET_PARTS: i32 = 4;
+const STREET_PLANTED: f32 = 0.8;
+const STREET_CLEAR_M: f32 = 12.0;
+// A street tree's height and width over the slot's tree's (`choose`'s town tree, 14-17 m for an oak or an ash), the
+// least and most: pruned clear of the street and younger than a garden's, so its crown overhangs the street's side and
+// not the whole of it (as tall as the slot's they stood as one wood over Bay Ridge's streets). A palm as tall as it
+// grows.
+const STREET_HEIGHT: vec2<f32> = vec2<f32>(0.55, 0.95);
+const STREET_WIDTH: vec2<f32> = vec2<f32>(0.7, 0.9);
+// The roads lined, by their tone (`features::class_style`): a minor road (0.45) to a primary (0.75); not a service
+// road (0.35) nor a paved track (0.4), not a raceway (0.8), a trunk road (0.9) or a motorway (1.0).
+const STREET_TONE: vec2<f32> = vec2<f32>(0.42, 0.78);
 // Ground cover: every cell keeps its shrub or tuft within this share of the reach, (share / d)² of them beyond.
 const COVER_FULL: f32 = 0.35;
 // Tufts of grass stand only this near (m): further they are a pixel or two.
@@ -1466,6 +1489,75 @@ fn canopy_bare(lo: vec2<f32>, spacing: f32, cover: f32) -> bool {
     return around.known && around.height <= 0.0 && around.cover < CANOPY_BARE;
 }
 
+// Whether chart point `chart` lies in North America's towns' box, where streets are lined with trees (`street_trees`):
+// the contiguous United States and the Canadian cities along its border (24-50° N, 125-66° W).
+fn street_lined(chart: vec2<f32>) -> bool {
+    let lat = latitude_at(chart);
+    let lon = longitude_at(chart);
+    return lat > 24.0 && lat < 50.0 && lon > -125.0 && lon < -66.0;
+}
+
+// The street trees of the slot at `cell` (its corner `lo`, `spacing` a side; `rank` and `share` its level of detail,
+// `grown` how much its trees grow with distance): in built-up land the canopy map covers, the measured crowns a street's
+// own trees where it holds them, and where it measures none (Meta's map puts some 8% of Brooklyn's ground under
+// canopy, of about 20%, and few of Costa Mesa's parkway trees) a tree on each of the slot's places by a lined road (`STREET_*`), the trunk moved
+// across to `STREET_SETBACK_M` past the road's edge, of the slot's species (`choice`). None in a clearing, on another
+// feature, or near a measured crown.
+fn street_trees(cell: vec2<f32>, lo: vec2<f32>, spacing: f32, rank: f32, share: f32, grown: f32, choice: Choice,
+    open: f32) {
+    let parts = clamp(i32(round(spacing / STREET_TREE_M)), 1, STREET_PARTS);
+    let part_m = spacing / f32(parts);
+    for (var k = 0; k < parts * parts; k += 1) {
+        let index = vec2<f32>(f32(k % parts), f32(k / parts));
+        let key = cell * f32(parts) + index + 4096.0;
+        let part_rank = max(rank, cell_hash(key, 31.0));
+        if part_rank >= share || cell_hash(key, 32.0) >= STREET_PLANTED {
+            continue;
+        }
+        // The place's middle, and the paved road nearest it: within half a place of the line of trees beside a lined
+        // road (so each place along it stands one).
+        let p = lo + (index + 0.5) * part_m;
+        let level = feature_level(p, 0.0);
+        let near = feature_sample(level.level, p);
+        let d = near.distance.x;
+        let tone = near.attrs.y;
+        if level.share < 0.99 || abs(d - STREET_SETBACK_M) >= 0.5 * part_m || tone < STREET_TONE.x
+            || tone > STREET_TONE.y {
+            continue;
+        }
+        // Across to the line: down the distance's gradient (1 a metre, less on the ridge between two roads).
+        let across = vec2<f32>(feature_sample(level.level, p + vec2<f32>(1.0, 0.0)).distance.x - d,
+            feature_sample(level.level, p + vec2<f32>(0.0, 1.0)).distance.x - d);
+        if dot(across, across) < 0.5 {
+            continue;
+        }
+        // Across to the line, and along it by up to a quarter of a place either way (no lattice).
+        let out = normalize(across);
+        let at = p - out * (d - STREET_SETBACK_M)
+            + vec2<f32>(-out.y, out.x) * (cell_hash(key, 33.0) - 0.5) * 0.5 * part_m;
+        if abs(feature_sample(level.level, at).distance.x - STREET_SETBACK_M) > 1.0
+            || feature_clearance_by(at, 1.0) > 0.0 || cleared_within(at, 3.0) > 0.0 {
+            continue;
+        }
+        // Where the map measures a crown about the place, or canopy over it, the street's tree is the map's.
+        let measured = canopy_crown(at - 0.5 * STREET_CLEAR_M, STREET_CLEAR_M);
+        if !measured.known || measured.height > 0.0 || measured.cover >= 0.25 {
+            continue;
+        }
+        let at_ground = height_at(at);
+        let size = grown * ramp(0.0, SHRINK, (share - part_rank) / share);
+        let grown_height = select(mix(STREET_HEIGHT.x, STREET_HEIGHT.y, cell_hash(key, 5.0)),
+            1.0 - 0.2 * cell_hash(key, 5.0), palm(choice.species));
+        let tree_height = choice.height * grown_height * size;
+        if at_ground < 1.5 || tree_height < 0.5 {
+            continue;
+        }
+        let width = mix(STREET_WIDTH.x, STREET_WIDTH.y, cell_hash(key, 6.0)) * choice.width;
+        let at_gradient = textureSampleLevel(gradients, clamp_sampler, field_uv(at), 0.0).xy;
+        plant(at, at_ground, at_gradient, tree_height, width, choice, open, key);
+    }
+}
+
 // Stands the choice's tree at `at` (its ground `at_ground`, the slope `gradient` there), `key` its own hash: sunk on
 // slopes, so the downhill side of its foot does not float (a thicket wider than it is tall by most of its reach, its
 // uphill edge buried; a stand of many trunks, the sugi's or the bamboo's, by its whole footprint, as its outer trunks
@@ -2001,15 +2093,26 @@ fn place(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_id) 
         choice = choose(biome, inputs, country_ground, cover, wood, pick);
         choice.density = max(choice.density, 0.85 * (1.0 - feature_clearance(foot)));
     }
+    // Grown with distance as the forest thins, shrinking away over the last of the tree's own range.
+    let grown = clamp(apparent / view.lod.x, 1.0, view.lod.z);
+    // A North American town's street trees where the canopy map measures none (`street_trees`), whatever the slot's
+    // own tree.
+    if crown.known && biome != BIOME_AUTHORED && !woodlot && !shrubby(choice.species)
+        && country_cover.shares.b.y * country_cover.weight >= 0.5 && street_lined(foot) {
+        street_trees(cell, lo, spacing, rank, share, grown, choice, inputs.sky);
+    }
     // Where the canopy map covers the cell (but for scrub, the land cover's: the map's crowns start at 3 m), a wood the
     // land cover stands keeps its trees, and outside a wood the map's crowns stand trees of their own (a town's
     // gardens and streets, hedgerows, a wood's edge); in either a bare patch stands none. Elsewhere the land cover's
     // density alone. No tree stands in a clearing (a theatre airfield's apron), nor a measured one on a road, railway
-    // or river (the land cover's density keeps off them already).
+    // or river (the land cover's density keeps off them already): where its crown was measured, within
+    // `MEASURED_MARGIN` of one. Read at the slot's foot, a street's margins dropped every crown of a slot the street
+    // crossed, a quarter of a town's on a grid of streets, and at a street tree's own crown the usual 2 m dropped the
+    // street trees themselves.
     let mapped = crown.known && !shrubby(choice.species) && !woodlot;
     let measured = mapped && crown.height > 0.0 && min(land_density, choice.density) < CANOPY_WOOD;
     // A clearing reaches half a slot further for a tree: one grown to fill a wide slot would spread its crown into it.
-    let chance = select(choice.density, 1.0 - feature_clearance(foot), measured)
+    let chance = select(choice.density, 1.0 - feature_clearance_by(crown.apex, MEASURED_MARGIN), measured)
         * (1.0 - cleared_within(foot, 0.5 * spacing));
     // (The bare patch read only for a tree that would stand.)
     if cell_hash(cell, 4.0) >= chance || (mapped && crown.height <= 0.0 && canopy_bare(lo, spacing, slot_cover)) {
@@ -2033,8 +2136,6 @@ fn place(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_id) 
             return;
         }
     }
-    // Grown with distance as the forest thins, shrinking away over the last of the tree's own range.
-    let grown = clamp(apparent / view.lod.x, 1.0, view.lod.z);
     if measured {
         // Each part's tallest crown stands a tree at its measured height, as wide as the part's canopy (one crown
         // standing for every crown in it), of the slot's species; the parts beside the slot's own tree thinned with
@@ -2048,7 +2149,8 @@ fn place(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_id) 
             let own = all(part_crown.apex == crown.apex);
             let part_rank = select(max(rank, cell_hash(key, 11.0)), rank, own);
             let part_ground = height_at(part_crown.apex);
-            let standing = (1.0 - cleared(part_crown.apex)) * (1.0 - feature_clearance(part_crown.apex));
+            let standing = (1.0 - cleared(part_crown.apex))
+                * (1.0 - feature_clearance_by(part_crown.apex, MEASURED_MARGIN));
             // The slot's own crown was let stand by the clearing at the slot's foot; a wide slot's crown may lie in
             // a clearing its foot is not in (a generated base's edge), so it is held to the clearing where it stands.
             let in_clearing = own && cell_hash(key, 4.0) >= 1.0 - cleared_within(part_crown.apex, 0.5 * part_m);

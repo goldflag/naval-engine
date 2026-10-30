@@ -371,8 +371,32 @@ land.canopy_page_counts();                                                      
     all its parts. A crown 5 m or taller where the land cover grows scrub or grass takes the biome's woodland tree: a
     live oak in a chaparral canyon. Scrub (the chaparral, the shrubs, the garrigue) keeps the land cover's density,
     since the map's crowns start at 3 m. A plantation's rows give way to the measured crowns. The level of detail, the
-    clearings, the shadows and the roads', railways' and rivers' clearance (`feature_clearance`, at each part's crown)
-    are unchanged.
+    clearings and the shadows are unchanged.
+  - **Roads, railways and rivers.** A measured tree keeps off them where its crown was measured, within half a metre
+    of their edge (`feature_clearance_by`, `MEASURED_MARGIN`), and the land cover's trees by 2 m as before. Read at the
+    slot's foot with the 2 m, a street's margins dropped every crown of a slot the street crossed (a quarter of a
+    town's on a grid of streets), and at the crown the 2 m dropped the street trees themselves, whose trunks stand a
+    metre or so from the kerb (2026-10-29: Bay Ridge, Costa Mesa).
+  - **Street trees** (`street_trees`, `STREET_*`). Meta's map misses most of a North American town's street trees: it
+    puts some 8% of Brooklyn's ground under canopy (about 20% is) and few of Costa Mesa's parkway trees, so Bay Ridge
+    from 90 m was roofs and pavement. In built-up land (WorldCover's built share 0.5 or more) that the map covers,
+    within 24-50° N, 125-66° W (`street_lined`: the United States and the Canadian cities on its border; Europe's,
+    Asia's and the islands' towns are as they were), each slot's cell is cut into places about 10 m on a side
+    (`STREET_TREE_M`; at most 4 a side, `STREET_PARTS`, so an air window's 35-70 m slots plant fewer). A place whose
+    middle lies within half a place of the line 2.5 m past a lined road's drawn edge (`STREET_SETBACK_M`: the road is
+    drawn at its class's width and the kerb stands a metre or two past it, so the trunk is in the pavement's tree pits
+    or the parkway) moves across to that line down the paved distance's gradient, and up to a quarter of a place along
+    it. A lined road is a minor road to a primary by the features' tone (`STREET_TONE` 0.42-0.78): no service road,
+    driveway, paved track, trunk road or motorway. Eight places in ten stand a tree (`STREET_PLANTED`), the slot's
+    town tree (`choose`) at 0.55-0.95 of its height and 0.7-0.9 of its width (`STREET_HEIGHT`, `STREET_WIDTH`; a
+    palm as tall as it grows). None where the map measures a crown within a 12 m square about it or has a quarter of
+    the square under canopy (`STREET_CLEAR_M`: the street's tree is the map's), on another feature (1 m), in a clearing
+    or on the period's country. Each place thins with distance by its own rank, as a measured part does. The trees
+    stand by the drawn roads and know nothing of the buildings: a trunk 2.5 m past the drawn edge clears Bay Ridge's
+    and Costa Mesa's fronts, but a frontage built to a road drawn narrower than it is may take a crown over its eaves.
+    Tried and dropped: the slot's tree's own height and width (14-17 m oaks and ashes), whose crowns met over Bay
+    Ridge's streets as one wood. A place is read at its middle and jittered only along the line: jittered across it
+    too, two places could both fall in the band and stand side by side.
   - **Its width.** One crown stands for the part's crowns, as wide as the part's canopy: its radius
     `part · √(cover / π) · 1.25 · (1 + 0.4 · cover)`. The 1.25 (`CANOPY_DRAWN`): a crown is drawn about 0.8 of its
     model's widest reach across, seen from above. The `0.4 · cover` (`CANOPY_OVERLAP`): a closed canopy's crowns

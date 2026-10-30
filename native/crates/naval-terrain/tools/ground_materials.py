@@ -47,7 +47,7 @@ MATERIALS = [
     ("dry-grass", "withered_grass", 512),
     ("soil", "farm_soil", 512),
     ("scrub", "sparse_grass", 512),
-    ("dry-scrub", "aerial_rocks_01", 1024),
+    ("dry-scrub", "dry_ground_rocks", 512),
     ("forest", "leaves_forest_ground", 1024),
     ("rock", "aerial_rocks_02", 1024),
     ("cliff", "marble_cliff_05", 1024),

@@ -16,7 +16,7 @@
 #import naval_terrain::lighting::{LandLight, shade_land, land_roughness, fogged}
 #import naval_clouds::shadow::{CloudShadow, cloud_shadow}
 #ifdef TREES
-#import naval_terrain::forest::{forest_at, forest_floor, floor_seen, under_leaves}
+#import naval_terrain::forest::{forest_at, forest_floor, floor_seen, cards_standing, under_leaves}
 #endif
 #import naval_sky::environment::{SkyEnvironment, env_radiance, env_irradiance, env_reflection_direction}
 
@@ -170,6 +170,7 @@ fn fs_land(in: VertexOut) -> @location(0) vec4<f32> {
     // The forest here (the trees standing per cell and their height), for its floor and its shade below.
     let trees_here = forest_at(chart);
     inputs.floor = floor_seen(trees_here, in.world);
+    inputs.standing = cards_standing(trees_here, in.world);
 #endif
     // The map features' screen derivatives here, in uniform control flow; nothing below takes any until the relief's.
     let features = feature_site(chart, footprint);

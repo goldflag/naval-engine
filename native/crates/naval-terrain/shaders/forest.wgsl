@@ -105,10 +105,17 @@ fn beneath_crowns(f: Forest, world: vec3<f32>) -> f32 {
 // in over the first 0.05 of their cover (so it has no hard edge where a wood's cells end, the cover's bilinear ramp
 // there crossing zero). None where no tree stands (most of a country's land, which so skips it).
 fn floor_seen(f: Forest, world: vec3<f32>) -> f32 {
+    return cards_standing(f, world) * beneath_crowns(f, world);
+}
+
+// How many of the trees of the forest `f` at `world` stand drawn (`SurfaceInputs::standing`): all of them near,
+// thinning far off, faded in over the first 0.05 of their cover as `floor_seen`. Where they stand the ground paints no
+// crowns of its own (`surface.wgsl`'s `canopy`), from above or beneath: the crowns are theirs.
+fn cards_standing(f: Forest, world: vec3<f32>) -> f32 {
     if f.cover <= 0.0 {
         return 0.0;
     }
-    return trees_standing(distance(camera.position, world)) * beneath_crowns(f, world) * smoothstep(0.0, 0.05, f.cover);
+    return trees_standing(distance(camera.position, world)) * smoothstep(0.0, 0.05, f.cover);
 }
 
 // The ground's sun and sky under the forest `f` at `world` (`forest_at`), as factors on the sun reaching it and on its

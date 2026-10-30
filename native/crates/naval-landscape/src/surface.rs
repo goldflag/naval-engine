@@ -1442,8 +1442,9 @@ fn linear_to_srgb_byte(l: f32) -> u8 {
 }
 
 /// The ratio of Sentinel-2's local mean to NAIP's over each square of `naip::MATCH_TEXELS` texels (linear light, per
-/// channel, clamped to a quarter and four times): squares with too little of both filled from their neighbours, any left
-/// from the whole tile's, else none (1).
+/// channel, clamped to a quarter and four times): the two's luminance's, times `naip::MATCH_HUE` of each channel's
+/// against it (in the logarithm), so NAIP takes Sentinel-2's brightness and keeps most of its own hue. Squares with too
+/// little of both filled from their neighbours, any left from the whole tile's, else none (1).
 pub fn match_ratios(
     size: usize,
     s2: &[Option<[f32; 3]>],
@@ -1469,8 +1470,13 @@ pub fn match_ratios(
             }
         }
     }
+    let luminance = |v: &[f64; 3]| 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
     let ratio_of = |s: &([f64; 3], [f64; 3], usize)| -> [f32; 3] {
-        [0, 1, 2].map(|c| ((s.0[c] + 1e-4) / (s.1[c] + 1e-4)).clamp(0.25, 4.0) as f32)
+        let bright = (luminance(&s.0) + 1e-4) / (luminance(&s.1) + 1e-4);
+        [0, 1, 2].map(|c| {
+            let channel = (s.0[c] + 1e-4) / (s.1[c] + 1e-4);
+            (bright * (channel / bright).powf(super::naip::MATCH_HUE)).clamp(0.25, 4.0) as f32
+        })
     };
     let enough = m * m / 8;
     let mut ratios: Vec<Option<[f32; 3]>> = sums

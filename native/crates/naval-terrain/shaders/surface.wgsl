@@ -58,6 +58,9 @@ struct SurfaceInputs {
     // `floor_seen`): there the cover's leaf litter is the forest floor, not the canopy painted for a view from above.
     // 0 off the land's fragment stage and with no trees drawn (Medium).
     floor: f32,
+    // How many of the trees here stand drawn, from above or beneath their crowns (`forest.wgsl`'s `cards_standing`):
+    // the canopy's painted crowns stand in only for the ones left out. 0 where `floor` is.
+    standing: f32,
 }
 
 struct Surface {
@@ -306,10 +309,11 @@ struct Canopy {
 fn canopy(inputs: SurfaceInputs, crown: f32, relief: f32) -> Canopy {
     var c: Canopy;
     // Where a pixel spans a crown the canopy has faded to its mean (and the clumps, a third of a crown, long before):
-    // nothing to read. Nor beneath the crowns (`SurfaceInputs::floor`), where the ground is their floor: their relief
-    // there, metres high, drew hard-edged banks of light and shade across it where a wood's mask ramps (a wood's field's
-    // edge), and their pattern blotches.
-    let near = resolved(inputs.footprint, crown) * one(inputs.floor);
+    // nothing to read. Nor where the trees stand drawn (`SurfaceInputs::standing`), whose crowns are the cards':
+    // beneath them their relief, metres high, drew hard-edged banks of light and shade across the floor where a wood's
+    // mask ramps (a wood's field's edge), and their pattern blotches; from above it lay as lit lumps between the cards,
+    // over the photograph's own crowns where it holds them (NAIP's 2 m), and a leafy suburb's woods read as rocks.
+    let near = resolved(inputs.footprint, crown) * one(inputs.standing);
     if near <= 0.0 {
         c.shade = 1.0;
         c.height = 0.0;
@@ -1082,6 +1086,16 @@ const PHOTO_CHROMA: f32 = 0.9;
 const PHOTO_DETAIL: f32 = 0.12;
 // The ground's mottling under the open classes, metres (and a finer octave at 0.37 of it).
 const MOTTLE_M: f32 = 5.3;
+// A near tile's texel this fine or finer (m) is NAIP's (`naip::TEXEL_M`, 2 m; Sentinel-2's are 8 m or more).
+const NAIP_TEXEL_MAX_M: f32 = 3.0;
+// A town's garden where NAIP is the photograph (`real_surface`): how much it shows growth, by its green over red (x to
+// y: a bare yard's red-brown below, a dry lawn's olive about the middle) and over blue (z to w: not a pool's or a
+// shadow's blue); a watered lawn's colour (linear, sRGB 85, 110, 55: its hue alone, at the photograph's brightness), how
+// much darker than the photograph (a watered lawn is darker than a dry one), and how far toward it.
+const LAWN_GROWTH: vec4<f32> = vec4<f32>(0.82, 0.95, 1.0, 1.25);
+const LAWN_GREEN: vec3<f32> = vec3<f32>(0.0908, 0.1559, 0.0382);
+const LAWN_DARKER: f32 = 0.75;
+const LAWN_TINT: f32 = 0.75;
 
 fn calibrated(photo: vec3<f32>) -> vec3<f32> {
     let l = max(dot(photo, LUMA), 1e-4);
@@ -2553,6 +2567,8 @@ struct RealSample {
     broad: vec4<f32>,
     s: CoverShares,
     weight: f32,
+    // How much of the colour is NAIP's (a near tile at its 2 m texel: the United States, `naip`), 0-1.
+    naip: f32,
 }
 
 // A layer's colour read through `s` at `uv` with the derivatives `dx`, `dy` scaled by 2^`bias` (`textureSampleBias`'s
@@ -2596,6 +2612,7 @@ fn real_sample(inputs: SurfaceInputs) -> RealSample {
         near = near_share_at * clamp(near_sample.a, 0.0, 1.0);
     }
     var out: RealSample;
+    out.naip = select(0.0, near, near_texel_m() <= NAIP_TEXEL_MAX_M);
     out.sample = near_sample * near_share_at;
     out.broad = near_broad * near_share_at;
     if near < 1.0 {
@@ -2728,7 +2745,29 @@ fn real_surface(inputs: SurfaceInputs, g: Ground, real: RealSample, procedural: 
     // photograph with the ground's own mottle, flat: the houses are the buildings, the streets the photograph's and the
     // map's roads. Elsewhere blocks between streets, each laid out in lots on a heading of its own, a roof on every lot
     // (its own tone, a few of tile) in a yard.
+    // Between the standing buildings, the yards: gardens and lawns, with the grass photograph's grain, wherever the
+    // photograph has any colour (`gardens`), paving only where it is grey (a car park, a yard of concrete). Their hue
+    // is the photograph's own (NAIP keeps its hue where it is matched to Sentinel-2: `naip::MATCH_HUE`).
+    let photo_l = max(dot(photo, LUMA), 1e-4);
+    let chroma = (max(max(photo.r, photo.g), photo.b) - min(min(photo.r, photo.g), photo.b)) / photo_l;
+    var gardens = 0.0;
+    var lawn_share = 0.0;
     var built = photo * mottle;
+    if buildings_stand() && s.b.y > 0.0 {
+        gardens = ramp(0.1, 0.25, chroma);
+        // Where NAIP is the photograph, a garden whose photograph shows growth (olive or greener: green over red and
+        // blue, not a bare yard's red-brown nor a pool's or a shadow's blue) is a watered lawn's green, at its own
+        // brightness a little darker (`LAWN_*`): NAIP over southern California was flown in the 2022 drought, every
+        // lawn olive-brown and near white under the noon sun. Not in a leafless season (a lawn dormant).
+        if real.naip > 0.0 && gardens > 0.0 {
+            let growth = ramp(LAWN_GROWTH.x, LAWN_GROWTH.y, photo.g / max(photo.r, 1e-4))
+                * ramp(LAWN_GROWTH.z, LAWN_GROWTH.w, photo.g / max(photo.b, 1e-4));
+            let lawn = LAWN_GREEN / dot(LAWN_GREEN, LUMA) * photo_l * LAWN_DARKER;
+            lawn_share = LAWN_TINT * growth * gardens * real.naip * (1.0 - bare_season);
+            built = mix(photo, lawn, lawn_share) * mottle;
+        }
+        built = mix(built, built * textured(grass_detail, footprint, 15.0, 0.7) * grass_fine, gardens);
+    }
     var roofs_height = 0.0;
     if !buildings_stand() && s.b.y > 0.0 {
         // (Beyond the streets' and lots' reach, 13.5 m a pixel, the photograph alone: nothing read.)
@@ -2780,9 +2819,8 @@ fn real_surface(inputs: SurfaceInputs, g: Ground, real: RealSample, procedural: 
     let inland = ramp(100.0, 300.0, g.coast);
     let water = photo * 0.55;
     // How much the photograph looks like a beach (bright and grey: sand, shingle, a dry riverbed). Water the cover puts
-    // on our land by the sea is the photograph's beach where it shows one, and the style's shore where it does not.
-    let photo_l = max(dot(photo, LUMA), 1e-4);
-    let chroma = (max(max(photo.r, photo.g), photo.b) - min(min(photo.r, photo.g), photo.b)) / photo_l;
+    // on our land by the sea is the photograph's beach where it shows one, and the style's shore where it does not
+    // (`photo_l` and `chroma` above, the towns').
     // (The photograph's 0.062-0.129 of luminance and 0.33-0.67 of chroma, as calibrated.)
     let beachy = ramp(0.06, 0.107, photo_l) * ramp(0.6, 0.3, chroma);
     let coast_water = s.c.x * (1.0 - inland);
@@ -2842,7 +2880,12 @@ fn real_surface(inputs: SurfaceInputs, g: Ground, real: RealSample, procedural: 
     mats = mats_add(mats, M_GRASS, ((s.a.w + s.c.z) * (1.0 - dry) + fields * (1.0 - tawny)) * w);
     mats = mats_add(mats, M_DRY_GRASS, (s.a.w + s.c.z) * dry * w);
     mats = mats_add(mats, M_SOIL, fields * tawny * w);
-    mats = mats_add(mats, M_PAVING, s.b.y * w);
+    // A town's yards: gardens' grass, dry where the photograph is tawny (the gardens are watered whatever the summer)
+    // but for a lawn made green, paving where it is grey.
+    let yard_tawny = tawny * (1.0 - lawn_share / LAWN_TINT);
+    mats = mats_add(mats, M_PAVING, s.b.y * (1.0 - gardens) * w);
+    mats = mats_add(mats, M_GRASS, s.b.y * gardens * (1.0 - yard_tawny) * w);
+    mats = mats_add(mats, M_DRY_GRASS, s.b.y * gardens * yard_tawny * w);
     mats = mats_add(mats, M_ROCK, (s.b.z * steep + ice_rock) * w);
     mats = mats_add(mats, M_SAND, (s.b.z * (1.0 - steep) * coastal + coast_water * beachy) * w);
     mats = mats_add(mats, M_SNOW, ice * w);

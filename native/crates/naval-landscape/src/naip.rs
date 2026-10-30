@@ -13,8 +13,8 @@
 //! - **Where.** Only for near tiles (`theatre::near`, at [`TEXEL_M`] where the scenario stands in [`in_conus`]), so only
 //!   within a few kilometres of the camera; Sentinel-2 stays the colour everywhere else and wherever NAIP has none.
 //!   Its colour is matched to Sentinel-2's at a scale of [`MATCH_TEXELS`] texels (`surface::assemble`): NAIP's detail
-//!   over Sentinel-2's broad colour, so the land's calibration (native/docs/terrain/surface.md, "The photograph as
-//!   albedo") holds and no seam shows where NAIP ends.
+//!   and most of its hue ([`MATCH_HUE`]) over Sentinel-2's broad brightness, so the land's calibration
+//!   (native/docs/terrain/surface.md, "The photograph as albedo") holds and no seam shows where NAIP ends.
 //! - **Switched** with the surface's streaming; `NAVAL_NAIP=off` keeps Sentinel-2 alone.
 
 use std::sync::OnceLock;
@@ -38,6 +38,11 @@ pub const TILE_PX: i64 = 512;
 pub const TEXEL_M: f64 = 2.0;
 /// NAIP's colour is matched to Sentinel-2's over squares of this many texels (64 m at 2 m: about four of its pixels).
 pub const MATCH_TEXELS: usize = 32;
+/// Of a square's hue, how much is Sentinel-2's (its brightness is Sentinel-2's whole): in a town a square's mean at
+/// Sentinel-2's 10-19 m is its roofs' and concrete's, and the 2016 mosaic is warmer than NAIP, so taken whole it turned
+/// every lawn and street tree to their beige (Costa Mesa's lawns brown-grey, Bay Ridge cream). NAIP's 0.6 m holds a
+/// lawn's own green.
+pub const MATCH_HUE: f64 = 0.25;
 
 /// Whether NAIP is fetched: with the surface's streaming, unless `NAVAL_NAIP` is `off` (or `0`).
 pub fn enabled() -> bool {

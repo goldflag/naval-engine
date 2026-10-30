@@ -38,8 +38,8 @@ pass reads both maps (and the near tiles' cover where they are drawn).
 
 **Near tiles** (2026-10-04). A window's maps are 23 m a texel (a sea window's) or 117 m (an air window's); near the
 camera the host adds finer squares of the same sources (docs/archive/native-theatre-history.md, "Near tiles"; in the
-conterminous United States a sea window's are 2 m, NAIP's aerial imagery matched to Sentinel-2's colour: "NAIP over the
-United States"), drawn in their place:
+conterminous United States a sea window's are 2 m, NAIP's aerial imagery matched to Sentinel-2's brightness, keeping
+most of its own hue: "NAIP over the United States" and "Yards and standing trees" below), drawn in their place:
 
 ```rust
 land.set_near_grid(&mut renderer.context(), NearGrid { origin, tile_m, slots })?;  // before set_surface_maps
@@ -129,12 +129,12 @@ and the grass photograph's grain a second time at 3.7 m (55%), each fading out a
 
 | WorldCover class | Drawn as | Trees (density at the foot, height × the style's) |
 | --- | --- | --- |
-| 10 tree cover | the canopy's crowns (11 m) over the photograph, their relief and shade; in a seasonal style's winter (chalk, snow: `1 - leaf`) grey-brown, as the cards turn bare | 0.92, × 1 |
+| 10 tree cover | the canopy's crowns (11 m) over the photograph, their relief and shade, where no trees stand drawn (the cards' crowns are theirs: "Yards and standing trees" below); in a seasonal style's winter (chalk, snow: `1 - leaf`) grey-brown, as the cards turn bare | 0.92, × 1 |
 | 95 mangroves | the canopy, darker and a little glossier | 0.85, × 0.45 |
 | 20 shrubland | half the canopy's pattern, the grass photograph's grain | 0.22, × 0.45 |
 | 30 grassland, 100 moss | the grass photograph's grain and speck (browner in a seasonal winter) | 0.02, × 0.6 |
 | 40 cropland | furrows 4 m apart on each field's own heading in half the fields, the grass grain at half strength | 0.012, × 0.7 |
-| 50 built-up | under real buildings (a theatre's buildings layer, "Under real buildings" below): the photograph with the ground's mottle, flat. Elsewhere (the buildings off): blocks between asphalt streets (80 m parcels), each laid out in lots of about 15 × 11 m on its own heading, a roof on five lots in six (its own tone, one in three of tile) with 1.5 m of relief; no geometry | 0.015, × 0.7 |
+| 50 built-up | under real buildings (a theatre's buildings layer, "Under real buildings" below): the photograph with the ground's mottle, flat, its yards gardens (grass) where it has colour and paving where it is grey. Elsewhere (the buildings off): blocks between asphalt streets (80 m parcels), each laid out in lots of about 15 × 11 m on its own heading, a roof on five lots in six (its own tone, one in three of tile) with 1.5 m of relief; no geometry | 0.015, × 0.7 |
 | 60 bare | sand on the flat, rock with the photograph's structure on slopes (the style's `rock`) | none |
 | 70 snow and ice | glacier ice where the season's snow has gone from it (`glacier_ice`, below), the season's snow and firn over it above the snowline; the bare ground's rock where a face is too steep to hold either (40-48°, the rock faces past 49°). The tropical and volcanic styles, which lay no season's snow, keep the snow style's snow | none |
 | 80 water | inland (over 100-300 m from the sea): dark, smooth and glossy. Water the cover puts on our land by the sea is the coast missing the photograph's by a texel or two: the style's shore there | none |
@@ -182,6 +182,44 @@ within the load's noise. Checked: `--test all -- gpu::`'s `standing_buildings_ta
 maps; grassland the same either way); the stills,
 `cargo test --release -p naval-client --test all -- theatre_built_up:: --ignored --nocapture` into `.build/native/built-up/`
 (`high/` and `medium/`, each view with the lots, without them and without the buildings; `pairs/` the three stacked).
+
+**Yards and standing trees** (2026-10-29, branch `goldflag/suburb-ground`). Seen from a plane at 90-300 m over Tampa,
+Bay Ridge and Costa Mesa (the player's: "too arid", "no grass on the ground", "the ground texture is rocky"), with
+today's buildings:
+
+- *The yards.* Under real buildings every built-up texel took the paving material, an aerial photograph of asphalt
+  whose stains (its ratio 0.56-1.62 at the 5th and 95th percentiles) speckled every lawn, and the photograph's hue: NAIP
+  matched to Sentinel-2 over 64 m squares, whose mean in a town is its roofs' and concrete's, so a Costa Mesa lawn was
+  brown-grey (albedo sRGB 64, 60, 57) and under the noon sun near white. Now a yard's texel with any colour (its chroma
+  0.1-0.25 of its luminance, `gardens`) is a garden: the grass material (dry grass where the photograph is tawny, as
+  the open land's; not by the climate's summer, the gardens being watered) and the grass photograph's grain. Grey
+  texels (a car park, a yard of concrete) keep the paving. And NAIP now takes only Sentinel-2's brightness over each
+  square and `naip::MATCH_HUE` (0.25) of its hue, in the logarithm (`match_ratios`), keeping the rest of its own: its
+  0.6 m sees a lawn's green where Sentinel-2's 10-19 m sees roofs. Matching every channel over 256 m or 1 km squares
+  instead changed the hue hardly at all (an offline match of the cached tiles): the warmth is the 2016 mosaic's, over
+  the whole of a town. Pushing a garden's hue toward the window's leaves' and grass's class means did nothing in a dry
+  window, whose means are brown too.
+- *Under standing trees.* The canopy's painted crowns (`canopy`) stood under the trees' cards from above as well as
+  beneath them, so a wood seen from a plane took them twice: lit lumps 5 m high between the cards, over NAIP's own 2 m
+  crowns and their shadows, and a leafy suburb's woods (WorldCover's tree cover over Tampa's yards) read as a field of
+  rocks. They now fade out by the trees standing drawn (`SurfaceInputs::standing`, `forest.wgsl`'s `cards_standing`:
+  all of them within 4.5 km, thinning beyond), from above or beneath, and paint only the trees left out, far off and
+  with no trees drawn (Medium).
+- *Watered lawns.* NAIP over southern California was flown in the 2022 drought: Costa Mesa's gardens were olive-brown,
+  near white under the noon sun. Where NAIP is the photograph (`RealSample::naip`: the share a near tile at its 2 m
+  texel draws, `NAIP_TEXEL_MAX_M` 3, Sentinel-2's near tiles being 8 m or more, so only in the United States and
+  within its few kilometres of the camera), a garden showing growth goes toward a watered lawn: its green over red
+  ramped from 0.82 to 0.95 (a bare yard's red-brown below) and over blue from 1.0 to 1.25 (not a pool's or a shadow's
+  blue; `LAWN_GROWTH`), 0.75 of the way (`LAWN_TINT`) to the hue of sRGB 85, 110, 55 (`LAWN_GREEN`) at 0.75 of the
+  photograph's brightness (`LAWN_DARKER`), and not in a leafless season. Paving and bare dirt stay; such a lawn takes
+  the grass material, not the dry grass. The gate is NAIP and not the climate's dry summer (`terrain.climate.w`),
+  which Orange County shares with Taranto and Valletta, whose dry gardens stay as their photographs show them. Bay
+  Ridge's pale yards take some green too (its photograph shows growth in them); Tampa's, green already, change little.
+  Past the near tiles (and over an air window, whose near
+  tiles are Sentinel-2's) a town's colour is its 10-19 m mean and no lawn is drawn.
+
+`theatre_town_look`'s `tampa`, `brooklyn` and `orange-county` (`NAVAL_LOOK_BUILDINGS=today`, `NAVAL_LOOK_DEBUG=1` for
+each view without the ground materials and as the albedo alone) into `.build/native/towns/<tag>/`.
 
 **Costs** (Windows, NVIDIA GeForce RTX 5070 Ti, release, other agents building): `set_surface_maps` on a 2048² map, its
 CPU mip chain, statistics and upload, 40-65 ms on the render thread (a 4096² one about four times that); memory 22 MB

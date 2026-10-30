@@ -30,7 +30,7 @@ colours it chooses itself.
 | dry-grass | [Withered Grass](https://polyhaven.com/a/withered_grass) | Charlotte Baglioni | 2 m | 6 m | 512² |
 | soil | [Farm Soil](https://polyhaven.com/a/farm_soil) | Amal Kumar | 2 m | 6 m | 512² |
 | scrub | [Sparse Grass](https://polyhaven.com/a/sparse_grass) | Amal Kumar | 2 m | 6 m | 512² |
-| dry-scrub | [Aerial Rocks 01](https://polyhaven.com/a/aerial_rocks_01) | Rob Tuytel | 80 m | 30 m | 1024² |
+| dry-scrub | [Dry Ground Rocks](https://polyhaven.com/a/dry_ground_rocks) | Rob Tuytel | 4 m | 6 m | 512² |
 | forest | [Leaves Forest Ground](https://polyhaven.com/a/leaves_forest_ground) | Dario Barresi, Dimitrios Savva | 1.26 m | 2 m | 1024² |
 | rock | [Aerial Rocks 02](https://polyhaven.com/a/aerial_rocks_02) | Rob Tuytel | 50 m | 24 m | 1024² |
 | cliff | [Marble Cliff 05](https://polyhaven.com/a/marble_cliff_05) | Amal Kumar | 20 m | 20 m | 1024² |

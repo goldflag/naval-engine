@@ -22,11 +22,11 @@ basalt and granite ("Cliffs") and the forest floor's needles (a conifer wood's: 
 texture under CC0
 (sources, authors and links: `public/terrain/ASSETS.md`, "Ground materials"). Aerial photographs (12-30 m a repeat) for
 the ground seen from 30 m to 1,500 m, where a 0.1-3 m feature is what a pixel can hold; close-up ones (grass, dry grass,
-scrub, soil, shingle, snow, mud) at 5-10 m; and three seen from a man's height, the forest floor's leaf litter and
-needles (2 m a repeat) and the fine sand of the tropical and volcanic beaches (3 m), a few millimetres a texel as the
-nearest ground's pixels are.
+scrub, dry scrub, soil, shingle, snow, mud) at 5-10 m; and three seen from a man's height, the forest floor's leaf
+litter and needles (2 m a repeat) and the fine sand of the tropical and volcanic beaches (3 m), a few millimetres a
+texel as the nearest ground's pixels are.
 `tools/ground_materials.py` fetches each one's 1K colour, OpenGL normal and displacement maps and writes two JPEGs a
-material into `public/terrain/materials/` (13.1 MB in all, 512² for the close-up ones, 1024² for the aerial ones and the
+material into `public/terrain/materials/` (12.2 MB in all, 512² for the close-up ones, 1024² for the aerial ones and the
 three seen from a man's height): the colour as a ratio to its own local mean in linear light, halved (128 the mean;
 everything wider than about a third of the tile taken out by a wrapping Gaussian, so no tile-sized blotch repeats; the
 chroma at 40% of its variation; the contrast held between 0.10 and 0.32 in the logarithm; the forest floor's leaves 45%
@@ -247,7 +247,7 @@ materials by hue and weight).
 **Open.** From a ship the beach is grazing and the materials mostly faded (a pixel there spans metres along the view):
 what reads as a beach from the sea is still the colour's bands (dry sand, the wet band, the foam). Cliffs read their
 rock face on since 2026-10-09 ("Cliffs"). Roughness is the cover's, not the material's. The aerial materials (sand,
-dry scrub) are 1-3 cm a texel, soft from an eye at a man's height (the grass's blades cover it on grass); the three
+rock) are 1-3 cm a texel, soft from an eye at a man's height (the grass's blades cover it on grass); the three
 seen from there (leaves, needles, fine sand) are sharp to the nearest pixel, and the other close-up ones (soil,
 shingle, mud, snow) could be written at 1024² from their 1K sources for no memory in the pack (it holds every layer at
 1024²), 4 MB more in the repository. A theatre's photographed land was seen only in the tour's places (Kawah's map under
