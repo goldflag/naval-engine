@@ -108,7 +108,10 @@ in place of a preset; each crate scales its own effect by them as it does for th
 - **Funnel smoke** (`Stir::ship_frame` → `CombatEffects::update`'s `ships`): a `ShipEffectsProfile` with her funnels'
   rims and their shares of her smoke (`FunnelOutlet::smoke`: a funnel's billows as many and its smoke as thick as the
   root of its share), full speeds, draft, depth and waterplane; her pose, world velocity and speed each frame; full
-  power. The smoke's density and colour follow her speed against full speed and how hard she works up.
+  power. The smoke's density and colour follow her speed against full speed and how hard she works up. It is drawn as
+  the game's, puffs of the simulated smoke, only once the host hands the effects the game's look
+  (`EffectsLayer::set_game_look` with the books in `assets/effects/flipbook/`, as engine-example's `world.rs` does);
+  a layer without it draws the billows and ribbon from before 2026-10-20.
 
 ## Using it
 

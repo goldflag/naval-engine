@@ -8,6 +8,7 @@ use glam::{DVec3, Vec3};
 use naval_clouds::{GameSky, Targets};
 use naval_conditions::{MapScene, MapSelection};
 use naval_effects::events::ShellInfo;
+use naval_effects::flipbook::FlipbookData;
 use naval_effects::tactical::ScreenSmoke;
 use naval_effects::{CameraView, CombatEvent, DepthSource, EffectsLayer, Rgb};
 use naval_ocean::{Ocean, QualityTier};
@@ -176,6 +177,21 @@ impl World {
         effects.set_cloud_cover(Some(sky.clouds.cover()));
         effects.set_cloud_shadow(device, cloud_shadow);
         effects.set_splash_cover(Some(water.cover()));
+        // The game's look: its funnels' smoke, explosions and fires from their simulations; without the books, the
+        // effects from before it.
+        let started = std::time::Instant::now();
+        match game_books(&root).and_then(|books| {
+            effects
+                .set_game_look(device, queue, &books)
+                .map_err(|e| anyhow!(e))
+        }) {
+            Ok(bytes) => println!(
+                "the game's effects: {:.0} MB of texture in {:.1} s",
+                bytes as f64 / 1e6,
+                started.elapsed().as_secs_f64()
+            ),
+            Err(error) => println!("the effects without the game's look: {error:#}"),
+        }
         // The clouds stop at the sea's surface seen from under it.
         sky.set_underwater_probe(Some(probe));
         let ships = (!sail.ships.is_empty())
@@ -557,6 +573,19 @@ impl World {
         ]);
         layers
     }
+}
+
+/// The books of the game's effects ([`naval_effects::flipbook::GAME_BOOKS`]), each read from its file under
+/// `assets/effects/flipbook/`.
+fn game_books(root: &Path) -> Result<Vec<FlipbookData>> {
+    naval_effects::flipbook::GAME_BOOKS
+        .into_iter()
+        .map(|name| {
+            let path = root.join(format!("assets/effects/flipbook/{name}.flipbook"));
+            let bytes = std::fs::read(&path).with_context(|| path.display().to_string())?;
+            FlipbookData::from_bytes(name, &bytes).map_err(|e| anyhow!(e))
+        })
+        .collect()
 }
 
 /// Where effects spawn for a view from `eye` along `forward`: where it meets the sea, at most 2 km off (and at least

@@ -125,7 +125,10 @@ A leading `-` switches any look off; the last word on a look wins. `bun native/t
 which may hold 256 (`MAX_LAYERS`). The pack carries them with their light BC7 (`../assets.md`,
 "Flipbooks": 170 MB of texture memory becomes 57 MB). The client takes them from `NAVAL_EFFECTS_FLIPBOOK_DIR` when set,
 else the pack's, else the checkout's (`Assets::flipbooks`); with none, or a Git LFS pointer in place of a book, it warns
-once (`[effects] flipbook: …`) and draws as with `-flipbook`. They are read and uploaded once a process, by the first
+once (`[effects] flipbook: …`) and draws as with `-flipbook`. A host outside the game reads the five itself
+(`flipbook::GAME_BOOKS`, each `FlipbookData::from_bytes`) and hands them to `EffectsLayer::set_game_look`, which refuses
+them with a book missing and otherwise sets `Trial::GAME`: a layer is made with every look off (`Trial::default`), the
+effects from before the flipbook look, funnels' billows and ribbon included (engine-example's `game_books`). They are read and uploaded once a process, by the first
 scene's effects, and every later scene's (each port, battle and theatre scene builds its own renderer) shares them, as
 it shares the pack's gas atlas (`effects.rs`' `FLIPBOOKS` and `GAS_ATLAS`, `naval_render::DeviceCache`; 2026-10-09):
 a theatre holding two scenes while it swaps them holds one copy, and a scene after the first spends nothing on them.

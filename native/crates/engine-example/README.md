@@ -39,6 +39,12 @@ the coast) in fixed conditions (15:00, partly cloudy, the effects 1.2 s old), wr
 either's size, `--hour <h>` the hour both start at. The coast is the theatre's 96 km window of the synthetic release on
 its peninsula's south shore.
 
+The effects are the game's look: smoke, fire and explosions drawn from baked fluid simulations, the five books in
+`assets/effects/flipbook/` (JangaFX's free EmberGen sets, CC0; about 140 MB, read and uploaded in about a second),
+handed over with `EffectsLayer::set_game_look` (`src/world.rs`' `game_books`). Without them it prints why and draws the
+effects from before that look, the funnels' smoke as billows and a ribbon. Another project does the same, or its smoke
+is the old look.
+
 `--ship <setup.json>` reads a ship's setup file and the glTF or GLB it names (beside it) and puts her to sea 2.3 km off
 the coast, heading 250° along it at `--knots` (15 without it), sailing straight on. Her hull is her model's numbers
 (`src/join.rs`): she rides the sea as drawn, trails her wake and foam, pushes her bow waves, throws her bow's spray and

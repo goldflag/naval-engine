@@ -81,6 +81,10 @@ struct ClipDef {
     column: bool,
 }
 
+/// The books the game's look draws from ([`crate::EffectsLayer::set_game_look`]): every clip's and every side book,
+/// each `assets/effects/flipbook/<name>.flipbook`.
+pub const GAME_BOOKS: [&str; 5] = ["blast", "fire", "fireball", "fireball-side", "plume"];
+
 /// The clips, in [`clip`]'s order from 1.
 const CLIPS: [ClipDef; 6] = [
     ClipDef {
@@ -772,6 +776,15 @@ mod tests {
         }
         bytes.extend(std::iter::repeat_n(7u8, (frames * (16 + 16 + 4)) as usize));
         bytes
+    }
+
+    #[test]
+    fn the_games_books_are_every_clips_and_side_book() {
+        let mut books: Vec<&str> = CLIPS.iter().map(|c| c.book).collect();
+        books.extend(SIDE_BOOKS.iter().flat_map(|(front, side)| [*front, *side]));
+        books.sort_unstable();
+        books.dedup();
+        assert_eq!(books, GAME_BOOKS);
     }
 
     #[test]

@@ -7,7 +7,7 @@ they stand on (latitude and longitude, the sun's and the moon's places) and the 
 and coastline data into land. Ships from any glTF file float on that sea with their wakes and smoke. None of it needs the game's simulation;
 `engine-example` is a window that draws them all.
 
-Exported from the game at <!-- exported-commit -->`f02c2bf92a18cf57b03d025519055731224cc27f`.
+Exported from the game at <!-- exported-commit -->`3209e5ce14202054f0048313ef3bb3fd61174488`.
 
 ## Where changes go
 
@@ -58,6 +58,7 @@ The game's directory layout is kept, so the crates' relative paths work unchange
 | `native/docs/` | The crates' docs; their links into the game's other docs are broken here |
 | `assets/maps/`, `assets/bases/` | The maps, weather presets and naval bases, compiled into `naval-conditions` and `naval-terrain` |
 | `assets/land/` | The game's land releases' files, read by `naval-region-bake`'s tests |
+| `assets/effects/flipbook/` | The smoke, fire and explosion simulations of the effects' game look (about 140 MB), read by the host and handed to `EffectsLayer::set_game_look` |
 | `public/theatre/world/world-v1.bin` | The world chart (Natural Earth 10 m, public domain) a host hands `naval-globe`; `engine-example`'s globe reads it |
 | `public/terrain/` | Ground photographs and materials a host hands `naval-terrain` (the crate reads no file) |
 | `src/ui/tokens.css` | The game interface's colour tokens, read by `naval-render`'s palette test |
@@ -99,6 +100,11 @@ her about, Tab follows the next ship and C brings the chase camera back. `engine
 afloat") shows the glue a host copies: a `Vessel` to a `naval_afloat::Hull`, and her motion to a `VesselPose`. Not
 there yet: the sea is not masked out of the hull, so it can show inside an open or low hull, and she does not heel in a
 turn. Models with Draco or meshopt compression, KTX2 or WebP textures are refused with advice to re-export them.
+
+Her funnels' smoke, like the guns' smoke, fires and explosions, is the game's only with the game's look: read the five
+books in `assets/effects/flipbook/` (`naval_effects::flipbook::GAME_BOOKS`, each `FlipbookData::from_bytes`) and hand
+them to `EffectsLayer::set_game_look`, as `engine-example`'s `src/world.rs` (`game_books`) does. An `EffectsLayer` not
+given them draws the effects from before that look: the funnels' smoke as dark billows and a ribbon.
 
 ## Baking real land
 
@@ -151,14 +157,13 @@ Pin a `rev` for a reproducible build. For local work, path dependencies on a clo
   wants it adds `wgpu-hal = { git = "https://github.com/goldflag/naval-engine" }` under its own `[patch.crates-io]`.
 - **`native-unify`** comes along with every crate: the union of the features the game's builds ask of the shared
   dependencies, so those build with a few more features than a project would ask for on its own.
-- The crates read no files: the host hands them bytes (the ground photographs in `public/terrain/`, a land release's
-  squares). Shaders and the maps' JSON are compiled in.
+- The crates read no files: the host hands them bytes (the ground photographs in `public/terrain/`, the effects'
+  books in `assets/effects/flipbook/`, a land release's squares). Shaders and the maps' JSON are compiled in.
 
 ## What the export leaves out
 
 Everything else in the game, and the few tests and examples that need its simulation: `naval-water-effects`'
 recorded-battle playback test and its `record` and `battle_sequence` examples. `tools/export-from-game.sh` lists each removal.
-`naval-effects`' flipbook test skips without the game's flipbooks (Git LFS, not exported).
 
 ## Licences
 
@@ -174,6 +179,8 @@ keeps its own licence, with the notices beside it:
 - `native/crates/naval-render/assets/smaa_*.zlib`: SMAA's area and search textures, as three.js embeds them (MIT).
 - `native/vendor/wgpu-hal`: wgpu-hal (MIT or Apache-2.0, its `LICENSE.*` files).
 - `public/theatre/world/world-v1.bin`: the world chart, from Natural Earth (public domain).
+- `assets/effects/flipbook/`: baked from JangaFX's free EmberGen VDB simulations (the Gasoline Explosion, the Mid-Air
+  Explosion and the Fire Plume), "licensed as CC0 (Public Domain)".
 
 `naval-landscape` and `naval-land-bake` bundle no map data: they fetch it at run time from the services' own hosts
 (EOX's Sentinel-2 cloudless, ESA WorldCover, the USGS NAIP, OpenFreeMap's OpenStreetMap tiles, Microsoft's and

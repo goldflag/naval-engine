@@ -527,7 +527,9 @@ fn transparent(
 }
 
 impl EffectsLayer {
-    /// Registers the shaders, bakes the gas atlas (submitted, not waited for) and builds every pipeline.
+    /// Registers the shaders, bakes the gas atlas (submitted, not waited for) and builds every pipeline. The layer
+    /// draws the effects from before the flipbook look (the funnels' billows and ribbon, still puffs) until its host
+    /// hands it the game's ([`EffectsLayer::set_game_look`]).
     pub fn new(ctx: &mut RenderContext<'_>) -> Result<Self, ShaderError> {
         Self::with_atlas(ctx, None)
     }
@@ -1452,6 +1454,32 @@ impl EffectsLayer {
     ) -> Result<u64, String> {
         let flipbooks = crate::flipbook::Flipbooks::new(device, queue, books)?;
         Ok(self.use_flipbooks(flipbooks))
+    }
+
+    /// The game's look ([`crate::Trial::GAME`]) drawn from `books`, the host's read of [`crate::flipbook::GAME_BOOKS`]
+    /// ([`crate::flipbook::FlipbookData::from_bytes`] of each `assets/effects/flipbook/<name>.flipbook`): the funnels'
+    /// smoke as puffs of the simulated smoke, the explosions, flames and fire columns from their simulations, the smoke
+    /// seen from every side, merged and casting shadows. Returns the bytes of texture held; the error names a book
+    /// missing or what does not fit, and the layer keeps what it had.
+    pub fn set_game_look(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        books: &[crate::flipbook::FlipbookData],
+    ) -> Result<u64, String> {
+        let missing: Vec<&str> = crate::flipbook::GAME_BOOKS
+            .into_iter()
+            .filter(|name| !books.iter().any(|book| book.name == *name))
+            .collect();
+        if !missing.is_empty() {
+            return Err(format!(
+                "the game's look needs {}.flipbook",
+                missing.join(".flipbook, ")
+            ));
+        }
+        let bytes = self.set_flipbooks(device, queue, books)?;
+        self.effects.trial = crate::Trial::GAME;
+        Ok(bytes)
     }
 
     /// Trial `flipbook`: simulations already on this device ([`crate::flipbook::Flipbooks::new`]), which layers may

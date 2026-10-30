@@ -56,6 +56,7 @@ OTHER_PATHS=(
   assets/bases/bases.v1.json             # naval-terrain: the naval bases' places (compiled in)
   assets/land                            # naval-region-bake's tests: the committed land releases' files and tables
   public/terrain                         # naval-terrain's ground photographs (Poly Haven CC0, public/terrain/ASSETS.md)
+  assets/effects/flipbook                # naval-effects' game look: smoke, fire and explosion simulations (JangaFX EmberGen CC0; Git LFS in the game)
   public/theatre/world/world-v1.bin      # naval-globe's world chart, read by engine-example (Natural Earth, public domain)
   src/ui/tokens.css                      # naval-render: the palette test reads the interface's colour tokens
   rust-toolchain.toml
@@ -117,6 +118,14 @@ if [[ -d $DEST/native ]]; then
   find "$DEST/native" -mindepth 1 -maxdepth 1 ! -name target -exec rm -rf {} +
 fi
 git -C "$GAME" archive "$SHA" -- "${PATHS[@]}" | tar -x -C "$DEST"
+
+# git archive writes a Git LFS file's content when the game's checkout holds its object, else its pointer.
+POINTERS=$(grep -rlI --exclude-dir=target '^version https://git-lfs.github.com/spec/' "$DEST/assets" "$DEST/public" || true)
+if [[ -n $POINTERS ]]; then
+  echo "export: Git LFS pointers in place of files (git lfs pull in the game's checkout):" >&2
+  echo "$POINTERS" >&2
+  exit 1
+fi
 
 # ---- Trims: dev-dependencies on game crates that are not exported, and the targets that need them --------------------
 #
